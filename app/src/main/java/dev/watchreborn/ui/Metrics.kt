@@ -38,6 +38,23 @@ object Metrics {
     const val FACE_DIM = 0.5f
     const val ICONS_FROM_SCALE = 1.35f
 
+    /**
+     * On a phone, the app views are laid out as if the watch were this wide (dp), so icons come
+     * out phone-sized (the centre one about 94 dp) rather than scaled to the whole screen's width.
+     * The fisheye then stretches to fill the rest of the screen.
+     */
+    const val WATCH_WIDTH_DP = 340f
+
+    // List view on a phone: ordinary list proportions (dp / sp), not the watch's.
+    const val PHONE_LIST_PITCH_DP = 72f
+    const val PHONE_LIST_ICON_DP = 52f
+    const val PHONE_LIST_ICON_X_DP = 46f
+    const val PHONE_LIST_LABEL_X_DP = 92f
+    const val PHONE_LIST_TEXT_SP = 19f
+    const val PHONE_PILL_H_DP = 48f
+    const val PHONE_PILL_W_DP = 170f
+    const val PHONE_PILL_TEXT_SP = 16f
+
     /** The watch's own screen shape (422 x 514); a taller phone stretches the fisheye vertically. */
     const val WATCH_ASPECT = 514f / 422f
 }

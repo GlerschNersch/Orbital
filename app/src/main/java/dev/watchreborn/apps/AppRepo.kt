@@ -27,7 +27,9 @@ class App(
     val user: UserHandle,
     val system: Boolean,
     val icon: Bitmap,
+    /** Small and soft: drawn [blurredScale] times the icon's size, as it carries a blur margin. */
     val blurred: Bitmap,
+    val blurredScale: Float,
 )
 
 /**
@@ -48,6 +50,7 @@ class AppRepo(private val context: Context) {
                 val serial = users.getSerialNumberForUser(user)
                 val key = "${info.componentName.flattenToShortString()}#$serial"
                 val icon = roundIcon(info, user.takeIf { it != me }, iconPx)
+                val (soft, softScale) = blur(icon)
                 out += App(
                     key = key,
                     label = info.label?.toString()?.trim().orEmpty().ifEmpty { info.componentName.packageName },
@@ -55,7 +58,8 @@ class AppRepo(private val context: Context) {
                     user = user,
                     system = info.applicationInfo.flags and ApplicationInfo.FLAG_SYSTEM != 0,
                     icon = icon,
-                    blurred = blur(icon),
+                    blurred = soft,
+                    blurredScale = softScale,
                 )
             }
         }
@@ -63,11 +67,38 @@ class AppRepo(private val context: Context) {
         return out.sortedWith { a, b -> collator.compare(a.label, b.label) }
     }
 
-    /** Most used first (opens, with recent ones counting more); ties and unused apps A-Z. */
+    /**
+     * Most used first (opens, with recent ones counting more). Apps never opened from here follow:
+     * the phone's default Phone, Messages, Camera, browser, email and maps apps first, so a fresh
+     * install starts with useful apps in the middle rather than whatever sorts first A-Z.
+     */
     fun byUse(apps: List<App>): List<App> {
         val now = System.currentTimeMillis()
-        return apps.withIndex().sortedWith(compareByDescending<IndexedValue<App>> { score(it.value.key, now) }.thenBy { it.index })
-            .map { it.value }
+        val essentials = essentialPackages()
+        fun essentialRank(a: App) = essentials.indexOf(a.component.packageName).let { if (it < 0) Int.MAX_VALUE else it }
+        return apps.withIndex().sortedWith(
+            compareByDescending<IndexedValue<App>> { score(it.value.key, now) }
+                .thenBy { essentialRank(it.value) }
+                .thenBy { it.index },
+        ).map { it.value }
+    }
+
+    /** The default apps for calling, messaging, the camera, the web, email and maps, in that order. */
+    private fun essentialPackages(): List<String> {
+        val pm = context.packageManager
+        val intents = listOf(
+            android.content.Intent(android.content.Intent.ACTION_DIAL),
+            android.content.Intent(android.content.Intent.ACTION_SENDTO, android.net.Uri.parse("smsto:")),
+            android.content.Intent(android.provider.MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA),
+            android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://example.com/")),
+            android.content.Intent(android.content.Intent.ACTION_SENDTO, android.net.Uri.parse("mailto:")),
+            android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("geo:0,0")),
+        )
+        return intents.mapNotNull { intent ->
+            runCatching { pm.resolveActivity(intent, 0)?.activityInfo?.packageName }.getOrNull()
+                // "android" is the system chooser: no default set.
+                ?.takeIf { it != "android" }
+        }.distinct()
     }
 
     fun markOpened(key: String) {
@@ -121,10 +152,11 @@ class AppRepo(private val context: Context) {
     }
 
     /**
-     * A soft copy for the out-of-focus apps: shrunk to a sixth, box-blurred three times (close to a
-     * Gaussian), then stretched back with filtering, so it reads as a haze rather than blocks.
+     * A soft copy for the out-of-focus apps: shrunk to a sixth and box-blurred three times (close
+     * to a Gaussian). It stays small (about 2% of the icon's memory) and is stretched when drawn;
+     * returns it with how much bigger than the icon to draw it, for its blur margin.
      */
-    private fun blur(src: Bitmap): Bitmap {
+    private fun blur(src: Bitmap): Pair<Bitmap, Float> {
         val sw = (src.width / 6).coerceAtLeast(8)
         val sh = (src.height / 6).coerceAtLeast(8)
         // A transparent margin so the blur can spread past the circle's edge.
@@ -137,13 +169,7 @@ class AppRepo(private val context: Context) {
         small.getPixels(px, 0, w, 0, 0, w, h)
         repeat(3) { boxBlur(px, w, h, 2) }
         small.setPixels(px, 0, w, 0, 0, w, h)
-        val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
-        val scale = src.width.toFloat() / sw
-        Canvas(out).drawBitmap(small, null,
-            android.graphics.RectF(-pad * scale, -pad * scale, src.width + pad * scale, src.height + pad * scale),
-            Paint(Paint.FILTER_BITMAP_FLAG))
-        small.recycle()
-        return out
+        return small to (sw + 2f * pad) / sw
     }
 
     /** One horizontal then vertical box blur of premultiplied ARGB [px] (radius [r]). */

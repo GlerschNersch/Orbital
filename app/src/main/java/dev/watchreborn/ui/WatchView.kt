@@ -82,6 +82,17 @@ class WatchView(
 
     private var lastFrame = 0L
 
+    private val density = resources.displayMetrics.density
+    private val fontScale = resources.configuration.fontScale
+    private fun dp(v: Float) = v * density
+    private fun sp(v: Float) = v * density * fontScale
+
+    /** The width the app views are laid out for: the screen's, up to [Metrics.WATCH_WIDTH_DP]. */
+    private val unit get() = minOf(width.toFloat(), dp(Metrics.WATCH_WIDTH_DP))
+
+    /** Which app sat in the grid's centre last frame, for the crown-like tick as it changes. */
+    private var centredApp = -1
+
     fun setApps(alpha: List<App>, use: List<App>) {
         alphabetical = alpha
         byUse = use
@@ -189,22 +200,23 @@ class WatchView(
 
     /** The cluster: most used app in the middle, the next six round it, the rest blurred behind. */
     private fun drawFocus(c: Canvas, w: Float, h: Float, alpha: Float, zoom: Float, sharpness: Float) {
+        val u = unit
         val cx = w / 2
         val cy = h / 2
         // Behind: the rest of the apps on the full grid's lattice, soft and dim.
         for (i in 7 until byUse.size) {
-            pointyCenter(gridHexes[i], Metrics.GRID_PITCH * w * 1.25f * zoom, tmp)
-            val d = Metrics.GRID_CENTER_D * w * 0.85f * zoom
-            if (abs(tmp[1]) > h / 2 + d) continue
-            drawIcon(c, byUse[i].blurred, cx + tmp[0], cy + tmp[1], d, alpha * Metrics.FOCUS_BACKDROP_ALPHA)
+            pointyCenter(gridHexes[i], Metrics.GRID_PITCH * u * 1.25f * zoom, tmp)
+            val d = Metrics.GRID_CENTER_D * u * 0.85f * zoom
+            if (abs(tmp[1]) > h / 2 + d || abs(tmp[0]) > w / 2 + d) continue
+            drawIcon(c, byUse[i].blurred, cx + tmp[0], cy + tmp[1], d * byUse[i].blurredScale, alpha * Metrics.FOCUS_BACKDROP_ALPHA)
         }
         for (i in 0 until minOf(7, byUse.size)) {
             val hex = if (i == 0) Hex(0, 0) else FOCUS_RING_ORDER[i - 1]
-            flatCenter(hex, Metrics.FOCUS_RING * w * zoom, tmp)
-            val d = (if (i == 0) Metrics.FOCUS_CENTER_D else Metrics.FOCUS_RING_D) * w * zoom
+            flatCenter(hex, Metrics.FOCUS_RING * u * zoom, tmp)
+            val d = (if (i == 0) Metrics.FOCUS_CENTER_D else Metrics.FOCUS_RING_D) * u * zoom
             val x = cx + tmp[0]; val y = cy + tmp[1]
             // Soft while arriving, sharp once settled.
-            drawIcon(c, byUse[i].blurred, x, y, d, alpha * (1f - sharpness))
+            drawIcon(c, byUse[i].blurred, x, y, d * byUse[i].blurredScale, alpha * (1f - sharpness))
             drawIcon(c, byUse[i].icon, x, y, d, alpha * sharpness)
             hits += Hit(x, y, d / 2, byUse[i])
         }
@@ -212,58 +224,67 @@ class WatchView(
 
     /** The full grid: pointy-topped rows with the measured fisheye, panned by [panX]/[panY]. */
     private fun drawGrid(c: Canvas, w: Float, h: Float, alpha: Float, zoom: Float) {
+        val u = unit
         val cx = w / 2
         val cy = h / 2
-        val stretch = max(1f, (h / w) / Metrics.WATCH_ASPECT)
+        // The fisheye was measured on the watch's screen; stretch it over the phone's, so its
+        // falloff reaches the screen's edges both ways (a phone is wider and much taller).
+        val sx = max(1f, w / u)
+        val sy = max(1f, (h / u) / Metrics.WATCH_ASPECT)
+        var nearest = -1
+        var nearestD = Float.MAX_VALUE
         for (i in byUse.indices) {
-            pointyCenter(gridHexes[i], Metrics.GRID_PITCH * w, tmp)
-            val dx = (tmp[0] + panX.value) / w
-            val dy = (tmp[1] + panY.value) / w
-            // Distance on an ellipse the shape of the screen, so a tall phone shows more rows.
-            val d = hypot(dx, dy / stretch)
+            pointyCenter(gridHexes[i], Metrics.GRID_PITCH * u, tmp)
+            val dx = (tmp[0] + panX.value) / u
+            val dy = (tmp[1] + panY.value) / u
+            val d = hypot(dx / sx, dy / sy)
+            if (d < nearestD) { nearestD = d; nearest = i }
             val size = Fisheye.size(d)
             if (size <= 0.02f) continue
             val k = if (d > 1e-4f) Fisheye.pulled(d) / d else 1f
-            val x = cx + dx * k * w * zoom
-            val y = cy + dy * k * w * zoom
-            val dia = Metrics.GRID_CENTER_D * w * size * zoom
+            val x = cx + dx * k * u * zoom
+            val y = cy + dy * k * u * zoom
+            val dia = Metrics.GRID_CENTER_D * u * size * zoom
             drawIcon(c, byUse[i].icon, x, y, dia, alpha)
             hits += Hit(x, y, dia / 2, byUse[i])
         }
+        // A light tick each time a new app reaches the middle, like the crown's detents.
+        if (dragging && nearest != centredApp && centredApp != -1) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        centredApp = nearest
     }
 
     /** The List view: A-Z rows of icon and name. */
     private fun drawList(c: Canvas, w: Float, h: Float, top: Float, bottom: Float, alpha: Float) {
-        val pitch = Metrics.LIST_PITCH * w
-        val d = Metrics.LIST_ICON_D * w
-        text.textSize = Metrics.LIST_TEXT * w
+        // Phone proportions (dp/sp, following the font-size setting); the watch's would be huge here.
+        val pitch = dp(Metrics.PHONE_LIST_PITCH_DP)
+        val d = dp(Metrics.PHONE_LIST_ICON_DP)
         text.color = Color.argb((alpha * 255).toInt(), 255, 255, 255)
-        val y0 = top + 0.2f * w - listScroll
-        val maxText = w - Metrics.LIST_LABEL_X * w - 0.06f * w
+        val y0 = top + dp(48f) - listScroll
+        val maxText = w - dp(Metrics.PHONE_LIST_LABEL_X_DP) - dp(20f)
         for ((i, app) in alphabetical.withIndex()) {
             val y = y0 + i * pitch
             if (y < top - pitch || y > bottom + pitch) continue
-            // Rows shrink toward the screen's top and bottom edges, as on the watch.
-            val edge = minOf(y - top, bottom - y) / (0.25f * w)
-            val s = (0.6f + 0.4f * edge).coerceIn(0.6f, 1f)
-            val x = Metrics.LIST_ICON_X * w
+            // Rows shrink a little toward the screen's top and bottom edges, as on the watch.
+            val edge = minOf(y - top, bottom - y) / dp(90f)
+            val s = (0.75f + 0.25f * edge).coerceIn(0.75f, 1f)
+            val x = dp(Metrics.PHONE_LIST_ICON_X_DP)
             drawIcon(c, app.icon, x, y, d * s, alpha * s)
             hits += Hit(w / 2, y, pitch / 2, app)
-            text.textSize = Metrics.LIST_TEXT * w * s
+            text.textSize = sp(Metrics.PHONE_LIST_TEXT_SP) * s
             c.drawText(TextUtils.ellipsize(app.label, text, maxText, TextUtils.TruncateAt.END).toString(),
-                Metrics.LIST_LABEL_X * w, y + text.textSize * 0.35f, text)
+                dp(Metrics.PHONE_LIST_LABEL_X_DP), y + text.textSize * 0.35f, text)
         }
     }
 
     /** "List View" under the grid, "Grid View" under the list. */
     private fun drawPill(c: Canvas, w: Float, bottom: Float, alpha: Float) {
         if (alpha <= 0.01f) { pill.setEmpty(); return }
-        val ph = Metrics.PILL_H * w
-        val pw = 0.44f * w
-        pill.set(w / 2 - pw / 2, bottom - ph - 0.04f * w, w / 2 + pw / 2, bottom - 0.04f * w)
+        val ph = dp(Metrics.PHONE_PILL_H_DP)
+        val pw = dp(Metrics.PHONE_PILL_W_DP)
+        pill.set(w / 2 - pw / 2, bottom - ph - dp(16f), w / 2 + pw / 2, bottom - dp(16f))
         fill.color = Color.argb((alpha * 230).toInt(), 44, 44, 46)
         c.drawRoundRect(pill, ph / 2, ph / 2, fill)
-        text.textSize = 0.06f * w
+        text.textSize = sp(Metrics.PHONE_PILL_TEXT_SP)
         text.color = Color.argb((alpha * 255).toInt(), 255, 255, 255)
         val label = if (list.target >= 0.5f) "Grid View" else "List View"
         val tw = text.measureText(label)
@@ -372,7 +393,7 @@ class WatchView(
 
     /** Settles the grid with the app nearest the screen's centre in the middle, as the watch does. */
     private fun snapGrid(px: Float, py: Float) {
-        val w = width.toFloat()
+        val w = unit
         var best = 0
         var bestD = Float.MAX_VALUE
         for (i in byUse.indices) {
@@ -388,7 +409,7 @@ class WatchView(
 
     private fun stepListFling(dt: Float) {
         val w = width.toFloat()
-        val maxScroll = max(0f, alphabetical.size * Metrics.LIST_PITCH * w - (height - topInset - bottomInset) * 0.6f)
+        val maxScroll = max(0f, alphabetical.size * dp(Metrics.PHONE_LIST_PITCH_DP) - (height - topInset - bottomInset) * 0.6f)
         if (abs(listVelocity) > 1f) {
             listScroll += listVelocity * dt
             listVelocity *= (1f - 3.5f * dt).coerceAtLeast(0f)

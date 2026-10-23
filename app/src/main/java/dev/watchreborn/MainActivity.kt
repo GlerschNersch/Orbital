@@ -95,6 +95,16 @@ class MainActivity : Activity() {
         if (Intent.ACTION_MAIN == intent.action && hasWindowFocus()) view.home()
     }
 
+    /**
+     * On some phones (Android 16 on OnePlus) the Back key never reaches the predictive-back
+     * callback and would finish the activity, so it's handled here too. Back on the face does
+     * nothing: a home screen has nowhere to go back to.
+     */
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        if (keyCode == android.view.KeyEvent.KEYCODE_BACK) { view.back(); return true }
+        return super.onKeyDown(keyCode, event)
+    }
+
     override fun onDestroy() {
         launcherApps.unregisterCallback(appsChanged)
         unregisterReceiver(batteryReceiver)
@@ -103,7 +113,9 @@ class MainActivity : Activity() {
     }
 
     private fun reload() {
-        val iconPx = (resources.displayMetrics.widthPixels * Metrics.FOCUS_CENTER_D * Metrics.ICONS_FROM_SCALE).toInt().coerceIn(96, 512)
+        // Sized for the cluster's centre icon, capped: ~190 apps at 288 px is about 60 MB.
+        val unitPx = minOf(resources.displayMetrics.widthPixels.toFloat(), Metrics.WATCH_WIDTH_DP * resources.displayMetrics.density)
+        val iconPx = (unitPx * Metrics.FOCUS_CENTER_D).toInt().coerceIn(96, 288)
         loader.execute {
             val loaded = runCatching { repo.load(iconPx) }
                 .onFailure { Log.e(TAG, "Loading apps failed", it) }
