@@ -27,6 +27,15 @@ Sibling of XMB, PS4, X360, Switch, C64U, VCS and TSF Reborn.
 - Work-profile apps show with Android's briefcase badge. Private Space apps stay out of the
   lists, behind their own lock.
 
+## On a watch: Zepp OS face (`zepp-face/`)
+
+The same face, redrawn for round 480 x 480 Zepp OS watches (Amazfit T-Rex 3 and T-Rex 3 Pro
+48 mm): a seconds ring, battery / date / heart rate, a large time with accent seconds, a timeline
+of the coming hours, and steps / calories / distance. Built with Zepp's Zeus CLI
+(`npm i -g @zeppos/zeus-cli`): `zeus preview` in `zepp-face/` makes a QR code to scan in the Zepp
+app with developer mode on, and `zeus dev` runs it in the Zepp OS Simulator.
+`python -I tools/make_ticks.py` redraws the tick images.
+
 ## Building
 
 Android Studio or `./gradlew :app:assembleDebug` (JDK 17, Android SDK 36). Release builds are
