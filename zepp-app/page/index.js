@@ -52,11 +52,6 @@ function spiral(n) {
   return out
 }
 
-function tint(color) {
-  const r = (color >> 16) & 255, g = (color >> 8) & 255, b = color & 255
-  return (Math.round(r * 0.22) << 16) | (Math.round(g * 0.22) << 8) | Math.round(b * 0.22)
-}
-
 function sensor(name) {
   try {
     const Cls = sensors[name]
@@ -107,35 +102,36 @@ Page({
       }
     }
 
-    // What each bubble shows, and which watch app it opens. Most glanceable in the middle.
+    // What each bubble shows, and which watch app it opens. Most glanceable in the middle. Each
+    // bubble's disc and label are a pre-drawn image (assets/default.r/b/<key>.png).
     const app = (name) => router[name]
     const items = [
-      { label: '', color: 0xa6e36e, open: app('SYSTEM_APP_WORLD_CLOCK'), value: () => {
+      { key: 'time', open: app('SYSTEM_APP_WORLD_CLOCK'), value: () => {
         const h = time.getHours()
         const hh = h24 ? pad2(h) : String(h % 12 === 0 ? 12 : h % 12)
         return hh + ':' + pad2(time.getMinutes())
       } },
-      { label: 'BPM', color: 0xff5a5a, open: app('SYSTEM_APP_HR'), value: () => fmt(read(s.heart, 'getLast', 'getCurrent')) },
-      { label: 'STEPS', color: 0x64d2ff, open: app('SYSTEM_APP_STATUS'), value: () => {
+      { key: 'heart', open: app('SYSTEM_APP_HR'), value: () => fmt(read(s.heart, 'getLast', 'getCurrent')) },
+      { key: 'steps', open: app('SYSTEM_APP_STATUS'), value: () => {
         const v = read(s.step, 'getCurrent')
         return v === null ? '--' : v >= 10000 ? (v / 1000).toFixed(1) + 'k' : String(v)
       } },
-      { label: 'BATTERY', color: 0xa6e36e, open: app('SYSTEM_APP_SETTING'), value: () => fmt(read(s.battery, 'getCurrent'), '%') },
-      { label: 'HI / LO', color: 0xffbe3c, open: app('SYSTEM_APP_WEATHER'), value: () => {
+      { key: 'battery', open: app('SYSTEM_APP_SETTING'), value: () => fmt(read(s.battery, 'getCurrent'), '%') },
+      { key: 'weather', open: app('SYSTEM_APP_WEATHER'), value: () => {
         const f = forecast()
         const d = f && f.forecastData && f.forecastData.count > 0 ? f.forecastData.data[0] : null
         return d && !(d.high === 0 && d.low === 0) ? d.high + '°/' + d.low + '°' : '--'
       } },
-      { label: 'KCAL', color: 0xff9f0a, open: app('SYSTEM_APP_STATUS'), value: () => fmt(read(s.calorie, 'getCurrent')) },
-      { label: 'KM', color: 0x50dcc8, open: app('SYSTEM_APP_STATUS'), value: () => {
+      { key: 'kcal', open: app('SYSTEM_APP_STATUS'), value: () => fmt(read(s.calorie, 'getCurrent')) },
+      { key: 'km', open: app('SYSTEM_APP_STATUS'), value: () => {
         const v = read(s.distance, 'getCurrent')
         return v === null ? '--' : (v / 1000).toFixed(1)
       } },
-      { label: 'SpO2', color: 0x5ac8fa, open: app('SYSTEM_APP_SPO2'), value: () => fmt(read(s.spo2, 'getCurrent', 'getLastDay'), '%') },
-      { label: 'STRESS', color: 0xbf5af2, open: app('SYSTEM_APP_PRESSURE'), value: () => fmt(read(s.stress, 'getCurrent')) },
-      { label: 'STAND', color: 0x30d158, open: app('SYSTEM_APP_STATUS'), value: () => fmt(read(s.stand, 'getCurrent')) },
-      { label: 'PAI', color: 0xff375f, open: app('SYSTEM_APP_PAI'), value: () => fmt(read(s.pai, 'getTotal', 'getToday', 'getCurrent')) },
-      { label: 'SUN', color: 0xffd60a, open: app('SYSTEM_APP_SUN_AND_MOON'), value: () => {
+      { key: 'spo2', open: app('SYSTEM_APP_SPO2'), value: () => fmt(read(s.spo2, 'getCurrent', 'getLastDay'), '%') },
+      { key: 'stress', open: app('SYSTEM_APP_PRESSURE'), value: () => fmt(read(s.stress, 'getCurrent')) },
+      { key: 'stand', open: app('SYSTEM_APP_STATUS'), value: () => fmt(read(s.stand, 'getCurrent')) },
+      { key: 'pai', open: app('SYSTEM_APP_PAI'), value: () => fmt(read(s.pai, 'getTotal', 'getToday', 'getCurrent')) },
+      { key: 'sun', open: app('SYSTEM_APP_SUN_AND_MOON'), value: () => {
         const f = forecast()
         const t = f && f.tideData && f.tideData.count > 0 ? f.tideData.data[0] : null
         if (!t || !t.sunrise || !t.sunset) return '--'
@@ -143,13 +139,13 @@ Page({
         const next = now < t.sunrise.hour * 60 + t.sunrise.minute || now >= t.sunset.hour * 60 + t.sunset.minute ? t.sunrise : t.sunset
         return (h24 ? next.hour : next.hour % 12 === 0 ? 12 : next.hour % 12) + ':' + pad2(next.minute)
       } },
-      { label: 'REST', color: 0xff6961, open: app('SYSTEM_APP_HR'), value: () => fmt(read(s.heart, 'getResting')) },
-      { label: 'FAT BURN', color: 0xff9500, open: app('SYSTEM_APP_STATUS'), value: () => fmt(read(s.fat, 'getCurrent')) },
-      { label: 'SLEEP', color: 0x7d7aff, open: app('SYSTEM_APP_SLEEP'), value: () => fmt(read(s.sleep, 'getInfo', 'getScore')) },
-      { label: 'ALARM', color: 0xff9f0a, open: app('SYSTEM_APP_ALARM'), value: () => '▶' },
-      { label: 'WORKOUT', color: 0xa6e36e, open: app('SYSTEM_APP_SPORT'), value: () => '▶' },
-      { label: 'COMPASS', color: 0xff453a, open: app('SYSTEM_APP_COMPASS'), value: () => '▶' },
-      { label: 'TIMER', color: 0x64d2ff, open: app('SYSTEM_APP_STOPWATCH'), value: () => '▶' },
+      { key: 'rest', open: app('SYSTEM_APP_HR'), value: () => fmt(read(s.heart, 'getResting')) },
+      { key: 'fat', open: app('SYSTEM_APP_STATUS'), value: () => fmt(read(s.fat, 'getCurrent')) },
+      { key: 'sleep', open: app('SYSTEM_APP_SLEEP'), value: () => fmt(read(s.sleep, 'getInfo', 'getScore')) },
+      { key: 'alarm', open: app('SYSTEM_APP_ALARM'), value: () => '▶' },
+      { key: 'workout', open: app('SYSTEM_APP_SPORT'), value: () => '▶' },
+      { key: 'compass', open: app('SYSTEM_APP_COMPASS'), value: () => '▶' },
+      { key: 'timer', open: app('SYSTEM_APP_STOPWATCH'), value: () => '▶' },
     ]
     const cells = spiral(items.length)
 
@@ -169,19 +165,17 @@ Page({
     const bubbles = items.map((item) => {
       const b = {
         item,
-        // A FILL_RECT rounded into a circle: CIRCLE can't be moved once created.
-        disc: createWidget(widget.FILL_RECT, { x: C - 10, y: C - 10, w: 20, h: 20, radius: 10, color: tint(item.color) }),
-        label: createWidget(widget.TEXT, {
-          x: 0, y: 0, w: 10, h: 10, text_size: 14, color: item.color, text: item.label,
-          align_h: align.CENTER_H, align_v: align.CENTER_V, text_style: text_style.NONE,
-        }),
+        // Pre-drawn and anti-aliased (the watch draws its own circles with jagged edges); the
+        // watch only moves and scales it, which is cheap.
+        img: createWidget(widget.IMG, { x: C - 10, y: C - 10, w: 20, h: 20, src: 'b/' + item.key + '.png', auto_scale: true }),
         value: createWidget(widget.TEXT, {
           x: 0, y: 0, w: 10, h: 10, text_size: 20, color: WHITE, text: '--',
           align_h: align.CENTER_H, align_v: align.CENTER_V, text_style: text_style.NONE,
         }),
-        x: C, y: C, r: 0, shown: true, lastSize: 0,
+        // What was last sent to the watch, so unchanged properties aren't sent again.
+        x: C, y: C, r: 0, sent: { img: '', value: '', bucket: -1, shown: true },
       }
-      listen(b.disc); listen(b.label); listen(b.value)
+      listen(b.img); listen(b.value)
       return b
     })
 
@@ -196,31 +190,51 @@ Page({
       return { x: C + dx * k, y: C + dy * k, r: (CENTER_D / 2) * size }
     }
 
+    /**
+     * The reading's text size for a bubble of radius [r]: three fixed sizes (or hidden), so text
+     * doesn't jitter through sizes while dragging. The time is larger.
+     */
+    function bucket(r, isTime) {
+      if (r >= 52) return isTime ? 48 : 28
+      if (r >= 34) return isTime ? 32 : 20
+      return 0
+    }
+
     function layout() {
       for (let i = 0; i < bubbles.length; i++) {
         const b = bubbles[i]
         const pl = place(i, pan)
-        const visible = pl.r > 9
-        if (visible !== b.shown) {
-          b.shown = visible
-          b.disc.setProperty(prop.VISIBLE, visible)
-          b.label.setProperty(prop.VISIBLE, visible && pl.r > 26)
-          b.value.setProperty(prop.VISIBLE, visible)
+        const shown = pl.r > 9
+        if (shown !== b.sent.shown) {
+          b.sent.shown = shown
+          b.img.setProperty(prop.VISIBLE, shown)
+          if (!shown) b.value.setProperty(prop.VISIBLE, false)
         }
-        if (!visible) continue
+        if (!shown) continue
         b.x = pl.x; b.y = pl.y; b.r = pl.r
         const r = Math.round(pl.r)
-        b.disc.setProperty(prop.MORE, { x: Math.round(pl.x) - r, y: Math.round(pl.y) - r, w: 2 * r, h: 2 * r, radius: r })
-        // Text sizes move in steps of 2 px, so they're only re-set when they visibly change.
+        const x = Math.round(pl.x), y = Math.round(pl.y)
+        const imgKey = x + ',' + y + ',' + r
+        if (imgKey !== b.sent.img) {
+          b.sent.img = imgKey
+          b.img.setProperty(prop.MORE, { x: x - r, y: y - r, w: 2 * r, h: 2 * r, auto_scale: true })
+        }
         const isTime = i === 0
-        const valueSize = Math.max(10, 2 * Math.round((isTime ? r * 0.62 : r * 0.5) / 2))
-        const labelSize = Math.max(8, 2 * Math.round(r * 0.26 / 2))
-        b.label.setProperty(prop.VISIBLE, b.shown && r > 26 && !isTime)
-        b.label.setProperty(prop.MORE, { x: Math.round(pl.x - r), y: Math.round(pl.y - r * 0.62), w: 2 * r, h: labelSize + 6, text_size: labelSize })
-        b.value.setProperty(prop.MORE, {
-          x: Math.round(pl.x - r), y: Math.round(pl.y - (isTime ? valueSize * 0.65 : valueSize * 0.35)),
-          w: 2 * r, h: valueSize + 8, text_size: valueSize,
-        })
+        const size = bucket(r, isTime)
+        if (size !== b.sent.bucket) {
+          b.sent.bucket = size
+          b.value.setProperty(prop.VISIBLE, size > 0)
+          if (size > 0) b.value.setProperty(prop.MORE, { text_size: size, h: size + 10 })
+          b.sent.value = ''
+        }
+        if (size === 0) continue
+        // Readings sit below the label; the time is centred.
+        const vy = isTime ? y - Math.round((size + 10) / 2) : y + Math.round(r * 0.12) - 4
+        const valueKey = x + ',' + vy + ',' + r
+        if (valueKey !== b.sent.value) {
+          b.sent.value = valueKey
+          b.value.setProperty(prop.MORE, { x: x - r, y: vy, w: 2 * r })
+        }
       }
     }
 
@@ -265,9 +279,9 @@ Page({
       if (!down.moved && dx * dx + dy * dy < 100) return
       down.moved = true
       pan = { x: down.pan.x + dx, y: down.pan.y + dy }
-      // Re-laying out 19 bubbles is the costly part; ~25 times a second is plenty.
+      // Only changed properties are sent now, so a layout per ~frame keeps up.
       const now = Date.now()
-      if (now - lastLayout > 40) { lastLayout = now; layout() }
+      if (now - lastLayout >= 16) { lastLayout = now; layout() }
     }
 
     function onUp(e) {

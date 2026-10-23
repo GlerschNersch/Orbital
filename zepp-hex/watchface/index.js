@@ -4,12 +4,8 @@
 // on a round screen fit in the gaps toward the edge. Here the middle shows the time and every other
 // bubble a reading. Our own design, from Zepp OS's documented widgets only.
 
-import { createWidget, widget, align, prop, text_style, event } from '@zos/ui'
+import { createWidget, widget, align, prop, text_style } from '@zos/ui'
 import * as sensors from '@zos/sensor'
-import * as router from '@zos/router'
-
-/** The draggable honeycomb app (zepp-app), opened by tapping the time, like pressing the crown. */
-const HEX_APP_ID = 920425
 
 const C = 240
 
@@ -143,23 +139,12 @@ WatchFace({
     } catch (e) {}
 
     // Middle: the time, with the date above and seconds below.
-    const centre = createWidget(widget.CIRCLE, { center_x: C, center_y: C, radius: CENTER_D / 2, color: 0x1c1e1c })
+    createWidget(widget.CIRCLE, { center_x: C, center_y: C, radius: CENTER_D / 2, color: 0x1c1e1c })
     const dateText = text(C - 70, C - 58, 140, 24, 20, 0xa6e36e, '')
     const timeText = text(C - 75, C - 34, 150, 66, 56, WHITE, '')
     const ampmText = text(C - 70, C + 32, 140, 24, 18, GREY, '')
-    // Tapping the time opens the honeycomb app, where the bubbles can be dragged around.
-    const openHex = () => {
-      try {
-        router.launchApp({ appId: HEX_APP_ID, url: 'page/index' })
-      } catch (e) {
-        console.log('open Hex failed: ' + e)
-      }
-    }
-    for (const w of [centre, dateText, timeText, ampmText]) {
-      try {
-        w.addEventListener(event.CLICK_UP, openHex)
-      } catch (e) {}
-    }
+    // (Faces on the T-Rex 3 don't get taps, so the draggable Hex app is opened from the app list
+    // or a button shortcut instead.)
 
     const ring = {}
     for (const spec of RING) ring[spec.key] = bubble(spec, RING_D, RING_DIST)
