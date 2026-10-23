@@ -1,0 +1,9 @@
+# Firmware extracts, reference footage, frames and anything derived from Apple material: never commit or ship
+re/
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.kotlin/
+__pycache__/
