@@ -200,20 +200,30 @@ Page({
       return 0
     }
 
+    /** Lays every bubble out on the fisheye for the current pan. */
     function layout() {
       for (let i = 0; i < bubbles.length; i++) {
-        const b = bubbles[i]
         const pl = place(i, pan)
-        const shown = pl.r > 9
+        drawAt(i, pl.x, pl.y, pl.r)
+      }
+    }
+
+    /**
+     * Puts bubble [i] at ([px], [py]) with radius [pr], sending the watch only what changed.
+     * Moving without resizing costs little; resizing an image is the expensive part.
+     */
+    function drawAt(i, px, py, pr) {
+        const b = bubbles[i]
+        const shown = pr > 9
         if (shown !== b.sent.shown) {
           b.sent.shown = shown
           b.img.setProperty(prop.VISIBLE, shown)
-          if (!shown) b.value.setProperty(prop.VISIBLE, false)
+          if (!shown) { b.value.setProperty(prop.VISIBLE, false); b.sent.bucket = -1 }
         }
-        if (!shown) continue
-        b.x = pl.x; b.y = pl.y; b.r = pl.r
-        const r = Math.round(pl.r)
-        const x = Math.round(pl.x), y = Math.round(pl.y)
+        if (!shown) return
+        b.x = px; b.y = py; b.r = pr
+        const r = Math.round(pr)
+        const x = Math.round(px), y = Math.round(py)
         const imgKey = x + ',' + y + ',' + r
         if (imgKey !== b.sent.img) {
           b.sent.img = imgKey
@@ -227,7 +237,7 @@ Page({
           if (size > 0) b.value.setProperty(prop.MORE, { text_size: size, h: size + 10 })
           b.sent.value = ''
         }
-        if (size === 0) continue
+        if (size === 0) return
         // Readings sit below the label; the time is centred.
         const vy = isTime ? y - Math.round((size + 10) / 2) : y + Math.round(r * 0.12) - 4
         const valueKey = x + ',' + vy + ',' + r
@@ -235,7 +245,6 @@ Page({
           b.sent.value = valueKey
           b.value.setProperty(prop.MORE, { x: x - r, y: vy, w: 2 * r })
         }
-      }
     }
 
     /** Glides the pan to [target] with an ease-out over ~0.3 s (the measured settle time). */
@@ -270,7 +279,7 @@ Page({
 
     function onDown(e) {
       if (anim !== null) { clearInterval(anim); anim = null }
-      down = { x: e.x, y: e.y, pan: { x: pan.x, y: pan.y }, moved: false, t: Date.now() }
+      down = { x: e.x, y: e.y, pan: { x: pan.x, y: pan.y }, moved: false, t: Date.now(), from: null }
     }
 
     function onMove(e) {
@@ -279,9 +288,23 @@ Page({
       if (!down.moved && dx * dx + dy * dy < 100) return
       down.moved = true
       pan = { x: down.pan.x + dx, y: down.pan.y + dy }
-      // Only changed properties are sent now, so a layout per ~frame keeps up.
+      // While the finger is down the bubbles just slide, keeping the sizes they had when the
+      // drag began (bubbles that were too small to see show at a small size); the fisheye
+      // resizing waits for the glide on release. Sliding is cheap; resizing every frame wasn't.
+      if (down.from === null) {
+        down.from = bubbles.map((b, i) => {
+          const pl = place(i, down.pan)
+          return { x: pl.x, y: pl.y, r: Math.max(pl.r, 14) }
+        })
+      }
       const now = Date.now()
-      if (now - lastLayout >= 16) { lastLayout = now; layout() }
+      if (now - lastLayout >= 16) {
+        lastLayout = now
+        for (let i = 0; i < bubbles.length; i++) {
+          const f = down.from[i]
+          drawAt(i, f.x + dx, f.y + dy, f.r)
+        }
+      }
     }
 
     function onUp(e) {
@@ -295,7 +318,7 @@ Page({
       // A tap: the topmost bubble under the finger opens its app.
       for (let i = bubbles.length - 1; i >= 0; i--) {
         const b = bubbles[i]
-        if (!b.shown) continue
+        if (!b.sent.shown) continue
         const dx = e.x - b.x, dy = e.y - b.y
         if (dx * dx + dy * dy <= b.r * b.r) { open(b.item); return }
       }
