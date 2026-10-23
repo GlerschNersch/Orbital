@@ -39,7 +39,14 @@ app with developer mode on, and `zeus dev` runs it in the Zepp OS Simulator.
 `zepp-hex/` is a second face, **Watch Reborn Hex**: the watchOS app cluster's honeycomb, but
 every bubble is a reading. The time sits in the middle; heart rate, steps, battery, weather
 (high / low), calories and distance ring it; seconds, blood oxygen, stress, stand hours, PAI and
-the next sunrise or sunset fill the small bubbles toward the edge. Same `zeus` commands.
+the next sunrise or sunset fill the small bubbles toward the edge. On each wake the bubbles
+zoom in and settle, like the watch's own face-to-apps zoom. Same `zeus` commands.
+
+`zepp-app/` is **Hex**, the draggable version (watch faces can't be dragged): 19 bubbles of
+readings on the measured honeycomb with its fisheye; drag it and it glides to rest with the
+nearest bubble in the middle; the up/down buttons step through it like a crown, and select or a
+tap opens the bubble's own watch app. `zeus preview -t "Amazfit T-Rex 3"` (this project uses the
+newer config, which names devices).
 
 ## Building
 

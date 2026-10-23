@@ -4,8 +4,12 @@
 // on a round screen fit in the gaps toward the edge. Here the middle shows the time and every other
 // bubble a reading. Our own design, from Zepp OS's documented widgets only.
 
-import { createWidget, widget, align, prop, text_style } from '@zos/ui'
+import { createWidget, widget, align, prop, text_style, event } from '@zos/ui'
 import * as sensors from '@zos/sensor'
+import * as router from '@zos/router'
+
+/** The draggable honeycomb app (zepp-app), opened by tapping the time, like pressing the crown. */
+const HEX_APP_ID = 920425
 
 const C = 240
 
@@ -15,6 +19,10 @@ const RING_D = 118
 const RING_DIST = 178
 const OUTER_D = 60
 const OUTER_DIST = 205
+
+/** On wake the bubbles arrive this much larger and further out, then settle (as measured, ~0.3 s). */
+const ZOOM_FROM = 1.35
+const ZOOM_MS = 300
 
 const WHITE = 0xffffff
 const GREY = 0x9a9a9a
@@ -84,22 +92,37 @@ function text(x, y, w, h, size, color, value) {
   })
 }
 
-/** One data bubble: disc, optional progress ring, label above the value. */
+/**
+ * One data bubble: disc, optional progress ring, label above the value. [move] redraws it at
+ * [k] times its distance and size from the middle, for the wake-up zoom.
+ */
 function bubble(spec, d, dist) {
-  const p = at(spec.angle, dist)
-  const r = d / 2
-  createWidget(widget.CIRCLE, { center_x: p.x, center_y: p.y, radius: r, color: tint(spec.color) })
+  const big = d > 80
+  // A FILL_RECT rounded into a circle: CIRCLE can't be moved once created.
+  const disc = createWidget(widget.FILL_RECT, { x: C - d / 2, y: C - d / 2, w: d, h: d, radius: d / 2, color: tint(spec.color) })
+  let track = null
   let arc = null
   if (spec.ring) {
-    const rr = r - 5
-    const box = { x: p.x - rr, y: p.y - rr, w: 2 * rr, h: 2 * rr, radius: rr, line_width: d > 80 ? 6 : 4 }
-    createWidget(widget.ARC, Object.assign({}, box, { start_angle: -90, end_angle: 270, color: 0x2a2a2a }))
-    arc = createWidget(widget.ARC, Object.assign({}, box, { start_angle: -90, end_angle: -90, color: spec.color }))
+    track = createWidget(widget.ARC, { x: 0, y: 0, w: 10, h: 10, radius: 5, line_width: big ? 6 : 4, start_angle: -90, end_angle: 270, color: 0x2a2a2a })
+    arc = createWidget(widget.ARC, { x: 0, y: 0, w: 10, h: 10, radius: 5, line_width: big ? 6 : 4, start_angle: -90, end_angle: -90, color: spec.color })
   }
-  const big = d > 80
-  const label = text(p.x - r, p.y - r * (big ? 0.62 : 0.6), d, big ? 22 : 16, big ? 17 : 12, spec.color, spec.label)
-  const value = text(p.x - r, p.y - (big ? 8 : 4), d, big ? 40 : 22, big ? 34 : 18, WHITE, '--')
-  return { arc, label, value }
+  const label = text(0, 0, d, big ? 22 : 16, big ? 17 : 12, spec.color, spec.label)
+  const value = text(0, 0, d, big ? 40 : 22, big ? 34 : 18, WHITE, '--')
+  function move(k) {
+    const p = at(spec.angle, dist * k)
+    const r = Math.round(d / 2 * k)
+    disc.setProperty(prop.MORE, { x: p.x - r, y: p.y - r, w: 2 * r, h: 2 * r, radius: r })
+    if (arc) {
+      const rr = r - 5
+      const box = { x: p.x - rr, y: p.y - rr, w: 2 * rr, h: 2 * rr, radius: rr }
+      track.setProperty(prop.MORE, box)
+      arc.setProperty(prop.MORE, box)
+    }
+    label.setProperty(prop.MORE, { x: p.x - r, y: Math.round(p.y - r * (big ? 0.62 : 0.6)), w: 2 * r })
+    value.setProperty(prop.MORE, { x: p.x - r, y: p.y - (big ? 8 : 4), w: 2 * r })
+  }
+  move(1)
+  return { arc, label, value, move }
 }
 
 WatchFace({
@@ -120,10 +143,23 @@ WatchFace({
     } catch (e) {}
 
     // Middle: the time, with the date above and seconds below.
-    createWidget(widget.CIRCLE, { center_x: C, center_y: C, radius: CENTER_D / 2, color: 0x1c1e1c })
+    const centre = createWidget(widget.CIRCLE, { center_x: C, center_y: C, radius: CENTER_D / 2, color: 0x1c1e1c })
     const dateText = text(C - 70, C - 58, 140, 24, 20, 0xa6e36e, '')
     const timeText = text(C - 75, C - 34, 150, 66, 56, WHITE, '')
     const ampmText = text(C - 70, C + 32, 140, 24, 18, GREY, '')
+    // Tapping the time opens the honeycomb app, where the bubbles can be dragged around.
+    const openHex = () => {
+      try {
+        router.launchApp({ appId: HEX_APP_ID, url: 'page/index' })
+      } catch (e) {
+        console.log('open Hex failed: ' + e)
+      }
+    }
+    for (const w of [centre, dateText, timeText, ampmText]) {
+      try {
+        w.addEventListener(event.CLICK_UP, openHex)
+      } catch (e) {}
+    }
 
     const ring = {}
     for (const spec of RING) ring[spec.key] = bubble(spec, RING_D, RING_DIST)
@@ -208,11 +244,29 @@ WatchFace({
       }
     }
 
+    /** The wake-up zoom: bubbles arrive larger and further out and settle into place. */
+    let zoom = null
+    function zoomIn() {
+      if (zoom !== null) clearInterval(zoom)
+      const started = Date.now()
+      const all = Object.keys(ring).map((k) => ring[k])
+      const step = () => {
+        const t = Math.min(1, (Date.now() - started) / ZOOM_MS)
+        const e = 1 - Math.pow(1 - t, 3)
+        const k = ZOOM_FROM + (1 - ZOOM_FROM) * e
+        for (const b of all) b.move(k)
+        if (t >= 1 && zoom !== null) { clearInterval(zoom); zoom = null }
+      }
+      step()
+      zoom = setInterval(step, 33)
+    }
+
     function start() {
       if (self.loop !== null) return
       lastMinute = -1
       refresh()
       self.loop = setInterval(refresh, 1000)
+      zoomIn()
     }
     function stop() {
       if (self.loop === null) return
