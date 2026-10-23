@@ -1,0 +1,51 @@
+{
+  "configVersion": "v2",
+  "app": {
+    "appId": 920424,
+    "appName": "Watch Reborn Hex",
+    "appType": "watchface",
+    "version": {
+      "code": 1,
+      "name": "0.1.0"
+    },
+    "icon": "icon.png",
+    "vender": "GlerschNersch",
+    "description": "Honeycomb data face from Watch Reborn: time in the middle, heart rate, steps, battery, weather, calories, distance, SpO2, stress, stand, PAI and sun times in the bubbles around it."
+  },
+  "permissions": [],
+  "runtime": {
+    "apiVersion": {
+      "compatible": "2.0.0",
+      "target": "2.0.0",
+      "minVersion": "2.0.0"
+    }
+  },
+  "targets": {
+    "default": {
+      "module": {
+        "watchface": {
+          "path": "watchface/index",
+          "main": 1,
+          "editable": 0,
+          "lockscreen": 0,
+          "hightCost": 0
+        }
+      },
+      "platforms": [
+        { "name": "trex3", "deviceSource": 8716545 },
+        { "name": "trex3-w", "deviceSource": 8716547 },
+        { "name": "trex3-cn", "deviceSource": 8716544 },
+        { "name": "trex3-pro-48", "deviceSource": 10551553 },
+        { "name": "trex3-pro-48-w", "deviceSource": 10551555 },
+        { "name": "trex3-pro-48-cn", "deviceSource": 10551552 }
+      ],
+      "designWidth": 480
+    }
+  },
+  "i18n": {
+    "en-US": {
+      "appName": "Watch Reborn Hex"
+    }
+  },
+  "defaultLanguage": "en-US"
+}

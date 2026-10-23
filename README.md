@@ -36,6 +36,11 @@ of the coming hours, and steps / calories / distance. Built with Zepp's Zeus CLI
 app with developer mode on, and `zeus dev` runs it in the Zepp OS Simulator.
 `python -I tools/make_ticks.py` redraws the tick images.
 
+`zepp-hex/` is a second face, **Watch Reborn Hex**: the watchOS app cluster's honeycomb, but
+every bubble is a reading. The time sits in the middle; heart rate, steps, battery, weather
+(high / low), calories and distance ring it; seconds, blood oxygen, stress, stand hours, PAI and
+the next sunrise or sunset fill the small bubbles toward the edge. Same `zeus` commands.
+
 ## Building
 
 Android Studio or `./gradlew :app:assembleDebug` (JDK 17, Android SDK 36). Release builds are
