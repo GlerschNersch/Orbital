@@ -268,14 +268,12 @@ class WatchView(
     private val searchBarRect = RectF()
     private val searchClearRect = RectF()
     private val centerSearchPillRect = RectF()
-    private val constellationPillRect = RectF()
-    private val topologyPillRect = RectF()
+
     private val chronoHudRect = RectF()
     private val nebulaHeaderRects = ArrayList<Triple<RectF, Float, Float>>()
     private val constellationChipRects = ArrayList<Pair<RectF, String>>()
     private val constellationCategoryChipRects = ArrayList<Pair<RectF, dev.watchreborn.apps.AppGroup>>()
     private val folderHeaderRect = RectF()
-    private val overviewPillRect = RectF()
     private val clusterPillRect = RectF()
     private val sheetRowRects = ArrayList<Pair<RectF, ClusterOption>>()
     private val sheetBoundsRect = RectF()
@@ -704,17 +702,6 @@ class WatchView(
         onTopologySelected(topo)
         performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
         invalidate()
-    }
-
-    fun cycleClusterTopology(): ClusterTopology {
-        val all = ClusterTopology.entries
-        val next = all[(clusterTopology.ordinal + 1) % all.size]
-        clusterTopology = next
-        overview.target = 0f
-        userZoom.target = if (next == ClusterTopology.NEBULA) 0.72f else 1f
-        performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-        invalidate()
-        return next
     }
 
     /**
@@ -2494,7 +2481,6 @@ class WatchView(
         // Top-left is intentionally empty: Overview is reached by pinching out (and a
         // double-tap on empty space resets zoom), so no permanent Overview pill competes
         // with the bubbles. Overview itself is now signalled by the crown-track thumb.
-        overviewPillRect.setEmpty()
 
         // Top-right: Cluster Mode selector button
         clusterPillRect.set(w - dp(14f) - sideW, y, w - dp(14f), y + pillH)
@@ -2578,7 +2564,7 @@ class WatchView(
             add(Triple(ClusterOption.LIVE_WIDGETS, "Live Grid Widgets", if (liveWidgets) "⚡ Media, Timer, Calendar & Vitals On" else "⚪ Off (Apps & Folders Only)"))
             add(Triple(ClusterOption.AUTO_FOLDERS, "Category Clustering", if (autoFolders) "🟢 Auto Folders On" else "⚪ Loose Apps Only"))
             add(Triple(null, "ACTIONS", ""))
-            add(Triple(ClusterOption.CONSTELLATION_SEARCH, "App Search", "🔍 Search — folders unravel into the constellation"))
+            add(Triple(ClusterOption.CONSTELLATION_SEARCH, "App Search", "🔍 Search all apps in the constellation"))
             add(Triple(ClusterOption.SYSTEM_WIDGETS, "Android System Widgets", "🧩 Tap to View / Add App Widgets"))
             add(Triple(ClusterOption.SET_DEFAULT_HOME, "Default Phone Launcher", "📲 Tap to Set Watch Reborn as Home App"))
             if (pinnedItemKeys.isNotEmpty()) {
@@ -2936,16 +2922,12 @@ class WatchView(
     private fun drawPill(c: Canvas, w: Float, bottom: Float, alpha: Float) {
         if (alpha <= 0.01f) {
             pill.setEmpty()
-            constellationPillRect.setEmpty()
-            topologyPillRect.setEmpty()
             return
         }
         val ph = dp(Metrics.PHONE_PILL_H_DP)
         val pw = dp(Metrics.PHONE_PILL_W_DP)
         val py = bottom - ph - dp(16f)
 
-        constellationPillRect.setEmpty()
-        topologyPillRect.setEmpty()
         pill.set(w / 2 - pw / 2, py, w / 2 + pw / 2, py + ph)
         fill.color = Color.argb((alpha * 230).toInt(), 44, 44, 46)
         c.drawRoundRect(pill, ph / 2, ph / 2, fill)

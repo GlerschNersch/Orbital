@@ -325,8 +325,8 @@ class MainActivity : Activity(), SensorEventListener {
     private fun handleClusterOptionChanged(opt: ClusterOption) {
         when (opt) {
             ClusterOption.CLUSTER_TOPOLOGY -> {
-                val next = view.cycleClusterTopology()
-                prefs.edit().putString(KEY_CLUSTER_TOPOLOGY, next.name).apply()
+                // Handled inside WatchView: the sheet row opens the topology picker
+                // and selections persist via handleTopologySelected.
             }
             ClusterOption.BUBBLE_PHYSICS -> {
                 val next = !view.bubblePhysics

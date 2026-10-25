@@ -7,3 +7,6 @@ local.properties
 *.iml
 .kotlin/
 __pycache__/
+ 
+*.bak-* 
+wr_*.png 
