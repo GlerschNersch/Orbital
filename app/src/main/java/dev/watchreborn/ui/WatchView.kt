@@ -149,6 +149,58 @@ class WatchView(
     /** When true, pins are stored per cluster layout instead of one global set. */
     var perLayoutPins: Boolean = false
 
+    // --- Bubble motion (0.3.2): per-item position glide, carried-bubble spring, drop glide.
+    /** Seconds since the previous frame, set at the top of onDraw. */
+    private var frameDtSec: Float = 1f / 60f
+
+    /** Set during a draw pass when any glide/spring is still travelling; keeps the frame loop alive. */
+    private var motionAnimating: Boolean = false
+
+    /** Animated world positions per item key (grid space and folder-view space are separate maps). */
+    private val glidePosGrid = HashMap<String, FloatArray>()
+    private val glidePosFolder = HashMap<String, FloatArray>()
+    private val glideTmp = FloatArray(2)
+
+    /** Carried-bubble spring state: the bubble lags the finger slightly and pops to 1.12x. */
+    private var placeDrawX: Float = 0f
+    private var placeDrawY: Float = 0f
+    private var placeScale: Float = 1f
+
+    /** A bubble gliding from the drop point into its slot after a placement. */
+    private data class DropAnim(
+        val item: GridItem,
+        val fromX: Float,
+        val fromY: Float,
+        val fromDia: Float,
+        val toKey: String,
+        val shrink: Boolean,
+        val startMs: Long,
+    )
+
+    private var dropAnim: DropAnim? = null
+
+    /** Damps [key]'s animated position toward (tx, ty); far jumps snap. Result lands in [glideTmp]. */
+    private fun glideToward(map: HashMap<String, FloatArray>, key: String, tx: Float, ty: Float, snapDist: Float) {
+        val g = map.getOrPut(key) { floatArrayOf(tx, ty) }
+        val dist = hypot(tx - g[0], ty - g[1])
+        when {
+            dist > snapDist -> {
+                g[0] = tx; g[1] = ty
+            }
+            dist > 0.4f -> {
+                val f = Motion.dampFactor(frameDtSec, 0.11f)
+                g[0] += (tx - g[0]) * f
+                g[1] += (ty - g[1]) * f
+                motionAnimating = true
+            }
+            else -> {
+                g[0] = tx; g[1] = ty
+            }
+        }
+        glideTmp[0] = g[0]
+        glideTmp[1] = g[1]
+    }
+
     /** Usage growth: bubbles scale with how much their app is used. */
     var usageGrowth: Boolean = true
 
@@ -419,6 +471,16 @@ class WatchView(
         byUse = use
         folderItems = folders
         flatWidgetItems = flatWithWidgets
+        // Prune glide state for items that no longer exist.
+        val liveKeys = HashSet<String>()
+        folders.forEach { item ->
+            liveKeys += item.key
+            if (item is Folder) item.apps.forEach { liveKeys += it.key }
+        }
+        flatWithWidgets.forEach { liveKeys += it.key }
+        use.forEach { liveKeys += it.key }
+        glidePosGrid.keys.retainAll(liveKeys)
+        glidePosFolder.keys.retainAll(liveKeys)
         rebuildGridHexes()
         activeFolder?.let { cur ->
             val updated = folders.filterIsInstance<Folder>().firstOrNull { it.group == cur.group }
@@ -869,6 +931,10 @@ class WatchView(
         placeHoverSlot = slot
         placeX = downX
         placeY = downY
+        placeDrawX = downX
+        placeDrawY = downY
+        placeScale = 1f
+        dropAnim = null
         placeMoved = false
         placeInFolder = inFolder
         placeFolder = if (inFolder) activeFolder else null
@@ -903,11 +969,19 @@ class WatchView(
                 performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
                 // Dropping an app onto a folder bubble files it into that folder.
                 val hoverItem = hits.firstOrNull { it.slotIndex == hover }?.item
+                val carriedDia = (hits.firstOrNull { it.slotIndex == from }?.r ?: dp(31f)) * 2f * placeScale
                 if (!inFolder && item is App && hoverItem is Folder) {
+                    // Glide into the folder bubble and shrink away.
+                    dropAnim = DropAnim(item, placeDrawX, placeDrawY, carriedDia, hoverItem.key, true, SystemClock.uptimeMillis())
                     onFileIntoFolder(item, hoverItem, hover)
                 } else if (inFolder && folder != null) {
+                    // Folder members glide via their own position springs.
                     onReorderFolderMember(folder, from, hover)
                 } else {
+                    // The overlay owns this bubble's flight; the grid copy snaps
+                    // to the new slot underneath it (hidden until arrival).
+                    glidePosGrid.remove(item.key)
+                    dropAnim = DropAnim(item, placeDrawX, placeDrawY, carriedDia, item.key, false, SystemClock.uptimeMillis())
                     onPlaceItem(item, hover)
                 }
             }
@@ -915,8 +989,40 @@ class WatchView(
         }
     }
 
+    /** The 240ms glide that flies a dropped bubble from the release point into its slot. */
+    private fun drawDropAnim(c: Canvas, cal: Calendar, alpha: Float, bubbleX: FloatArray, bubbleY: FloatArray, bubbleDia: FloatArray) {
+        val da = dropAnim ?: return
+        val items = activeGridItems
+        val idx = items.indexOfFirst { it.key == da.toKey }
+        if (idx < 0 || idx >= bubbleDia.size || bubbleDia[idx] <= 2f) {
+            dropAnim = null
+            return
+        }
+        val p = ((SystemClock.uptimeMillis() - da.startMs) / 240f).coerceIn(0f, 1f)
+        val e = Motion.easeOutCubic(p)
+        val endDia = bubbleDia[idx] * if (da.shrink) 0.45f else 1f
+        val x = Motion.lerp(da.fromX, bubbleX[idx], e)
+        val y = Motion.lerp(da.fromY, bubbleY[idx], e)
+        val d = Motion.lerp(da.fromDia, endDia, e)
+        drawGridItem(c, da.item, x, y, d, alpha, cal)
+        if (p >= 1f) dropAnim = null else motionAnimating = true
+    }
+
+    /** Advances the carried-bubble spring one frame (finger trail + pickup pop). */
+    private fun advancePlaceSpring() {
+        val pf = Motion.dampFactor(frameDtSec, 0.055f)
+        placeDrawX += (placeX - placeDrawX) * pf
+        placeDrawY += (placeY - placeDrawY) * pf
+        val sf = Motion.dampFactor(frameDtSec, 0.09f)
+        placeScale += (1.12f - placeScale) * sf
+        if (hypot(placeX - placeDrawX, placeY - placeDrawY) > 0.6f || abs(1.12f - placeScale) > 0.005f) {
+            motionAnimating = true
+        }
+    }
+
     private fun drawPlaceOverlay(c: Canvas, cal: Calendar, alpha: Float) {
         val item = placeItem ?: return
+        advancePlaceSpring()
         // Release zone for unpinning, offered while carrying a pinned bubble.
         if (placeMoved && item.key in pinnedItemKeys) {
             val zw = dp(210f)
@@ -952,8 +1058,8 @@ class WatchView(
             c.drawCircle(hover.x, hover.y, hover.r + dp(3f), stroke)
         }
         // The carried bubble itself, slightly enlarged, under the finger.
-        val d = (origin?.r ?: dp(31f)) * 2f * 1.12f
-        drawGridItem(c, item, placeX, placeY, d, alpha, cal)
+        val d = (origin?.r ?: dp(31f)) * 2f * placeScale
+        drawGridItem(c, item, placeDrawX, placeDrawY, d, alpha, cal)
     }
 
     fun openClusterSheet() {
@@ -1541,6 +1647,8 @@ class WatchView(
         val now = SystemClock.uptimeMillis()
         val dt = if (lastFrame == 0L) 1 / 60f else ((now - lastFrame) / 1000f).coerceAtMost(0.05f)
         lastFrame = now
+        frameDtSec = dt
+        motionAnimating = false
 
         val springs = arrayOf(apps, grid, overview, userZoom, constellationZoom, folderIn, widgetIn, clusterSheet, constellationIn, list, stackIn, controlIn, panX, panY, folderPanX, folderPanY, constellationPanX, constellationPanY, stackScroll)
         for (s in springs) s.step(dt)
@@ -1597,7 +1705,7 @@ class WatchView(
             if (clusterSheet.value > 0.001f) drawClusterSheet(c, w, h, top, bottom, clusterSheet.value)
         }
 
-        val animating = springs.any { !it.settled } || abs(listVelocity) > 1f || dragging || physicsAnimating
+        val animating = springs.any { !it.settled } || abs(listVelocity) > 1f || dragging || physicsAnimating || motionAnimating
         if (animating) postInvalidateOnAnimation()
         else {
             lastFrame = 0L
@@ -1705,6 +1813,16 @@ class WatchView(
             computeTopologyWorldPos(i, items.size, basePitch, tmp)
             var worldX = tmp[0]
             var worldY = tmp[1]
+
+            // Position glide: when an item's slot changes (placement, filing, a
+            // layout switch), its world position springs to the new slot instead
+            // of teleporting. Pan/zoom/fisheye still apply on top. Liquid Pool
+            // has its own simulated motion and opts out.
+            if (!isPool) {
+                glideToward(glidePosGrid, item.key, worldX, worldY, basePitch * 4.5f)
+                worldX = glideTmp[0]
+                worldY = glideTmp[1]
+            }
 
             // Apply Jello / Wake Wave spring displacement & tilt parallax when physics is enabled
             if (bubblePhysics && !isPool && i in wakeDispX.indices) {
@@ -1953,6 +2071,9 @@ class WatchView(
                 val dia = bubbleDia[i]
                 if (dia <= 2f) continue
                 val item = items[i]
+                // While a drop glide is flying this bubble to its slot, the
+                // overlay draws it; the grid copy stays hidden.
+                if (dropAnim?.item?.key == item.key) continue
                 val x = bubbleX[i]
                 val y = bubbleY[i]
                 val bAlpha = itemAlpha * bubbleDepthAlpha[i]
@@ -2021,6 +2142,7 @@ class WatchView(
         if (nearest != null) centredItemKey = nearest.key
 
         if (placeItem != null) drawPlaceOverlay(c, cal, alpha)
+        drawDropAnim(c, cal, alpha, bubbleX, bubbleY, bubbleDia)
         drawGridHeader(c, w, top, nearest, ov, alpha)
     }
 
@@ -3099,6 +3221,11 @@ class WatchView(
         for (i in folder.apps.indices) {
             if (i >= folderHexes.size) break
             pointyCenter(folderHexes[i], Metrics.GRID_PITCH * u * 1.08f, tmp)
+            // Same position glide as the grid, in folder-view space: reordered
+            // members slide to their new spots instead of snapping.
+            glideToward(glidePosFolder, folder.apps[i].key, tmp[0], tmp[1], Metrics.GRID_PITCH * u * 1.08f * 4.5f)
+            tmp[0] = glideTmp[0]
+            tmp[1] = glideTmp[1]
             val dx = (tmp[0] + folderPanX.value) / u
             val dy = (tmp[1] + folderPanY.value) / u
             val d = hypot(dx / sx, dy / sy)
@@ -3131,8 +3258,9 @@ class WatchView(
             }
             val app = item as? App
             if (app != null) {
-                val d = (origin?.r ?: dp(31f)) * 2f * 1.12f
-                drawIcon(c, app.icon, placeX, placeY, d, alpha, hasNotification(app), app.key in pinnedItemKeys)
+                advancePlaceSpring()
+                val d = (origin?.r ?: dp(31f)) * 2f * placeScale
+                drawIcon(c, app.icon, placeDrawX, placeDrawY, d, alpha, hasNotification(app), app.key in pinnedItemKeys)
             }
         }
 
