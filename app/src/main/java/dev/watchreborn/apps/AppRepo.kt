@@ -2,6 +2,7 @@ package dev.watchreborn.apps
 
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.LauncherActivityInfo
 import android.content.pm.LauncherApps
@@ -10,31 +11,82 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RectF
 import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
+import android.net.Uri
 import android.os.Process
 import android.os.UserHandle
 import android.os.UserManager
+import android.provider.MediaStore
 import dev.watchreborn.listedProfiles
 import java.text.Collator
+import kotlin.math.cos
+import kotlin.math.sin
 
-/** One launchable app, its round icon (and a blurred copy for the backdrop behind the cluster). */
+/** Anything that can sit on a cell of the honeycomb grid or in a list row. */
+sealed interface GridItem {
+    val key: String
+    val label: String
+    val icon: Bitmap
+    val blurred: Bitmap
+    val blurredScale: Float
+}
+
+/** One launchable app, its round icon, its blurred copy, and its classified category group. */
 class App(
-    val key: String,
-    val label: String,
+    override val key: String,
+    override val label: String,
     val component: ComponentName,
     val user: UserHandle,
     val system: Boolean,
-    val icon: Bitmap,
-    /** Small and soft: drawn [blurredScale] times the icon's size, as it carries a blur margin. */
-    val blurred: Bitmap,
-    val blurredScale: Float,
-)
+    override val icon: Bitmap,
+    override val blurred: Bitmap,
+    override val blurredScale: Float,
+    val defaultGroup: AppGroup,
+) : GridItem
+
+enum class WidgetKind(val key: String, val label: String, val tint: Int) {
+    CORE_CLOCK("widget:core_clock", "Clock & Status", 0xFFA6E36E.toInt()),
+    NOW_PLAYING("widget:now_playing", "Now Playing", 0xFFFF375F.toInt()),
+    CONTROLS("widget:controls", "Control Cluster", 0xFF64D2FF.toInt()),
+    VITALS("widget:vitals", "Vitals & Rings", 0xFF30D158.toInt()),
+    TIMER("widget:timer", "Quick Timer", 0xFFFF9F0A.toInt()),
+    CALENDAR("widget:calendar", "Calendar & Up Next", 0xFFFF453A.toInt()),
+}
 
 /**
- * Loads apps from every listed profile (Private Space stays out) and keeps how often and how
- * recently each was opened: watchOS 27's grid puts the apps you use most in the middle.
+ * A live canvas-rendered honeycomb bubble (#1 Center Core Clock Hub or #5 Live Media / Controls / Vitals).
+ */
+class WidgetBubble(
+    val kind: WidgetKind,
+    override val icon: Bitmap,
+    override val blurred: Bitmap,
+    override val blurredScale: Float,
+) : GridItem {
+    override val key: String = kind.key
+    override val label: String = kind.label
+}
+
+/**
+ * A honeycomb cluster folder containing [apps] in [group]. Its [icon] is a circular platter with a
+ * miniature 7-icon watchOS focus cluster drawn inside.
+ */
+class Folder(
+    val group: AppGroup,
+    val apps: List<App>,
+    override val icon: Bitmap,
+    override val blurred: Bitmap,
+    override val blurredScale: Float,
+) : GridItem {
+    override val key: String = "folder:${group.name}"
+    override val label: String = group.title
+}
+
+/**
+ * Loads apps from every listed profile (Private Space stays out), classifies them into [AppGroup]
+ * folders, manages fixed spatial neighborhoods & slot pins, and tracks app usage.
  */
 class AppRepo(private val context: Context) {
     private val launcherApps = context.getSystemService(LauncherApps::class.java)
@@ -43,23 +95,37 @@ class AppRepo(private val context: Context) {
 
     fun load(iconPx: Int): List<App> {
         val me = Process.myUserHandle()
+        val rolesByPkg = detectRoles()
         val out = ArrayList<App>()
         for (user in launcherApps.listedProfiles) {
             for (info in launcherApps.getActivityList(null, user)) {
-                if (info.componentName.packageName == context.packageName) continue
+                val pkg = info.componentName.packageName
+                if (pkg == context.packageName) continue
                 val serial = users.getSerialNumberForUser(user)
                 val key = "${info.componentName.flattenToShortString()}#$serial"
+                val label = info.label?.toString()?.trim().orEmpty().ifEmpty { pkg }
                 val icon = roundIcon(info, user.takeIf { it != me }, iconPx)
                 val (soft, softScale) = blur(icon)
+                val appInfo = info.applicationInfo
+                @Suppress("DEPRECATION")
+                val isGame = (appInfo.flags and ApplicationInfo.FLAG_IS_GAME) != 0
+                val group = AppClassifier.classify(
+                    label = label,
+                    packageName = pkg,
+                    category = appInfo.category,
+                    isGame = isGame,
+                    roles = rolesByPkg[pkg].orEmpty(),
+                )
                 out += App(
                     key = key,
-                    label = info.label?.toString()?.trim().orEmpty().ifEmpty { info.componentName.packageName },
+                    label = label,
                     component = info.componentName,
                     user = user,
-                    system = info.applicationInfo.flags and ApplicationInfo.FLAG_SYSTEM != 0,
+                    system = appInfo.flags and ApplicationInfo.FLAG_SYSTEM != 0,
                     icon = icon,
                     blurred = soft,
                     blurredScale = softScale,
+                    defaultGroup = group,
                 )
             }
         }
@@ -67,11 +133,299 @@ class AppRepo(private val context: Context) {
         return out.sortedWith { a, b -> collator.compare(a.label, b.label) }
     }
 
+    /** Effective group for [app], respecting any user override. */
+    fun groupOf(app: App): AppGroup {
+        val over = prefs.getString("group:${app.key}", null) ?: return app.defaultGroup
+        return runCatching { AppGroup.valueOf(over) }.getOrDefault(app.defaultGroup)
+    }
+
+    fun setGroupOverride(app: App, group: AppGroup?) {
+        val e = prefs.edit()
+        if (group == null || group == app.defaultGroup) e.remove("group:${app.key}")
+        else e.putString("group:${app.key}", group.name)
+        e.apply()
+    }
+
     /**
-     * Most used first (opens, with recent ones counting more). Apps never opened from here follow:
-     * the phone's default Phone, Messages, Camera, browser, email and maps apps first, so a fresh
-     * install starts with useful apps in the middle rather than whatever sorts first A-Z.
+     * Pin storage. A null [scope] is the global pin set ("pin:<key>"); a non-null
+     * scope (a topology name, when per-layout pins are enabled) stores a separate
+     * set ("pin@<scope>:<key>") so each cluster layout can have its own arrangement.
      */
+    private fun pinKey(itemKey: String, scope: String?): String =
+        if (scope == null) "pin:$itemKey" else "pin@$scope:$itemKey"
+
+    private fun pinPrefix(scope: String?): String =
+        if (scope == null) "pin:" else "pin@$scope:"
+
+    /** Returns the pinned hex slot index for [itemKey], or null if unpinned. */
+    fun pinnedSlotOf(itemKey: String, scope: String? = null): Int? {
+        val v = prefs.getInt(pinKey(itemKey, scope), -1)
+        return if (v >= 0) v else null
+    }
+
+    fun isPinned(itemKey: String, scope: String? = null): Boolean = pinnedSlotOf(itemKey, scope) != null
+
+    /** The item key currently pinned at [slot] within [scope], or null. */
+    fun keyPinnedAt(slot: Int, scope: String? = null): String? {
+        val prefix = pinPrefix(scope)
+        for ((k, v) in prefs.all) {
+            if (k.startsWith(prefix) && v == slot) return k.removePrefix(prefix)
+        }
+        return null
+    }
+
+    fun setPinnedSlot(itemKey: String, slotIndex: Int?, scope: String? = null) {
+        val e = prefs.edit()
+        val prefix = pinPrefix(scope)
+        if (slotIndex == null || slotIndex < 0) {
+            e.remove(pinKey(itemKey, scope))
+        } else {
+            // Clear any previous occupant of this slot (within the same scope)
+            prefs.all.keys.filter { it.startsWith(prefix) && prefs.getInt(it, -1) == slotIndex }
+                .forEach { e.remove(it) }
+            e.putInt(pinKey(itemKey, scope), slotIndex)
+        }
+        e.apply()
+    }
+
+    fun clearAllPins() {
+        val e = prefs.edit()
+        prefs.all.keys.filter { it.startsWith("pin:") || it.startsWith("pin@") }.forEach { e.remove(it) }
+        e.apply()
+    }
+
+    /** Custom member order for a folder (app keys), set by drag-arranging in Folder view. */
+    fun folderOrder(group: AppGroup): List<String> =
+        prefs.getString("forder:${group.name}", null)?.split(",")?.filter { it.isNotEmpty() } ?: emptyList()
+
+    fun setFolderOrder(group: AppGroup, keys: List<String>) {
+        prefs.edit().putString("forder:${group.name}", keys.joinToString(",")).apply()
+    }
+
+    /** Members with a saved custom order come first (in that order); the rest keep their incoming order. */
+    fun applyFolderOrder(group: AppGroup, members: List<App>): List<App> {
+        val order = folderOrder(group)
+        if (order.isEmpty()) return members
+        val rank = order.withIndex().associate { it.value to it.index }
+        return members.sortedBy { rank[it.key] ?: Int.MAX_VALUE }
+    }
+
+    /**
+     * Builds the Honeycomb items when Auto Folders is enabled:
+     * - When [fixedNeighborhoods] is true, the 7 core slots stay anchored to essentials/pinned items
+     *   in a fixed order, and category [Folder] bubbles are arranged in fixed [AppGroup.compassOrder]
+     *   around the honeycomb so spatial muscle memory is preserved.
+     * - When [fixedNeighborhoods] is false, items and folders sort dynamically by recent usage.
+     * - Any item with a saved pin (`pin:<key>`) is locked to its exact hex index.
+     */
+    fun buildFolderGrid(
+        alphabetical: List<App>,
+        byUse: List<App>,
+        iconPx: Int,
+        fixedNeighborhoods: Boolean,
+        coreClockHub: Boolean = false,
+        liveWidgets: Boolean = false,
+        pinScope: String? = null,
+    ): List<GridItem> {
+        val widgets = if (coreClockHub || liveWidgets) buildWidgetBubbles(iconPx) else emptyMap()
+        val coreTake = if (coreClockHub) 6 else 7
+        if (byUse.size <= coreTake) {
+            val small = buildList {
+                if (coreClockHub) widgets[WidgetKind.CORE_CLOCK]?.let(::add)
+                addAll(byUse)
+                if (liveWidgets) {
+                    widgets[WidgetKind.NOW_PLAYING]?.let(::add)
+                    widgets[WidgetKind.CONTROLS]?.let(::add)
+                    widgets[WidgetKind.VITALS]?.let(::add)
+                    widgets[WidgetKind.TIMER]?.let(::add)
+                    widgets[WidgetKind.CALENDAR]?.let(::add)
+                }
+            }
+            return applyPins(small, pinScope)
+        }
+        val essentials = essentialPackages()
+        fun essentialRank(a: App) = essentials.indexOf(a.component.packageName).let { if (it < 0) Int.MAX_VALUE else it }
+
+        val primary = if (fixedNeighborhoods) {
+            // Fixed core: essentials first in fixed role order, then alphabetical fallback
+            alphabetical.sortedWith(compareBy<App> { essentialRank(it) }.thenBy { it.label }).take(coreTake)
+        } else {
+            byUse.take(coreTake)
+        }
+        val primaryKeys = primary.mapTo(HashSet()) { it.key }
+        val sourceApps = if (fixedNeighborhoods) alphabetical else byUse
+        val byGroup = sourceApps.groupBy(::groupOf)
+        val folders = ArrayList<Folder>()
+        val loose = ArrayList<App>()
+        val now = System.currentTimeMillis()
+
+        for (g in AppGroup.entries) {
+            val members = byGroup[g].orEmpty()
+            if (g == AppGroup.OTHER || members.size < 2) {
+                for (m in members) if (m.key !in primaryKeys) loose += m
+            } else {
+                // Sort members inside each folder: a saved drag-arranged order wins;
+                // otherwise essentials/used first, or stable when fixed.
+                val sortedMembers = if (fixedNeighborhoods) {
+                    members.sortedWith(compareByDescending<App> { isPinned(it.key, pinScope) }.thenBy { essentialRank(it) }.thenBy { it.label })
+                } else {
+                    members
+                }
+                val orderedMembers = applyFolderOrder(g, sortedMembers)
+                val bmp = renderFolderIcon(g, orderedMembers, iconPx)
+                val (soft, softScale) = blur(bmp)
+                folders += Folder(g, orderedMembers, bmp, soft, softScale)
+            }
+        }
+
+        if (fixedNeighborhoods) {
+            folders.sortBy { it.group.compassOrder }
+        } else {
+            folders.sortByDescending { f -> f.apps.sumOf { score(it.key, now).toDouble() } }
+        }
+
+        val base = buildList {
+            if (coreClockHub) widgets[WidgetKind.CORE_CLOCK]?.let(::add)
+            addAll(primary)
+            if (liveWidgets) {
+                widgets[WidgetKind.NOW_PLAYING]?.let(::add)
+                widgets[WidgetKind.CONTROLS]?.let(::add)
+                widgets[WidgetKind.VITALS]?.let(::add)
+                widgets[WidgetKind.TIMER]?.let(::add)
+                widgets[WidgetKind.CALENDAR]?.let(::add)
+            }
+            addAll(folders)
+            addAll(loose)
+        }
+        return applyPins(base, pinScope)
+    }
+
+    fun buildFlatGridWithWidgets(
+        byUse: List<App>,
+        iconPx: Int,
+        coreClockHub: Boolean,
+        liveWidgets: Boolean,
+        pinScope: String? = null,
+    ): List<GridItem> {
+        if (!coreClockHub && !liveWidgets) return applyPins(byUse, pinScope)
+        val widgets = buildWidgetBubbles(iconPx)
+        val coreTake = if (coreClockHub) 6 else 7
+        val base = buildList {
+            if (coreClockHub) widgets[WidgetKind.CORE_CLOCK]?.let(::add)
+            addAll(byUse.take(coreTake))
+            if (liveWidgets) {
+                widgets[WidgetKind.NOW_PLAYING]?.let(::add)
+                widgets[WidgetKind.CONTROLS]?.let(::add)
+                widgets[WidgetKind.VITALS]?.let(::add)
+                widgets[WidgetKind.TIMER]?.let(::add)
+                widgets[WidgetKind.CALENDAR]?.let(::add)
+            }
+            addAll(byUse.drop(coreTake))
+        }
+        return applyPins(base, pinScope)
+    }
+
+    private fun buildWidgetBubbles(px: Int): Map<WidgetKind, WidgetBubble> {
+        val out = HashMap<WidgetKind, WidgetBubble>()
+        for (kind in WidgetKind.entries) {
+            val bmp = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
+            val c = Canvas(bmp)
+            val p = Paint(Paint.ANTI_ALIAS_FLAG)
+            val cx = px / 2f
+            val cy = px / 2f
+            p.style = Paint.Style.FILL
+            p.color = Color.rgb(
+                (24 + Color.red(kind.tint) * 0.16f).toInt(),
+                (26 + Color.green(kind.tint) * 0.16f).toInt(),
+                (30 + Color.blue(kind.tint) * 0.16f).toInt(),
+            )
+            c.drawCircle(cx, cy, px * 0.48f, p)
+            p.style = Paint.Style.STROKE
+            p.strokeWidth = px * 0.04f
+            p.color = kind.tint
+            c.drawCircle(cx, cy, px * 0.44f, p)
+            val (soft, softScale) = blur(bmp)
+            out[kind] = WidgetBubble(kind, bmp, soft, softScale)
+        }
+        return out
+    }
+
+    /** Locks any pinned [GridItem] into its saved slot index while filling remaining slots in order. */
+    fun <T : GridItem> applyPins(items: List<T>, scope: String? = null): List<T> {
+        if (items.isEmpty()) return items
+        val n = items.size
+        val pinnedBySlot = HashMap<Int, T>()
+        val unpinned = ArrayList<T>(n)
+        for (item in items) {
+            val slot = pinnedSlotOf(item.key, scope)?.coerceIn(0, n - 1)
+            if (slot != null && slot !in pinnedBySlot) {
+                pinnedBySlot[slot] = item
+            } else {
+                unpinned += item
+            }
+        }
+        if (pinnedBySlot.isEmpty()) return items
+        val out = ArrayList<T>(n)
+        val iter = unpinned.iterator()
+        for (i in 0 until n) {
+            val p = pinnedBySlot[i]
+            if (p != null) out += p
+            else if (iter.hasNext()) out += iter.next()
+        }
+        while (iter.hasNext()) out += iter.next()
+        return out
+    }
+
+    /** Renders a circular watchOS platter containing a miniature 7-icon cluster + tinted ring. */
+    private fun renderFolderIcon(group: AppGroup, members: List<App>, px: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        val cx = px / 2f
+        val cy = px / 2f
+
+        // Dark tinted platter
+        paint.style = Paint.Style.FILL
+        paint.color = Color.rgb(
+            (28 + Color.red(group.tint) * 0.12f).toInt(),
+            (30 + Color.green(group.tint) * 0.12f).toInt(),
+            (34 + Color.blue(group.tint) * 0.12f).toInt(),
+        )
+        c.drawCircle(cx, cy, px * 0.48f, paint)
+
+        // Outer category accent ring
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = px * 0.032f
+        paint.color = Color.argb(185, Color.red(group.tint), Color.green(group.tint), Color.blue(group.tint))
+        c.drawCircle(cx, cy, px * 0.465f, paint)
+
+        // Subtle center hub halo to distinguish the center open target from the 6 outer Quick-Snipe icons
+        paint.strokeWidth = px * 0.014f
+        paint.color = Color.argb(110, Color.red(group.tint), Color.green(group.tint), Color.blue(group.tint))
+        c.drawCircle(cx, cy, px * 0.152f, paint)
+
+        // Mini 7-icon cluster inside
+        val rect = RectF()
+        val centerR = px * 0.135f
+        val ringR = px * 0.115f
+        val orbit = px * 0.265f
+        members.take(7).forEachIndexed { i, app ->
+            val (ix, iy, ir) = if (i == 0) {
+                Triple(cx, cy, centerR)
+            } else {
+                val ang = Math.toRadians((i - 1) * 60.0 - 90.0)
+                Triple(
+                    cx + (cos(ang) * orbit).toFloat(),
+                    cy + (sin(ang) * orbit).toFloat(),
+                    ringR,
+                )
+            }
+            rect.set(ix - ir, iy - ir, ix + ir, iy + ir)
+            c.drawBitmap(app.icon, null, rect, paint)
+        }
+        return bmp
+    }
+
     fun byUse(apps: List<App>): List<App> {
         val now = System.currentTimeMillis()
         val essentials = essentialPackages()
@@ -83,20 +437,36 @@ class AppRepo(private val context: Context) {
         ).map { it.value }
     }
 
-    /** The default apps for calling, messaging, the camera, the web, email and maps, in that order. */
+    private fun detectRoles(): Map<String, Set<AppRole>> {
+        val pm = context.packageManager
+        val pairs = listOf(
+            AppRole.DIALER to Intent(Intent.ACTION_DIAL),
+            AppRole.SMS to Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:")),
+            AppRole.CAMERA to Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA),
+            AppRole.BROWSER to Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com/")),
+            AppRole.EMAIL to Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:")),
+        )
+        val out = HashMap<String, MutableSet<AppRole>>()
+        for ((role, intent) in pairs) {
+            val pkg = runCatching { pm.resolveActivity(intent, 0)?.activityInfo?.packageName }.getOrNull()
+                ?.takeIf { it != "android" } ?: continue
+            out.getOrPut(pkg) { HashSet() }.add(role)
+        }
+        return out
+    }
+
     private fun essentialPackages(): List<String> {
         val pm = context.packageManager
         val intents = listOf(
-            android.content.Intent(android.content.Intent.ACTION_DIAL),
-            android.content.Intent(android.content.Intent.ACTION_SENDTO, android.net.Uri.parse("smsto:")),
-            android.content.Intent(android.provider.MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA),
-            android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://example.com/")),
-            android.content.Intent(android.content.Intent.ACTION_SENDTO, android.net.Uri.parse("mailto:")),
-            android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("geo:0,0")),
+            Intent(Intent.ACTION_DIAL),
+            Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:")),
+            Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA),
+            Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com/")),
+            Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:")),
+            Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0")),
         )
         return intents.mapNotNull { intent ->
             runCatching { pm.resolveActivity(intent, 0)?.activityInfo?.packageName }.getOrNull()
-                // "android" is the system chooser: no default set.
                 ?.takeIf { it != "android" }
         }.distinct()
     }
@@ -110,22 +480,15 @@ class AppRepo(private val context: Context) {
         val count = prefs.getInt("n:$key", 0)
         if (count == 0) return 0f
         val days = (now - prefs.getLong("t:$key", 0L)) / 86_400_000f
-        // A week-old app counts half as much as one opened today.
         return count / (1f + days / 7f)
     }
 
-    /**
-     * The app's icon as a full-bleed circle, like the watch's. Adaptive icons are drawn from their
-     * own layers (the circle shows their middle, as the system mask would); legacy icons sit on a
-     * dark disc.
-     */
     private fun roundIcon(info: LauncherActivityInfo, otherUser: UserHandle?, px: Int): Bitmap {
         val bmp = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
         c.clipPath(Path().apply { addCircle(px / 2f, px / 2f, px / 2f, Path.Direction.CW) })
         val d = info.getIcon(0)
         if (d is AdaptiveIconDrawable) {
-            // Each layer is 1.5x the icon (108 dp around a 72 dp view), centred.
             val bleed = px / 4
             for (layer in listOfNotNull(d.background, d.foreground)) {
                 layer.setBounds(-bleed, -bleed, px + bleed, px + bleed)
@@ -138,7 +501,6 @@ class AppRepo(private val context: Context) {
             d.draw(c)
         }
         if (otherUser == null) return bmp
-        // Work apps keep Android's briefcase badge.
         val badged = context.packageManager.getUserBadgedIcon(BitmapDrawable(context.resources, bmp), otherUser)
         return toBitmap(badged, px).also { if (it !== bmp) bmp.recycle() }
     }
@@ -151,15 +513,9 @@ class AppRepo(private val context: Context) {
         return out
     }
 
-    /**
-     * A soft copy for the out-of-focus apps: shrunk to a sixth and box-blurred three times (close
-     * to a Gaussian). It stays small (about 2% of the icon's memory) and is stretched when drawn;
-     * returns it with how much bigger than the icon to draw it, for its blur margin.
-     */
     private fun blur(src: Bitmap): Pair<Bitmap, Float> {
         val sw = (src.width / 6).coerceAtLeast(8)
         val sh = (src.height / 6).coerceAtLeast(8)
-        // A transparent margin so the blur can spread past the circle's edge.
         val pad = 4
         val small = Bitmap.createBitmap(sw + 2 * pad, sh + 2 * pad, Bitmap.Config.ARGB_8888)
         Canvas(small).drawBitmap(src, null, android.graphics.Rect(pad, pad, pad + sw, pad + sh), Paint(Paint.FILTER_BITMAP_FLAG))
@@ -172,7 +528,6 @@ class AppRepo(private val context: Context) {
         return small to (sw + 2f * pad) / sw
     }
 
-    /** One horizontal then vertical box blur of premultiplied ARGB [px] (radius [r]). */
     private fun boxBlur(px: IntArray, w: Int, h: Int, r: Int) {
         val tmp = IntArray(px.size)
         val n = 2 * r + 1

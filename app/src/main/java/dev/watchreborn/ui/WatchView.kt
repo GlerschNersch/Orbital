@@ -64,6 +64,8 @@ enum class ClusterTopology(val shortTitle: String, val fullTitle: String, val su
 enum class ClusterOption {
     CLUSTER_TOPOLOGY,
     BUBBLE_PHYSICS,
+    PER_LAYOUT_PINS,
+    EDIT_LAYOUT,
     HONEYCOMB_HOME,
     BLOOM_MODE,
     QUICK_SNIPE,
@@ -99,6 +101,9 @@ class WatchView(
     private val onClusterOptionChanged: (ClusterOption) -> Unit,
     private val onTopologySelected: (ClusterTopology) -> Unit,
     private val onPlaceItem: (GridItem, Int) -> Unit,
+    private val onFileIntoFolder: (App, Folder, Int) -> Unit,
+    private val onUnpinItem: (GridItem) -> Unit,
+    private val onReorderFolderMember: (Folder, Int, Int) -> Unit,
 ) : View(context) {
 
     init {
@@ -136,6 +141,52 @@ class WatchView(
     private var placeX: Float = 0f
     private var placeY: Float = 0f
     private var placeMoved: Boolean = false
+    private var placeInFolder: Boolean = false
+    private var placeFolder: Folder? = null
+    private val releasePinRect = RectF()
+
+    /** When true, pins are stored per cluster layout instead of one global set. */
+    var perLayoutPins: Boolean = false
+
+    /** Edit mode: bubbles can be dragged immediately (no long-press); Done pill or Back exits. */
+    var editMode: Boolean = false
+        private set
+    private val editDoneRect = RectF()
+
+    /** Placement undo bar: a transient pill with an Undo action, drawn over the grid. */
+    private var undoLabel: String? = null
+    private var undoAction: (() -> Unit)? = null
+    private var undoUntilMs: Long = 0L
+    private val undoRect = RectF()
+    private val undoBtnRect = RectF()
+
+    fun showPlaceUndo(label: String, onUndo: () -> Unit) {
+        undoLabel = label
+        undoAction = onUndo
+        undoUntilMs = SystemClock.uptimeMillis() + 6000L
+        postDelayed({
+            if (SystemClock.uptimeMillis() >= undoUntilMs && undoLabel != null) {
+                undoLabel = null
+                undoAction = null
+                invalidate()
+            }
+        }, 6100L)
+        invalidate()
+    }
+
+    private val undoActive: Boolean
+        get() = undoLabel != null && SystemClock.uptimeMillis() < undoUntilMs
+
+    fun enterEditMode() {
+        editMode = true
+        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        invalidate()
+    }
+
+    fun exitEditMode() {
+        editMode = false
+        invalidate()
+    }
 
     /** Apps A-Z (List view), by use (grid and cluster), folder-grouped grid items, and flat grid with widgets. */
     private var alphabetical: List<App> = emptyList()
@@ -522,6 +573,7 @@ class WatchView(
             searching = searching || gridSearching || searchQuery.isNotEmpty(),
             topologyPickerOpen = topologyPickerOpen && clusterSheet.target > 0f,
             sheetOpen = clusterSheet.target > 0f,
+            editMode = editMode,
             torchOffViaBack = controlIn.target > 0f && controlCenter.state.screenFlashlight,
             stackOrControlOpen = stackIn.target > 0f || controlIn.target > 0f,
             inApps = apps.target == 1f,
@@ -547,6 +599,10 @@ class WatchView(
             NavLayer.SHEET -> {
                 clusterSheet.target = 0f
                 invalidate()
+                true
+            }
+            NavLayer.EDIT_MODE -> {
+                exitEditMode()
                 true
             }
             NavLayer.TORCH_OFF -> {
@@ -685,6 +741,69 @@ class WatchView(
     }
 
     /** The one coach hint to show right now, if any: gesture-only features advertise themselves once. */
+    /** Transient "placed — Undo" bar shown after a drag-to-place mutation. */
+    private fun drawUndoBar(c: Canvas, w: Float, bottom: Float, alpha: Float) {
+        if (!undoActive || apps.target == 0f) {
+            undoRect.setEmpty()
+            undoBtnRect.setEmpty()
+            return
+        }
+        val label = undoLabel ?: return
+        val listPillH = max(dp(44f), height * 0.055f)
+        val pillH = dp(32f)
+        var hy = bottom - dp(16f) - listPillH - dp(10f) - pillH
+        if (editMode) hy -= pillH + dp(8f) // stack above the Edit-mode Done pill
+        text.textSize = sp(12.5f)
+        val labelW = text.measureText(label)
+        text.isFakeBoldText = true
+        val undoW = text.measureText("Undo")
+        text.isFakeBoldText = false
+        val pw = labelW + undoW + dp(48f)
+        undoRect.set(w / 2 - pw / 2, hy, w / 2 + pw / 2, hy + pillH)
+        undoBtnRect.set(undoRect.right - undoW - dp(30f), hy, undoRect.right - dp(2f), hy + pillH)
+        fill.color = Color.argb((alpha * 238).toInt(), 30, 30, 34)
+        c.drawRoundRect(undoRect, pillH / 2, pillH / 2, fill)
+        stroke.strokeWidth = dp(1.2f)
+        stroke.color = withAlpha(accent, (alpha * 200).toInt())
+        c.drawRoundRect(undoRect, pillH / 2, pillH / 2, stroke)
+        text.color = Color.argb((alpha * 255).toInt(), 245, 245, 248)
+        c.drawText(label, undoRect.left + dp(15f), undoRect.centerY() + text.textSize * 0.35f, text)
+        text.isFakeBoldText = true
+        text.color = withAlpha(accent, (alpha * 255).toInt())
+        c.drawText("Undo", undoRect.right - dp(15f) - undoW, undoRect.centerY() + text.textSize * 0.35f, text)
+        text.isFakeBoldText = false
+    }
+
+    /** Edit-mode status pill with a Done affordance, parked where coach hints live. */
+    private fun drawEditDone(c: Canvas, w: Float, bottom: Float, alpha: Float) {
+        if (!editMode || placeItem != null || apps.target == 0f) {
+            editDoneRect.setEmpty()
+            return
+        }
+        val listPillH = max(dp(44f), height * 0.055f)
+        val pillH = dp(30f)
+        val hy = bottom - dp(16f) - listPillH - dp(10f) - pillH
+        text.textSize = sp(12.5f)
+        val s = "✥ Editing — drag any bubble"
+        val tw = text.measureText(s)
+        text.isFakeBoldText = true
+        val doneW = text.measureText("✓ Done")
+        text.isFakeBoldText = false
+        val pw = tw + doneW + dp(48f)
+        editDoneRect.set(w / 2 - pw / 2, hy, w / 2 + pw / 2, hy + pillH)
+        fill.color = Color.argb((alpha * 235).toInt(), 30, 30, 34)
+        c.drawRoundRect(editDoneRect, pillH / 2, pillH / 2, fill)
+        stroke.strokeWidth = dp(1.2f)
+        stroke.color = withAlpha(accent, (alpha * 220).toInt())
+        c.drawRoundRect(editDoneRect, pillH / 2, pillH / 2, stroke)
+        text.color = Color.argb((alpha * 255).toInt(), 245, 245, 248)
+        c.drawText(s, editDoneRect.left + dp(15f), editDoneRect.centerY() + text.textSize * 0.35f, text)
+        text.isFakeBoldText = true
+        text.color = withAlpha(accent, (alpha * 255).toInt())
+        c.drawText("✓ Done", editDoneRect.right - dp(15f) - doneW, editDoneRect.centerY() + text.textSize * 0.35f, text)
+        text.isFakeBoldText = false
+    }
+
     private fun currentCoachHint(): String? {
         if (apps.target != 1f || clusterSheet.target > 0f || constellationIn.target > 0.5f ||
             folderIn.target > 0.5f || widgetIn.target > 0.5f || gridSearching || searching
@@ -699,7 +818,8 @@ class WatchView(
     }
 
     private fun drawCoachHint(c: Canvas, w: Float, bottom: Float, alpha: Float) {
-        val id = currentCoachHint()
+        // The undo bar and the Edit-mode pill take this screen slot while active.
+        val id = if (editMode || undoActive) null else currentCoachHint()
         coachHintId = id
         if (id == null) {
             coachHintRect.setEmpty()
@@ -731,15 +851,17 @@ class WatchView(
     private fun canDragPlace(slot: Int): Boolean =
         slot >= 0 && grid.target == 1f && list.target == 0f && clusterSheet.target == 0f &&
             constellationIn.target == 0f && folderIn.target == 0f && widgetIn.target == 0f &&
-            !gridSearching && !searching
+            activeFolder == null && !gridSearching && !searching
 
-    private fun beginPlace(item: GridItem, slot: Int) {
+    private fun beginPlace(item: GridItem, slot: Int, inFolder: Boolean = false) {
         placeItem = item
         placeFromSlot = slot
         placeHoverSlot = slot
         placeX = downX
         placeY = downY
         placeMoved = false
+        placeInFolder = inFolder
+        placeFolder = if (inFolder) activeFolder else null
         markHintSeen(HINT_PIN)
         invalidate()
     }
@@ -749,14 +871,35 @@ class WatchView(
         val moved = placeMoved
         val from = placeFromSlot
         val hover = placeHoverSlot
+        val inFolder = placeInFolder
+        val folder = placeFolder
+        val dropX = placeX
+        val dropY = placeY
         placeItem = null
         placeHoverSlot = -1
         placeMoved = false
+        placeInFolder = false
+        placeFolder = null
+
+        // Dropping a pinned bubble on the release zone unpins it.
+        if (moved && !inFolder && !releasePinRect.isEmpty && releasePinRect.contains(dropX, dropY)) {
+            performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+            onUnpinItem(item)
+            return
+        }
         when (PlaceSlots.resolveDrop(moved, from, hover)) {
             PlaceSlots.DropAction.MENU -> onLongPressItem(item, from)
             PlaceSlots.DropAction.PIN -> {
                 performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                onPlaceItem(item, hover)
+                // Dropping an app onto a folder bubble files it into that folder.
+                val hoverItem = hits.firstOrNull { it.slotIndex == hover }?.item
+                if (!inFolder && item is App && hoverItem is Folder) {
+                    onFileIntoFolder(item, hoverItem, hover)
+                } else if (inFolder && folder != null) {
+                    onReorderFolderMember(folder, from, hover)
+                } else {
+                    onPlaceItem(item, hover)
+                }
             }
             PlaceSlots.DropAction.NO_CHANGE -> {}
         }
@@ -764,6 +907,24 @@ class WatchView(
 
     private fun drawPlaceOverlay(c: Canvas, cal: Calendar, alpha: Float) {
         val item = placeItem ?: return
+        // Release zone for unpinning, offered while carrying a pinned bubble.
+        if (placeMoved && item.key in pinnedItemKeys) {
+            val zw = dp(210f)
+            val zh = dp(40f)
+            releasePinRect.set(width / 2f - zw / 2, topInset + dp(64f), width / 2f + zw / 2, topInset + dp(64f) + zh)
+            val hot = releasePinRect.contains(placeX, placeY)
+            fill.color = if (hot) Color.argb((alpha * 240).toInt(), 120, 34, 40) else Color.argb((alpha * 210).toInt(), 44, 40, 44)
+            c.drawRoundRect(releasePinRect, zh / 2, zh / 2, fill)
+            stroke.strokeWidth = dp(1.2f)
+            stroke.color = Color.argb((alpha * 220).toInt(), 255, 110, 110)
+            c.drawRoundRect(releasePinRect, zh / 2, zh / 2, stroke)
+            text.textSize = sp(12.5f)
+            val s = "✕ Drop here to unpin"
+            text.color = Color.argb((alpha * 255).toInt(), 255, 190, 190)
+            c.drawText(s, releasePinRect.centerX() - text.measureText(s) / 2, releasePinRect.centerY() + text.textSize * 0.35f, text)
+        } else {
+            releasePinRect.setEmpty()
+        }
         val origin = hits.firstOrNull { it.slotIndex == placeFromSlot }
         val hover = hits.firstOrNull { it.slotIndex == placeHoverSlot }
         // The origin slot reads as "picked up": dimmed with an accent ring.
@@ -1420,6 +1581,8 @@ class WatchView(
             if (listAlpha > 0.001f) drawList(c, w, h, top, bottom, listAlpha)
             drawPill(c, w, bottom, a)
             drawCoachHint(c, w, bottom, a)
+            drawUndoBar(c, w, bottom, a)
+            drawEditDone(c, w, bottom, a)
             drawCrownTrack(c, w, h, top, bottom, a)
             if (clusterSheet.value > 0.001f) drawClusterSheet(c, w, h, top, bottom, clusterSheet.value)
         }
@@ -2695,12 +2858,14 @@ class WatchView(
             add(Triple(ClusterOption.HONEYCOMB_HOME, "Home Screen", if (honeycombHome) "🏠 Honeycomb Core Hub (0,0 Clock)" else "⌚ Watch Face First"))
             add(Triple(null, "BEHAVIOR", ""))
             add(Triple(ClusterOption.BUBBLE_PHYSICS, "Bubble Physics", if (bubblePhysics) "🫧 Jello, Wake Wave, Spin & Billiards On" else "⚪ Off (Bubbles Sit Still)"))
+            add(Triple(ClusterOption.PER_LAYOUT_PINS, "Per-Layout Pins", if (perLayoutPins) "🗂 Separate pins for each layout" else "🌐 One pin set for all layouts"))
             add(Triple(ClusterOption.BLOOM_MODE, "Folder Open Style", if (bloomFolders) "🌊 Bloom In-Place (Shockwave)" else "📂 Full-Screen Folder"))
             add(Triple(ClusterOption.QUICK_SNIPE, "Mini-Icon Tap", if (quickSnipe) "🎯 Quick-Snipe (Outer 6 Launch)" else "👆 Tap Anywhere Opens Folder"))
             add(Triple(ClusterOption.LIVE_WIDGETS, "Live Grid Widgets", if (liveWidgets) "⚡ Media, Timer, Calendar & Vitals On" else "⚪ Off (Apps & Folders Only)"))
             add(Triple(ClusterOption.AUTO_FOLDERS, "Category Clustering", if (autoFolders) "🟢 Auto Folders On" else "⚪ Loose Apps Only"))
             add(Triple(null, "ACTIONS", ""))
             add(Triple(ClusterOption.CONSTELLATION_SEARCH, "App Search", "🔍 Search all apps in the constellation"))
+            add(Triple(ClusterOption.EDIT_LAYOUT, "Edit Layout", "✥ Drag bubbles to place them — no long-press"))
             add(Triple(ClusterOption.SYSTEM_WIDGETS, "Android System Widgets", "🧩 Tap to View / Add App Widgets"))
             add(Triple(ClusterOption.SET_DEFAULT_HOME, "Default Phone Launcher", "📲 Tap to Set Watch Reborn as Home App"))
             if (pinnedItemKeys.isNotEmpty()) {
@@ -2735,7 +2900,7 @@ class WatchView(
 
         text.textSize = sp(11f)
         text.color = Color.argb((a * 0.7f).toInt(), 188, 190, 198)
-        val hint = "Layout • Behavior • Actions — long-press a bubble to pin it"
+        val hint = "Layout • Behavior • Actions — drag a bubble to place it"
         c.drawText(hint, w / 2 - text.measureText(hint) / 2, sheetTop + dp(49f), text)
 
         var ry = sheetTop + dp(62f)
@@ -2765,6 +2930,7 @@ class WatchView(
                 ClusterOption.FIXED_NEIGHBORHOODS -> fixedNeighborhoods
                 ClusterOption.HONEYCOMB_HOME -> honeycombHome
                 ClusterOption.BUBBLE_PHYSICS -> bubblePhysics
+                ClusterOption.PER_LAYOUT_PINS -> perLayoutPins
                 ClusterOption.BLOOM_MODE -> bloomFolders
                 ClusterOption.QUICK_SNIPE -> quickSnipe
                 ClusterOption.LIVE_WIDGETS -> liveWidgets
@@ -2932,7 +3098,30 @@ class WatchView(
             val dia = Metrics.GRID_CENTER_D * u * size * 1.08f
             val app = folder.apps[i]
             drawIcon(c, app.icon, x, y, dia, alpha, hasNotification(app), app.key in pinnedItemKeys)
-            hits += Hit(x, y, dia / 2, app)
+            hits += Hit(x, y, dia / 2, app, i)
+        }
+
+        if (placeInFolder && placeItem != null) {
+            val item = placeItem!!
+            val origin = hits.firstOrNull { it.slotIndex == placeFromSlot }
+            val hover = hits.firstOrNull { it.slotIndex == placeHoverSlot }
+            if (origin != null) {
+                fill.color = Color.argb((alpha * 150).toInt(), 0, 0, 0)
+                c.drawCircle(origin.x, origin.y, origin.r, fill)
+                stroke.strokeWidth = dp(1.5f)
+                stroke.color = withAlpha(accent, (alpha * 160).toInt())
+                c.drawCircle(origin.x, origin.y, origin.r, stroke)
+            }
+            if (hover != null && placeHoverSlot != placeFromSlot) {
+                stroke.strokeWidth = dp(3f)
+                stroke.color = withAlpha(accent, (alpha * 255).toInt())
+                c.drawCircle(hover.x, hover.y, hover.r + dp(3f), stroke)
+            }
+            val app = item as? App
+            if (app != null) {
+                val d = (origin?.r ?: dp(31f)) * 2f * 1.12f
+                drawIcon(c, app.icon, placeX, placeY, d, alpha, hasNotification(app), app.key in pinnedItemKeys)
+            }
         }
 
         val ph = dp(40f)
@@ -3527,10 +3716,16 @@ class WatchView(
                 hitEntryAt(downX, downY)?.let { h ->
                     val fallbackSlot = activeGridItems.indexOfFirst { it.key == h.item.key }
                     val slot = if (h.slotIndex >= 0) h.slotIndex else fallbackSlot
-                    // In the full grid, a long-press picks the bubble up for
-                    // drag-to-place; releasing without a drag opens the menu.
-                    if (canDragPlace(slot)) beginPlace(h.item, slot)
-                    else onLongPressItem(h.item, slot)
+                    when {
+                        // Inside the full-screen Folder view, a long-press picks
+                        // the member up to drag-arrange the folder's order.
+                        folderIn.target == 1f && activeFolder != null && h.slotIndex >= 0 ->
+                            beginPlace(h.item, h.slotIndex, inFolder = true)
+                        // In the full grid, a long-press picks the bubble up for
+                        // drag-to-place; releasing without a drag opens the menu.
+                        canDragPlace(slot) -> beginPlace(h.item, slot)
+                        else -> onLongPressItem(h.item, slot)
+                    }
                 }
             }
             onFace -> onLongPressFace()
@@ -3649,6 +3844,17 @@ class WatchView(
                 }
                 velocity?.recycle(); velocity = VelocityTracker.obtain().apply { addMovement(e) }
                 listVelocity = 0f
+                // Edit mode: touching a bubble picks it up immediately — the
+                // whole point is arranging without long-pressing each bubble.
+                if (editMode && modeAtDown == MODE_APPS && !edgeCrownDragging) {
+                    hitEntryAt(e.x, e.y)?.let { h ->
+                        val slot = if (h.slotIndex >= 0) h.slotIndex else activeGridItems.indexOfFirst { it.key == h.item.key }
+                        if (canDragPlace(slot)) {
+                            beginPlace(h.item, slot)
+                            return true
+                        }
+                    }
+                }
                 postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
             }
             MotionEvent.ACTION_MOVE -> {
@@ -3733,6 +3939,8 @@ class WatchView(
                 placeItem = null
                 placeHoverSlot = -1
                 placeMoved = false
+                placeInFolder = false
+                placeFolder = null
                 invalidate()
             }
         }
@@ -4020,6 +4228,24 @@ class WatchView(
     }
 
     private fun tap(x: Float, y: Float) {
+        // Placement undo bar: the Undo button restores the pre-drag pin state;
+        // tapping elsewhere on the bar just dismisses it.
+        if (undoActive && !undoRect.isEmpty && undoRect.contains(x, y)) {
+            val action = if (undoBtnRect.contains(x, y)) undoAction else null
+            undoLabel = null
+            undoAction = null
+            performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+            action?.invoke() ?: invalidate()
+            return
+        }
+
+        // Edit mode: the Done pill exits.
+        if (editMode && placeItem == null && !editDoneRect.isEmpty && editDoneRect.contains(x, y)) {
+            performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+            exitEditMode()
+            return
+        }
+
         // Coach hint: tapping it dismisses it for good.
         if (!coachHintRect.isEmpty && coachHintRect.contains(x, y)) {
             coachHintId?.let { markHintSeen(it) }
@@ -4058,6 +4284,10 @@ class WatchView(
                     }
                     ClusterOption.CONSTELLATION_SEARCH -> {
                         startConstellationSearch()
+                    }
+                    ClusterOption.EDIT_LAYOUT -> {
+                        clusterSheet.target = 0f
+                        enterEditMode()
                     }
                     ClusterOption.CLUSTER_TOPOLOGY -> {
                         topologyPickerOpen = true

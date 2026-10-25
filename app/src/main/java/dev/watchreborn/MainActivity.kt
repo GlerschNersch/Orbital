@@ -139,6 +139,9 @@ class MainActivity : Activity(), SensorEventListener {
             onClusterOptionChanged = ::handleClusterOptionChanged,
             onTopologySelected = ::handleTopologySelected,
             onPlaceItem = ::placeItem,
+            onFileIntoFolder = ::fileIntoFolder,
+            onUnpinItem = ::unpinItem,
+            onReorderFolderMember = ::reorderFolderMember,
         )
         view.accent = prefs.getInt(KEY_ACCENT, ACCENTS[0].second)
         view.preferList = prefs.getBoolean(KEY_LIST, false)
@@ -149,6 +152,7 @@ class MainActivity : Activity(), SensorEventListener {
         view.liveWidgets = prefs.getBoolean(KEY_LIVE_WIDGETS, true)
         view.fixedNeighborhoods = prefs.getBoolean(KEY_FIXED_NEIGHBORHOODS, true)
         view.bubblePhysics = prefs.getBoolean(KEY_BUBBLE_PHYSICS, true)
+        view.perLayoutPins = prefs.getBoolean(KEY_PER_LAYOUT_PINS, false)
         val savedTopo = prefs.getString(KEY_CLUSTER_TOPOLOGY, ClusterTopology.HONEYCOMB.name)
         view.clusterTopology = runCatching { ClusterTopology.valueOf(savedTopo ?: ClusterTopology.HONEYCOMB.name) }
             .getOrDefault(ClusterTopology.HONEYCOMB)
@@ -227,11 +231,72 @@ class MainActivity : Activity(), SensorEventListener {
         return super.onKeyDown(keyCode, event)
     }
 
-    /** Drag-to-place drop: pin the item into the dropped slot (any previous occupant is unpinned and flows). */
+    /** Pin scope for repo calls: per-layout when enabled, else the global set. */
+    private fun pinScope(): String? =
+        if (view.perLayoutPins) view.clusterTopology.name else null
+
+    /**
+     * Drag-to-place drop: pin the item into the dropped slot (any previous occupant
+     * is unpinned and flows). The undo bar restores both the item's previous pin
+     * and the evicted occupant.
+     */
     private fun placeItem(item: GridItem, slot: Int) {
-        repo.setPinnedSlot(item.key, slot)
+        val scope = pinScope()
+        val prevPin = repo.pinnedSlotOf(item.key, scope)
+        val occupantKey = repo.keyPinnedAt(slot, scope)?.takeIf { it != item.key }
+        repo.setPinnedSlot(item.key, slot, scope)
         pushAppsToView(apps)
-        Toast.makeText(this, "📌 ${item.label} placed at Hex #${slot + 1}", Toast.LENGTH_SHORT).show()
+        view.showPlaceUndo("📌 ${item.label} placed at Hex #${slot + 1}") {
+            repo.setPinnedSlot(item.key, null, scope)
+            if (occupantKey != null) repo.setPinnedSlot(occupantKey, slot, scope)
+            if (prevPin != null && prevPin != slot) repo.setPinnedSlot(item.key, prevPin, scope)
+            pushAppsToView(apps)
+            Toast.makeText(this, "Placement undone", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** Dragging an app onto a folder bubble files it into that folder's group. */
+    private fun fileIntoFolder(app: App, folder: Folder, slot: Int) {
+        if (repo.groupOf(app) == folder.group) {
+            // Already in this group — treat the drop as a plain placement.
+            placeItem(app, slot)
+            return
+        }
+        val prevGroup = repo.groupOf(app)
+        repo.setGroupOverride(app, folder.group)
+        pushAppsToView(apps)
+        view.showPlaceUndo("📁 ${app.label} filed into ${folder.label}") {
+            repo.setGroupOverride(app, if (prevGroup == app.defaultGroup) null else prevGroup)
+            pushAppsToView(apps)
+            Toast.makeText(this, "Filing undone", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** Dropping a pinned bubble on the release zone unpins it (undoable). */
+    private fun unpinItem(item: GridItem) {
+        val scope = pinScope()
+        val prevPin = repo.pinnedSlotOf(item.key, scope) ?: return
+        repo.setPinnedSlot(item.key, null, scope)
+        pushAppsToView(apps)
+        view.showPlaceUndo("📌 ${item.label} unpinned") {
+            repo.setPinnedSlot(item.key, prevPin, scope)
+            pushAppsToView(apps)
+            Toast.makeText(this, "Pin restored", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** Drag-arranging inside Folder view persists the folder's member order. */
+    private fun reorderFolderMember(folder: Folder, from: Int, to: Int) {
+        val keys = folder.apps.map { it.key }
+        if (from !in keys.indices || to !in keys.indices || from == to) return
+        val reordered = keys.toMutableList().apply { add(to, removeAt(from)) }
+        repo.setFolderOrder(folder.group, reordered)
+        pushAppsToView(apps)
+        view.showPlaceUndo("↕ ${folder.label} order changed") {
+            repo.setFolderOrder(folder.group, keys)
+            pushAppsToView(apps)
+            Toast.makeText(this, "Order restored", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun isDefaultHomeApp(): Boolean {
@@ -281,14 +346,15 @@ class MainActivity : Activity(), SensorEventListener {
         val coreClockHub = view.honeycombHome
         val liveWidgets = view.liveWidgets
         loader.execute {
+            val scope = pinScope()
             val rawUse = repo.byUse(list)
-            val byUse = repo.applyPins(rawUse)
-            val folders = repo.buildFolderGrid(list, rawUse, px, fixedNeighborhoods, coreClockHub, liveWidgets)
-            val flatWithWidgets = repo.buildFlatGridWithWidgets(rawUse, px, coreClockHub, liveWidgets)
+            val byUse = repo.applyPins(rawUse, scope)
+            val folders = repo.buildFolderGrid(list, rawUse, px, fixedNeighborhoods, coreClockHub, liveWidgets, scope)
+            val flatWithWidgets = repo.buildFlatGridWithWidgets(rawUse, px, coreClockHub, liveWidgets, scope)
             val pinnedKeys = HashSet<String>()
-            list.forEach { if (repo.isPinned(it.key)) pinnedKeys += it.key }
-            folders.forEach { if (repo.isPinned(it.key)) pinnedKeys += it.key }
-            WidgetKind.entries.forEach { if (repo.isPinned(it.key)) pinnedKeys += it.key }
+            list.forEach { if (repo.isPinned(it.key, scope)) pinnedKeys += it.key }
+            folders.forEach { if (repo.isPinned(it.key, scope)) pinnedKeys += it.key }
+            WidgetKind.entries.forEach { if (repo.isPinned(it.key, scope)) pinnedKeys += it.key }
             view.post {
                 view.pinnedItemKeys = pinnedKeys
                 view.setApps(list, byUse, folders, flatWithWidgets)
@@ -357,6 +423,15 @@ class MainActivity : Activity(), SensorEventListener {
                 val next = !view.bubblePhysics
                 prefs.edit().putBoolean(KEY_BUBBLE_PHYSICS, next).apply()
                 view.bubblePhysics = next
+            }
+            ClusterOption.PER_LAYOUT_PINS -> {
+                val next = !view.perLayoutPins
+                prefs.edit().putBoolean(KEY_PER_LAYOUT_PINS, next).apply()
+                view.perLayoutPins = next
+                if (apps.isNotEmpty()) pushAppsToView(apps)
+            }
+            ClusterOption.EDIT_LAYOUT -> {
+                // Handled inside WatchView: the sheet row enters edit mode directly.
             }
             ClusterOption.HONEYCOMB_HOME -> {
                 val next = !view.honeycombHome
@@ -563,7 +638,7 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun itemOptions(item: GridItem, slotIndex: Int) {
         val menu = PopupMenu(this, view, Gravity.CENTER)
-        val currentlyPinnedSlot = repo.pinnedSlotOf(item.key)
+        val currentlyPinnedSlot = repo.pinnedSlotOf(item.key, pinScope())
 
         // #6 Hex Slot Pinning options for both Apps and Folders
         if (currentlyPinnedSlot != null) {
@@ -611,17 +686,17 @@ class MainActivity : Activity(), SensorEventListener {
                 menu.setOnMenuItemClickListener { mi ->
                     when (mi.itemId) {
                         300 -> {
-                            repo.setPinnedSlot(item.key, null)
+                            repo.setPinnedSlot(item.key, null, pinScope())
                             pushAppsToView(apps)
                             Toast.makeText(this, "Unpinned ${item.label}", Toast.LENGTH_SHORT).show()
                         }
                         301 -> {
-                            repo.setPinnedSlot(item.key, slotIndex)
+                            repo.setPinnedSlot(item.key, slotIndex, pinScope())
                             pushAppsToView(apps)
                             Toast.makeText(this, "Pinned ${item.label} to Hex #${slotIndex + 1}", Toast.LENGTH_SHORT).show()
                         }
                         302 -> {
-                            repo.setPinnedSlot(item.key, 0)
+                            repo.setPinnedSlot(item.key, 0, pinScope())
                             pushAppsToView(apps)
                             Toast.makeText(this, "Pinned ${item.label} to Center Core", Toast.LENGTH_SHORT).show()
                         }
@@ -647,26 +722,28 @@ class MainActivity : Activity(), SensorEventListener {
                 menu.menu.add(1, 310, 5, "Open ${item.label} (${item.apps.size} apps)")
                 menu.menu.add(1, 311, 6, "⚙ Honeycomb Cluster Options...")
                 menu.menu.add(1, 312, 7, "🏠 Set as Default Launcher")
+                menu.menu.add(1, 313, 8, "✥ Edit Layout Mode")
                 menu.setOnMenuItemClickListener { mi ->
                     when (mi.itemId) {
                         300 -> {
-                            repo.setPinnedSlot(item.key, null)
+                            repo.setPinnedSlot(item.key, null, pinScope())
                             pushAppsToView(apps)
                             Toast.makeText(this, "Unpinned ${item.label}", Toast.LENGTH_SHORT).show()
                         }
                         301 -> {
-                            repo.setPinnedSlot(item.key, slotIndex)
+                            repo.setPinnedSlot(item.key, slotIndex, pinScope())
                             pushAppsToView(apps)
                             Toast.makeText(this, "Pinned ${item.label} to Hex #${slotIndex + 1}", Toast.LENGTH_SHORT).show()
                         }
                         302 -> {
-                            repo.setPinnedSlot(item.key, 0)
+                            repo.setPinnedSlot(item.key, 0, pinScope())
                             pushAppsToView(apps)
                             Toast.makeText(this, "Pinned ${item.label} to Center Core", Toast.LENGTH_SHORT).show()
                         }
                         310 -> view.openFolder(item)
                         311 -> view.openClusterSheet()
                         312 -> chooseHome()
+                        313 -> view.enterEditMode()
                     }
                     true
                 }
@@ -687,6 +764,7 @@ class MainActivity : Activity(), SensorEventListener {
                 }
 
                 menu.menu.add(3, 311, 25, "⚙ Honeycomb Cluster Options...")
+                menu.menu.add(3, 313, 26, "✥ Edit Layout Mode")
                 menu.menu.add(3, 1, 30, "App Info")
                 if (!item.system && item.user == Process.myUserHandle()) {
                     menu.menu.add(3, 2, 31, "Uninstall")
@@ -695,17 +773,17 @@ class MainActivity : Activity(), SensorEventListener {
                 menu.setOnMenuItemClickListener { mi ->
                     when (mi.itemId) {
                         300 -> {
-                            repo.setPinnedSlot(item.key, null)
+                            repo.setPinnedSlot(item.key, null, pinScope())
                             pushAppsToView(apps)
                             Toast.makeText(this, "Unpinned ${item.label}", Toast.LENGTH_SHORT).show()
                         }
                         301 -> {
-                            repo.setPinnedSlot(item.key, slotIndex)
+                            repo.setPinnedSlot(item.key, slotIndex, pinScope())
                             pushAppsToView(apps)
                             Toast.makeText(this, "Pinned ${item.label} to Hex #${slotIndex + 1}", Toast.LENGTH_SHORT).show()
                         }
                         302 -> {
-                            repo.setPinnedSlot(item.key, 0)
+                            repo.setPinnedSlot(item.key, 0, pinScope())
                             pushAppsToView(apps)
                             Toast.makeText(this, "Pinned ${item.label} to Center Core", Toast.LENGTH_SHORT).show()
                         }
@@ -719,6 +797,7 @@ class MainActivity : Activity(), SensorEventListener {
                             pushAppsToView(apps)
                         }
                         311 -> view.openClusterSheet()
+                        313 -> view.enterEditMode()
                         1 -> runCatching { launcherApps.startAppDetailsActivity(item.component, item.user, null, null) }
                         2 -> runCatching { startActivity(Intent(Intent.ACTION_DELETE, Uri.fromParts("package", item.component.packageName, null))) }
                     }
@@ -1038,6 +1117,7 @@ class MainActivity : Activity(), SensorEventListener {
         const val KEY_FIXED_NEIGHBORHOODS = "fixed_neighborhoods"
         const val KEY_CLUSTER_TOPOLOGY = "cluster_topology"
         const val KEY_BUBBLE_PHYSICS = "bubble_physics"
+        const val KEY_PER_LAYOUT_PINS = "per_layout_pins"
         const val KEY_PINNED_CARDS = "pinned_cards"
         const val KEY_HINTS_SEEN = "hints_seen"
         const val KEY_APPWIDGET_IDS = "appwidget_ids"

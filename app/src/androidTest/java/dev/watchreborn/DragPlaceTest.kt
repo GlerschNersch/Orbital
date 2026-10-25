@@ -86,4 +86,55 @@ class DragPlaceTest {
 
         assertEquals("expected exactly one new pin after drag-to-place, before=$before after=$after", before.size + 1, after.size)
     }
+
+    @Test
+    fun editModeDragPlacesWithoutLongPress() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val before = pins(context)
+
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            var view: WatchView? = null
+            scenario.onActivity { a ->
+                val content = a.findViewById<ViewGroup>(android.R.id.content)
+                view = content.getChildAt(0) as WatchView
+            }
+            val v = view!!
+            val loc = IntArray(2)
+            scenario.onActivity { v.getLocationOnScreen(loc) }
+            val cx = loc[0] + v.width / 2f
+            val cy = loc[1] + v.height / 2f
+
+            scenario.onActivity { v.openApps() }
+            Thread.sleep(800)
+            repeat(2) {
+                val t = SystemClock.uptimeMillis()
+                pointer(MotionEvent.ACTION_DOWN, cx, cy + v.height * 0.18f, t)
+                pointer(MotionEvent.ACTION_MOVE, cx, cy - v.height * 0.05f, t)
+                pointer(MotionEvent.ACTION_UP, cx, cy - v.height * 0.05f, t)
+                Thread.sleep(1000)
+            }
+
+            scenario.onActivity { v.enterEditMode() }
+            Thread.sleep(200)
+
+            // No hold: touch down on the centered bubble and drag straight away.
+            val t2 = SystemClock.uptimeMillis()
+            pointer(MotionEvent.ACTION_DOWN, cx, cy, t2)
+            Thread.sleep(120)
+            pointer(MotionEvent.ACTION_MOVE, cx + v.width * 0.13f, cy, t2)
+            pointer(MotionEvent.ACTION_MOVE, cx + v.width * 0.24f, cy, t2)
+            Thread.sleep(150)
+            pointer(MotionEvent.ACTION_UP, cx + v.width * 0.24f, cy, t2)
+            Thread.sleep(500)
+            scenario.onActivity { v.exitEditMode() }
+        }
+
+        val after = pins(context)
+        val editor = context.getSharedPreferences("apps", Context.MODE_PRIVATE).edit()
+        (after.keys - before.keys).forEach { editor.remove(it) }
+        before.forEach { (k, value) -> editor.putInt(k, value) }
+        editor.apply()
+
+        assertEquals("expected exactly one new pin after edit-mode drag, before=$before after=$after", before.size + 1, after.size)
+    }
 }

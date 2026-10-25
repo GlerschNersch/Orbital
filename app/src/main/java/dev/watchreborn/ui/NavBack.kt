@@ -12,6 +12,7 @@ enum class NavLayer {
     SEARCH,
     TOPOLOGY_PICKER,
     SHEET,
+    EDIT_MODE,
     TORCH_OFF,
     STACK_OR_CONTROL,
     WIDGET_POD,
@@ -29,6 +30,7 @@ data class NavState(
     val searching: Boolean = false,
     val topologyPickerOpen: Boolean = false,
     val sheetOpen: Boolean = false,
+    val editMode: Boolean = false,
     val torchOffViaBack: Boolean = false,
     val stackOrControlOpen: Boolean = false,
     val inApps: Boolean = false,
@@ -48,6 +50,7 @@ object NavBack {
         s.searching -> NavLayer.SEARCH
         s.topologyPickerOpen -> NavLayer.TOPOLOGY_PICKER
         s.sheetOpen -> NavLayer.SHEET
+        s.editMode -> NavLayer.EDIT_MODE
         s.torchOffViaBack -> NavLayer.TORCH_OFF
         s.stackOrControlOpen -> NavLayer.STACK_OR_CONTROL
         s.inApps && s.widgetOpen -> NavLayer.WIDGET_POD

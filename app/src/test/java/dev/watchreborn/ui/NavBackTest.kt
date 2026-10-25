@@ -14,6 +14,17 @@ class NavBackTest {
         assertEquals(NavLayer.TOPOLOGY_PICKER, NavBack.layerToPop(s))
     }
 
+    @Test fun editModePopsBeforeFolderAndAfterSheet() {
+        assertEquals(
+            NavLayer.EDIT_MODE,
+            NavBack.layerToPop(NavState(inApps = true, editMode = true, folderOpen = true))
+        )
+        assertEquals(
+            NavLayer.SHEET,
+            NavBack.layerToPop(NavState(inApps = true, editMode = true, sheetOpen = true))
+        )
+    }
+
     @Test fun sheetPopsBeforeFolder() {
         val s = NavState(sheetOpen = true, inApps = true, folderOpen = true)
         assertEquals(NavLayer.SHEET, NavBack.layerToPop(s))
