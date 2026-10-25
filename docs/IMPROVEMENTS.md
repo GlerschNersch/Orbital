@@ -17,23 +17,27 @@ Living list. The navigation cleanup of 2026-10-25 (commits `c5ad977`, `f8b7158`,
   Back in List pops to the grid, Back in the picker returns to the sheet.
 - **One search door** — the sheet action is "App Search"; List keeps its own search bar.
 
-## Next (scoped, ready to build)
+## Done in 0.2.0 (2026-10-25, second pass)
 
-1. **Coach hints for hidden gestures** — pinch-overview, edge crown zoom, A–Z scrubber and
-   long-press-to-pin are invisible. One-time, dismiss-on-use hint chips (prefs-flagged),
-   drawn only until each gesture is used once.
-2. **Picker previews** — render a miniature of each layout next to its row in the topology
-   picker (reuse `computeTopologyWorldPos` at small scale) so layouts are recognisable
-   before applying.
-3. **Sheet scroll safety** — with pins present the sheet gains a row; on shorter screens it
-   can crowd the Done button. Cap sheet height and scroll the rows region.
-4. **Predictive-back polish** — the `OnBackInvokedCallback` currently consumes every Back;
-   when `back()` returns false (face, face-first mode), fall through to the system instead
-   of swallowing it.
-5. **Instrumented smoke test** — one `androidTest` that launches MainActivity, opens the
-   sheet and the picker, and asserts no crash; catches regressions adb scripts miss.
-6. **Release hygiene** — versionName is still `0.1.0` while the app has grown far past it;
-   bump and add a CHANGELOG section per release.
+- **Coach hints** — one-time hint chip above the List/Grid pill teaches pinch-overview,
+  long-press-to-pin and edge crown zoom; List view gets the A–Z scrubber hint. Each hint
+  retires the first time its gesture is used (hooks in the scale detector, crown scrub,
+  alphabet scrub and the pin setter) or when tapped; seen ids persist in `hints_seen`.
+- **Picker previews** — every picker row renders a miniature of its layout's geometry
+  (bounding-box normalised; Liquid Pool previews as its hex seed). `computeTopologyWorldPos`
+  gained a topology-parameterised overload to make this possible.
+- **Sheet fit safety** — options sheet and picker compress row height (floor 24dp) so the
+  whole sheet, Done button included, fits screens shorter than the content.
+- **Predictive-back polish** — when `back()` is unconsumed and Watch Reborn is not the
+  default home app, Back now finishes the activity instead of being swallowed (both the
+  predictive callback and the key handler).
+- **Instrumented smoke test** — `SmokeTest` launches MainActivity, opens the sheet and
+  asserts layered Back closes it, twice. Runs green on-device.
+- **Release hygiene** — versionName `0.2.0` / versionCode 2, with `CHANGELOG.md` started.
+
+## Next
+
+Nothing queued — pick from Later below.
 
 ## Later (bigger bets)
 
