@@ -98,6 +98,7 @@ class WatchView(
     private val onTogglePinCard: (String) -> Unit,
     private val onClusterOptionChanged: (ClusterOption) -> Unit,
     private val onTopologySelected: (ClusterTopology) -> Unit,
+    private val onPlaceItem: (GridItem, Int) -> Unit,
 ) : View(context) {
 
     init {
@@ -127,6 +128,14 @@ class WatchView(
     var onHintSeen: (String) -> Unit = {}
     private val coachHintRect = RectF()
     private var coachHintId: String? = null
+
+    /** Drag-to-place state: a grid bubble picked up by long-press, carried by the finger. */
+    private var placeItem: GridItem? = null
+    private var placeFromSlot: Int = -1
+    private var placeHoverSlot: Int = -1
+    private var placeX: Float = 0f
+    private var placeY: Float = 0f
+    private var placeMoved: Boolean = false
 
     /** Apps A-Z (List view), by use (grid and cluster), folder-grouped grid items, and flat grid with widgets. */
     private var alphabetical: List<App> = emptyList()
@@ -698,7 +707,7 @@ class WatchView(
         }
         val label = when (id) {
             HINT_PINCH -> "🤏 Pinch out for an overview of everything"
-            HINT_PIN -> "📌 Long-press any bubble to pin it in place"
+            HINT_PIN -> "📌 Long-press a bubble, then drag to place it"
             HINT_CROWN -> "↕ Drag the right screen edge to zoom"
             HINT_SCRUB -> "🔤 Drag the A–Z edge to jump through the list"
             else -> return
@@ -716,6 +725,64 @@ class WatchView(
         c.drawRoundRect(coachHintRect, hh / 2, hh / 2, stroke)
         text.color = Color.argb((alpha * 255).toInt(), 255, 255, 255)
         c.drawText(label, coachHintRect.centerX() - tw / 2, coachHintRect.centerY() + text.textSize * 0.35f, text)
+    }
+
+    /** Drag-to-place is a full-grid gesture: it must not fight the sheet, search, list or folders. */
+    private fun canDragPlace(slot: Int): Boolean =
+        slot >= 0 && grid.target == 1f && list.target == 0f && clusterSheet.target == 0f &&
+            constellationIn.target == 0f && folderIn.target == 0f && widgetIn.target == 0f &&
+            !gridSearching && !searching
+
+    private fun beginPlace(item: GridItem, slot: Int) {
+        placeItem = item
+        placeFromSlot = slot
+        placeHoverSlot = slot
+        placeX = downX
+        placeY = downY
+        placeMoved = false
+        markHintSeen(HINT_PIN)
+        invalidate()
+    }
+
+    private fun finishPlace() {
+        val item = placeItem ?: return
+        val moved = placeMoved
+        val from = placeFromSlot
+        val hover = placeHoverSlot
+        placeItem = null
+        placeHoverSlot = -1
+        placeMoved = false
+        when (PlaceSlots.resolveDrop(moved, from, hover)) {
+            PlaceSlots.DropAction.MENU -> onLongPressItem(item, from)
+            PlaceSlots.DropAction.PIN -> {
+                performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                onPlaceItem(item, hover)
+            }
+            PlaceSlots.DropAction.NO_CHANGE -> {}
+        }
+    }
+
+    private fun drawPlaceOverlay(c: Canvas, cal: Calendar, alpha: Float) {
+        val item = placeItem ?: return
+        val origin = hits.firstOrNull { it.slotIndex == placeFromSlot }
+        val hover = hits.firstOrNull { it.slotIndex == placeHoverSlot }
+        // The origin slot reads as "picked up": dimmed with an accent ring.
+        if (origin != null) {
+            fill.color = Color.argb((alpha * 150).toInt(), 0, 0, 0)
+            c.drawCircle(origin.x, origin.y, origin.r, fill)
+            stroke.strokeWidth = dp(1.5f)
+            stroke.color = withAlpha(accent, (alpha * 160).toInt())
+            c.drawCircle(origin.x, origin.y, origin.r, stroke)
+        }
+        // The slot that would receive the drop gets a bold ring.
+        if (hover != null && placeHoverSlot != placeFromSlot) {
+            stroke.strokeWidth = dp(3f)
+            stroke.color = withAlpha(accent, (alpha * 255).toInt())
+            c.drawCircle(hover.x, hover.y, hover.r + dp(3f), stroke)
+        }
+        // The carried bubble itself, slightly enlarged, under the finger.
+        val d = (origin?.r ?: dp(31f)) * 2f * 1.12f
+        drawGridItem(c, item, placeX, placeY, d, alpha, cal)
     }
 
     fun openClusterSheet() {
@@ -1780,6 +1847,7 @@ class WatchView(
         }
         if (nearest != null) centredItemKey = nearest.key
 
+        if (placeItem != null) drawPlaceOverlay(c, cal, alpha)
         drawGridHeader(c, w, top, nearest, ov, alpha)
     }
 
@@ -3458,7 +3526,11 @@ class WatchView(
             apps.target == 1f -> {
                 hitEntryAt(downX, downY)?.let { h ->
                     val fallbackSlot = activeGridItems.indexOfFirst { it.key == h.item.key }
-                    onLongPressItem(h.item, if (h.slotIndex >= 0) h.slotIndex else fallbackSlot)
+                    val slot = if (h.slotIndex >= 0) h.slotIndex else fallbackSlot
+                    // In the full grid, a long-press picks the bubble up for
+                    // drag-to-place; releasing without a drag opens the menu.
+                    if (canDragPlace(slot)) beginPlace(h.item, slot)
+                    else onLongPressItem(h.item, slot)
                 }
             }
             onFace -> onLongPressFace()
@@ -3581,6 +3653,20 @@ class WatchView(
             }
             MotionEvent.ACTION_MOVE -> {
                 if (pinching) return true
+                if (placeItem != null) {
+                    placeX = e.x; placeY = e.y
+                    if (hypot(e.x - downX, e.y - downY) > slop) placeMoved = true
+                    val centers = hits.filter { it.slotIndex >= 0 }.map { Triple(it.x, it.y, it.slotIndex) }
+                    val newHover = PlaceSlots.nearestSlot(e.x, e.y, centers, dp(90f))
+                    if (newHover != placeHoverSlot) {
+                        placeHoverSlot = newHover
+                        if (newHover >= 0 && newHover != placeFromSlot) {
+                            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        }
+                    }
+                    invalidate()
+                    return true
+                }
                 if (edgeCrownDragging && list.target == 1f) {
                     removeCallbacks(longPress)
                     scrubAlphabetAt(e.y)
@@ -3608,6 +3694,12 @@ class WatchView(
             }
             MotionEvent.ACTION_UP -> {
                 removeCallbacks(longPress)
+                if (placeItem != null) {
+                    finishPlace()
+                    dragging = false
+                    invalidate()
+                    return true
+                }
                 if (scrubbingLetter != null || edgeCrownDragging) {
                     scrubbingLetter = null
                     edgeCrownDragging = false
@@ -3638,6 +3730,9 @@ class WatchView(
                 pinching = false
                 scrubbingLetter = null
                 edgeCrownDragging = false
+                placeItem = null
+                placeHoverSlot = -1
+                placeMoved = false
                 invalidate()
             }
         }

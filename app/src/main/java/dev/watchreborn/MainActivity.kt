@@ -138,6 +138,7 @@ class MainActivity : Activity(), SensorEventListener {
             onTogglePinCard = ::togglePinCard,
             onClusterOptionChanged = ::handleClusterOptionChanged,
             onTopologySelected = ::handleTopologySelected,
+            onPlaceItem = ::placeItem,
         )
         view.accent = prefs.getInt(KEY_ACCENT, ACCENTS[0].second)
         view.preferList = prefs.getBoolean(KEY_LIST, false)
@@ -224,6 +225,13 @@ class MainActivity : Activity(), SensorEventListener {
             return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    /** Drag-to-place drop: pin the item into the dropped slot (any previous occupant is unpinned and flows). */
+    private fun placeItem(item: GridItem, slot: Int) {
+        repo.setPinnedSlot(item.key, slot)
+        pushAppsToView(apps)
+        Toast.makeText(this, "📌 ${item.label} placed at Hex #${slot + 1}", Toast.LENGTH_SHORT).show()
     }
 
     private fun isDefaultHomeApp(): Boolean {
