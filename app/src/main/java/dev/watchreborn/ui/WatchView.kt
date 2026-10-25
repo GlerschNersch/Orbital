@@ -105,6 +105,8 @@ class WatchView(
     private val onFileIntoFolder: (App, Folder, Int) -> Unit,
     private val onUnpinItem: (GridItem) -> Unit,
     private val onReorderFolderMember: (Folder, Int, Int) -> Unit,
+    private val onQuickInfo: (App) -> Unit,
+    private val onQuickUninstall: (App) -> Unit,
 ) : View(context) {
 
     init {
@@ -145,6 +147,13 @@ class WatchView(
     private var placeInFolder: Boolean = false
     private var placeFolder: Folder? = null
     private val releasePinRect = RectF()
+
+    /** Quick-action drop zones shown while carrying an app: App Info and (when allowed) Uninstall. */
+    private val infoZoneRect = RectF()
+    private val uninstallZoneRect = RectF()
+
+    /** Keys of apps that may be uninstalled (not system apps, main user). Set by the activity. */
+    var uninstallableKeys: Set<String> = emptySet()
 
     /** When true, pins are stored per cluster layout instead of one global set. */
     var perLayoutPins: Boolean = false
@@ -957,6 +966,19 @@ class WatchView(
         placeInFolder = false
         placeFolder = null
 
+        // Quick-action zones first: App Info / Uninstall while carrying an app.
+        if (moved && !inFolder && item is App) {
+            if (!infoZoneRect.isEmpty && infoZoneRect.contains(dropX, dropY)) {
+                performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                onQuickInfo(item)
+                return
+            }
+            if (!uninstallZoneRect.isEmpty && uninstallZoneRect.contains(dropX, dropY)) {
+                performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                onQuickUninstall(item)
+                return
+            }
+        }
         // Dropping a pinned bubble on the release zone unpins it.
         if (moved && !inFolder && !releasePinRect.isEmpty && releasePinRect.contains(dropX, dropY)) {
             performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
@@ -987,6 +1009,22 @@ class WatchView(
             }
             PlaceSlots.DropAction.NO_CHANGE -> {}
         }
+    }
+
+    /** One quick-action drop-zone pill (App Info / Uninstall) for the carry overlay. */
+    private fun drawQuickZone(c: Canvas, r: RectF, label: String, hot: Boolean, danger: Boolean, alpha: Float) {
+        fill.color = when {
+            hot && danger -> Color.argb((alpha * 245).toInt(), 120, 34, 40)
+            hot -> Color.argb((alpha * 245).toInt(), 38, 66, 34)
+            else -> Color.argb((alpha * 215).toInt(), 40, 40, 46)
+        }
+        c.drawRoundRect(r, r.height() / 2, r.height() / 2, fill)
+        stroke.strokeWidth = dp(1.2f)
+        stroke.color = if (danger) Color.argb((alpha * 200).toInt(), 255, 110, 110) else withAlpha(accent, (alpha * 200).toInt())
+        c.drawRoundRect(r, r.height() / 2, r.height() / 2, stroke)
+        text.textSize = sp(12.5f)
+        text.color = Color.argb((alpha * 255).toInt(), 245, 245, 248)
+        c.drawText(label, r.centerX() - text.measureText(label) / 2, r.centerY() + text.textSize * 0.35f, text)
     }
 
     /** The 240ms glide that flies a dropped bubble from the release point into its slot. */
@@ -1040,6 +1078,28 @@ class WatchView(
             c.drawText(s, releasePinRect.centerX() - text.measureText(s) / 2, releasePinRect.centerY() + text.textSize * 0.35f, text)
         } else {
             releasePinRect.setEmpty()
+        }
+        // Quick-action zones while carrying an app: drop on one to run it.
+        if (item is App) {
+            val zw = dp(150f)
+            val zh = dp(42f)
+            val gap = dp(12f)
+            val zy = height - bottomInset - dp(120f)
+            val canUninstall = item.key in uninstallableKeys
+            val totalW = if (canUninstall) zw * 2f + gap else zw
+            var zx = width / 2f - totalW / 2f
+            infoZoneRect.set(zx, zy, zx + zw, zy + zh)
+            drawQuickZone(c, infoZoneRect, "ℹ️  App Info", infoZoneRect.contains(placeX, placeY), danger = false, alpha = alpha)
+            zx += zw + gap
+            if (canUninstall) {
+                uninstallZoneRect.set(zx, zy, zx + zw, zy + zh)
+                drawQuickZone(c, uninstallZoneRect, "🗑  Uninstall", uninstallZoneRect.contains(placeX, placeY), danger = true, alpha = alpha)
+            } else {
+                uninstallZoneRect.setEmpty()
+            }
+        } else {
+            infoZoneRect.setEmpty()
+            uninstallZoneRect.setEmpty()
         }
         val origin = hits.firstOrNull { it.slotIndex == placeFromSlot }
         val hover = hits.firstOrNull { it.slotIndex == placeHoverSlot }

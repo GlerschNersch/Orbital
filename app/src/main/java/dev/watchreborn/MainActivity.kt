@@ -142,6 +142,8 @@ class MainActivity : Activity(), SensorEventListener {
             onFileIntoFolder = ::fileIntoFolder,
             onUnpinItem = ::unpinItem,
             onReorderFolderMember = ::reorderFolderMember,
+            onQuickInfo = ::quickAppInfo,
+            onQuickUninstall = ::quickUninstall,
         )
         view.accent = prefs.getInt(KEY_ACCENT, ACCENTS[0].second)
         view.preferList = prefs.getBoolean(KEY_LIST, false)
@@ -287,6 +289,20 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     /** Drag-arranging inside Folder view persists the folder's member order. */
+    /** Quick zone: open the system App Info page for a carried app. */
+    private fun quickAppInfo(item: App) {
+        runCatching {
+            launcherApps.startAppDetailsActivity(item.component, item.user, null, null)
+        }
+    }
+
+    /** Quick zone: ask the system to uninstall a carried app. */
+    private fun quickUninstall(item: App) {
+        runCatching {
+            startActivity(Intent(Intent.ACTION_DELETE, Uri.fromParts("package", item.component.packageName, null)))
+        }
+    }
+
     private fun reorderFolderMember(folder: Folder, from: Int, to: Int) {
         val keys = folder.apps.map { it.key }
         if (from !in keys.indices || to !in keys.indices || from == to) return
@@ -367,6 +383,11 @@ class MainActivity : Activity(), SensorEventListener {
             }
             view.post {
                 view.pinnedItemKeys = pinnedKeys
+                val myUser = Process.myUserHandle()
+                view.uninstallableKeys = list.asSequence()
+                    .filter { !it.system && it.user == myUser }
+                    .map { it.key }
+                    .toHashSet()
                 view.usageFactors = factors
                 view.setApps(list, byUse, folders, flatWithWidgets)
             }
