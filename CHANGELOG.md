@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.4 — 2026-10-25
+
+- **Quick menu morphs out of the bubble**: the bottom buttons are gone.
+  Picking up an app now blooms option chips out of the bubble's home spot in
+  an arc — **✕ Unpin** (when pinned), **ℹ️ Info**, **🗑 Uninstall** (when
+  allowed) — staggered, with a springy overshoot pop. Drag onto a chip (it
+  grows and lights up under your finger) and let go to run it. The arc flips
+  downward for bubbles near the top of the screen. Folders keep the top
+  unpin zone; the full menu still opens on release without dragging.
+
 ## 0.3.3 — 2026-10-25
 
 - **Quick options on long-press**: while you're holding an app bubble, two

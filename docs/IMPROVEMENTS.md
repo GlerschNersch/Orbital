@@ -35,6 +35,14 @@ Living list. The navigation cleanup of 2026-10-25 (commits `c5ad977`, `f8b7158`,
   asserts layered Back closes it, twice. Runs green on-device.
 - **Release hygiene** — versionName `0.2.0` / versionCode 2, with `CHANGELOG.md` started.
 
+## Done in 0.3.4 (2026-10-25, eighth pass)
+
+- **Quick menu blooms from the bubble** — bottom drop zones replaced by chips that
+  sprout from the picked-up bubble's home spot in an arc (Unpin when pinned, Info,
+  Uninstall when allowed), staggered 45ms apart with an easeOutBack overshoot pop;
+  arc flips downward near the top edge; chip under the finger grows and lights.
+  Release on a chip runs it; folders/widgets keep the top unpin zone.
+
 ## Done in 0.3.3 (2026-10-25, seventh pass)
 
 - **Quick options on long-press** — App Info / Uninstall drop zones appear at the
