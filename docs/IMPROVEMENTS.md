@@ -63,13 +63,85 @@ The whole 0.2.1 ideas backlog, built:
 
 Nothing queued — pick from Later below.
 
-## Ideas backlog
+## Ideas backlog (comprehensive pass, 2026-10-25)
 
-Empty — the 2026-10-25 list shipped in 0.3.0. New candidates:
+Sizes: S = an hour-ish, M = an afternoon, L = a bigger project.
 
-- **Bloom-mode member arranging** — reorder members while a folder is bloomed in place
-  (0.3.0 covers the full-screen Folder view only).
-- **Drag between grid and List view** — carry a bubble across the view switch.
+### Arranging & folders
+
+- **Bloom-mode member arranging** (M) — reorder members while a folder is bloomed in
+  place; 0.3.0 covers the full-screen Folder view only.
+- **Drag out of a folder** (M) — drag a bloomed/folder-view member back onto the grid to
+  un-file it (today filing is one-way by drag; the menu is the way back).
+- **Swap instead of evict** (S) — setting: dropping on an occupied slot swaps the two
+  bubbles instead of unpinning the occupant.
+- **Pin to a chosen hex number** (S) — long-press menu gains "Pin to Hex #…", closing
+  the last placement gap (menu only offers current/center slots today).
+- **Folder rename + custom folders** (M) — folders are auto-grouped and fixed-name
+  today; allow renaming and creating an empty folder to drag apps into.
+- **Batch edit** (M) — in Edit Layout mode, tap several bubbles to select, then move or
+  file them together.
+- **Drag between grid and List view** (L) — carry a bubble across the List/Grid switch
+  and drop it in the other view.
+
+### Discoverability & learning
+
+- **Widget pod discoverability** (S) — live widget bubbles bloom on tap, but nothing
+  signals it; a subtle pulse on first grid entry could teach it.
+- **Coach hints for the new gestures** (S) — hints exist for pinch/crown/scrub/pin, but
+  not for drag-to-place refinements: the release zone, the undo bar, Edit Layout mode,
+  filing onto folders. One hint each, same retire-on-use mechanics.
+- **Guided first-run tour** (M) — three-step overlay walkthrough (grid → drag a bubble →
+  sheet) shown once on a fresh install, skippable.
+- **"What's new" sheet entry** (S) — after an update, the sheet shows one line naming
+  the new gesture(s) until dismissed.
+
+### Layouts & theming
+
+- **Per-topology accents** (M) — accent colour is global; per-layout defaults would make
+  layouts feel distinct (Gravity already reads as "the green one").
+- **Per-topology zoom/pan memory** (M) — remember zoom/pan per layout instead of
+  resetting on switch (Nebula already special-cases zoom).
+- **Physics presets** (S) — Bubble Physics is one toggle; offer Calm / Lively / Wild
+  spring-and-jello presets instead.
+- **New topology: Constellation Drift** (M) — slow ambient drift of the whole cluster
+  (positions from the existing seeded generators + a time-based offset).
+
+### Data safety & settings
+
+- **Backup / restore settings** (M) — export pins, folder order, group overrides and
+  sheet settings to a JSON file (and import it back). Would have made the 2026-10-25
+  test-wipe a non-event.
+- **Stale pin cleanup** (S) — pins/order entries for uninstalled apps linger forever;
+  prune them during the app-list load.
+- **Reset layout action** (S) — sheet action that clears pins + folder order (with
+  confirm), distinct from Clear Pins.
+- **Sheet search** (S) — the sheet now has 12+ rows; a filter field at the top once it
+  grows further.
+
+### Widgets, face & his WIP
+
+- **Finish the in-progress modules** (L) — NowPlaying, Shortcuts, ControlCenter and
+  AppGroups are written but uncommitted/untested; bring them to shippable, one at a
+  time, with tests before wiring UI.
+- **Configurable face complications** (M) — choose which stats ring the clock hub
+  (battery is fixed today).
+- **More live widget kinds** (M) — e.g. next-calendar-event and step-count bubbles in
+  the same live-bubble family.
+
+### Under the hood
+
+- **Extract a PlaceController** (M) — drag/place state and overlays out of the
+  4,300-line WatchView into their own class (same pattern as NavBack/PlaceSlots).
+- **Screenshot tests for sheet & picker** (M) — the two most layout-fragile surfaces;
+  catch row-compression regressions automatically.
+- **Instrumented coverage for 0.3.0 paths** (S) — undo restore, per-layout pin scoping,
+  folder-view reorder (DragPlaceTest covers place + edit-mode today).
+- **One-command ship script** (S) — build + unit + instrumented + install + state
+  check as a single PC-side script, from the manual sequence used all day on
+  2026-10-25 (including the prefs-restore verification).
+- **Idle physics pause** (S) — stop spring integration when the grid is settled and
+  untouched, for battery.
 
 ## Later (bigger bets)
 
