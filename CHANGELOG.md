@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.3 — 2026-10-25
+
+- **Quick options on long-press**: while you're holding an app bubble, two
+  quick-action zones appear along the bottom — **ℹ️ App Info** and
+  **🗑 Uninstall**. Drag onto one and let go to run it, no menu needed.
+  Uninstall only appears for apps that can actually be uninstalled (system
+  apps and other profiles are excluded). They join the existing
+  "Drop here to unpin" zone, and the full long-press menu still opens if you
+  let go without dragging.
+
 ## 0.3.2 — 2026-10-25
 
 - **Bubble motion pass**: moving bubbles no longer teleport.

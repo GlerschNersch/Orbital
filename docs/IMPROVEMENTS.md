@@ -35,6 +35,13 @@ Living list. The navigation cleanup of 2026-10-25 (commits `c5ad977`, `f8b7158`,
   asserts layered Back closes it, twice. Runs green on-device.
 - **Release hygiene** — versionName `0.2.0` / versionCode 2, with `CHANGELOG.md` started.
 
+## Done in 0.3.3 (2026-10-25, seventh pass)
+
+- **Quick options on long-press** — App Info / Uninstall drop zones appear at the
+  bottom while carrying an app (Uninstall only for uninstallable apps: non-system,
+  main user); routed ahead of the unpin zone in finishPlace. Full menu unchanged
+  on release-without-drag.
+
 ## Done in 0.3.2 (2026-10-25, sixth pass)
 
 - **Bubble motion pass** — per-item world-position glide (110ms exponential damping,
