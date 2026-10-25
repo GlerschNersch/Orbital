@@ -65,6 +65,7 @@ enum class ClusterOption {
     CLUSTER_TOPOLOGY,
     BUBBLE_PHYSICS,
     PER_LAYOUT_PINS,
+    USAGE_GROWTH,
     EDIT_LAYOUT,
     HONEYCOMB_HOME,
     BLOOM_MODE,
@@ -147,6 +148,15 @@ class WatchView(
 
     /** When true, pins are stored per cluster layout instead of one global set. */
     var perLayoutPins: Boolean = false
+
+    /** Usage growth: bubbles scale with how much their app is used. */
+    var usageGrowth: Boolean = true
+
+    /** Per-item diameter multipliers from [UsageScale], keyed by GridItem.key. Set by the activity. */
+    var usageFactors: Map<String, Float> = emptyMap()
+
+    private fun growthFor(item: GridItem): Float =
+        if (usageGrowth) usageFactors[item.key] ?: 1f else 1f
 
     /** Edit mode: bubbles can be dragged immediately (no long-press); Done pill or Back exits. */
     var editMode: Boolean = false
@@ -1617,7 +1627,7 @@ class WatchView(
         for (i in 0 until minOf(7, items.size)) {
             val hex = if (i == 0) Hex(0, 0) else FOCUS_RING_ORDER[i - 1]
             flatCenter(hex, Metrics.FOCUS_RING * u * zoom, tmp)
-            val d = (if (i == 0) Metrics.FOCUS_CENTER_D else Metrics.FOCUS_RING_D) * u * zoom
+            val d = (if (i == 0) Metrics.FOCUS_CENTER_D else Metrics.FOCUS_RING_D) * u * zoom * growthFor(items[i])
             val x = cx + tmp[0]; val y = cy + tmp[1]
             val item = items[i]
             drawIcon(c, item.blurred, x, y, d * item.blurredScale, alpha * (1f - sharpness), false, false)
@@ -1771,7 +1781,7 @@ class WatchView(
                 continue
             }
             val scaleMod = 1f - 0.55f * cVal
-            bubbleDia[i] = Metrics.GRID_CENTER_D * u * size * effZoom * scaleMod
+            bubbleDia[i] = Metrics.GRID_CENTER_D * u * size * effZoom * scaleMod * growthFor(item)
         }
 
         val itemAlpha = alpha * (1f - 0.68f * bVal) * (1f - cVal)
@@ -2493,7 +2503,7 @@ class WatchView(
             val k = if (d > 1e-4f) Fisheye.pulled(d) / d else 1f
             val x = cx + dx * k * u
             val y = cy + dy * k * u
-            val dia = Metrics.GRID_CENTER_D * u * size * 0.92f * bVal
+            val dia = Metrics.GRID_CENTER_D * u * size * 0.92f * bVal * growthFor(folder.apps[i])
             val app = folder.apps[i]
             drawIcon(c, app.icon, x, y, dia, alpha * bVal, hasNotification(app), app.key in pinnedItemKeys)
             if (hypot(x - cx, y - cy) <= islandR) {
@@ -2859,6 +2869,7 @@ class WatchView(
             add(Triple(null, "BEHAVIOR", ""))
             add(Triple(ClusterOption.BUBBLE_PHYSICS, "Bubble Physics", if (bubblePhysics) "🫧 Jello, Wake Wave, Spin & Billiards On" else "⚪ Off (Bubbles Sit Still)"))
             add(Triple(ClusterOption.PER_LAYOUT_PINS, "Per-Layout Pins", if (perLayoutPins) "🗂 Separate pins for each layout" else "🌐 One pin set for all layouts"))
+            add(Triple(ClusterOption.USAGE_GROWTH, "Usage Growth", if (usageGrowth) "📈 Bubbles grow with app use" else "⚪ All bubbles the same size"))
             add(Triple(ClusterOption.BLOOM_MODE, "Folder Open Style", if (bloomFolders) "🌊 Bloom In-Place (Shockwave)" else "📂 Full-Screen Folder"))
             add(Triple(ClusterOption.QUICK_SNIPE, "Mini-Icon Tap", if (quickSnipe) "🎯 Quick-Snipe (Outer 6 Launch)" else "👆 Tap Anywhere Opens Folder"))
             add(Triple(ClusterOption.LIVE_WIDGETS, "Live Grid Widgets", if (liveWidgets) "⚡ Media, Timer, Calendar & Vitals On" else "⚪ Off (Apps & Folders Only)"))
@@ -2931,6 +2942,7 @@ class WatchView(
                 ClusterOption.HONEYCOMB_HOME -> honeycombHome
                 ClusterOption.BUBBLE_PHYSICS -> bubblePhysics
                 ClusterOption.PER_LAYOUT_PINS -> perLayoutPins
+                ClusterOption.USAGE_GROWTH -> usageGrowth
                 ClusterOption.BLOOM_MODE -> bloomFolders
                 ClusterOption.QUICK_SNIPE -> quickSnipe
                 ClusterOption.LIVE_WIDGETS -> liveWidgets
@@ -3095,7 +3107,7 @@ class WatchView(
             val k = if (d > 1e-4f) Fisheye.pulled(d) / d else 1f
             val x = cx + dx * k * u
             val y = cy + dy * k * u
-            val dia = Metrics.GRID_CENTER_D * u * size * 1.08f
+            val dia = Metrics.GRID_CENTER_D * u * size * 1.08f * growthFor(folder.apps[i])
             val app = folder.apps[i]
             drawIcon(c, app.icon, x, y, dia, alpha, hasNotification(app), app.key in pinnedItemKeys)
             hits += Hit(x, y, dia / 2, app, i)

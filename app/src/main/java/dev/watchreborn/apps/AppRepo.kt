@@ -476,6 +476,9 @@ class AppRepo(private val context: Context) {
         prefs.edit().putInt("n:$key", count + 1).putLong("t:$key", System.currentTimeMillis()).apply()
     }
 
+    /** Recency-decayed launch score for [key] right now (0 for never opened). */
+    fun usageScore(key: String): Float = score(key, System.currentTimeMillis())
+
     private fun score(key: String, now: Long): Float {
         val count = prefs.getInt("n:$key", 0)
         if (count == 0) return 0f

@@ -153,6 +153,7 @@ class MainActivity : Activity(), SensorEventListener {
         view.fixedNeighborhoods = prefs.getBoolean(KEY_FIXED_NEIGHBORHOODS, true)
         view.bubblePhysics = prefs.getBoolean(KEY_BUBBLE_PHYSICS, true)
         view.perLayoutPins = prefs.getBoolean(KEY_PER_LAYOUT_PINS, false)
+        view.usageGrowth = prefs.getBoolean(KEY_USAGE_GROWTH, true)
         val savedTopo = prefs.getString(KEY_CLUSTER_TOPOLOGY, ClusterTopology.HONEYCOMB.name)
         view.clusterTopology = runCatching { ClusterTopology.valueOf(savedTopo ?: ClusterTopology.HONEYCOMB.name) }
             .getOrDefault(ClusterTopology.HONEYCOMB)
@@ -355,8 +356,18 @@ class MainActivity : Activity(), SensorEventListener {
             list.forEach { if (repo.isPinned(it.key, scope)) pinnedKeys += it.key }
             folders.forEach { if (repo.isPinned(it.key, scope)) pinnedKeys += it.key }
             WidgetKind.entries.forEach { if (repo.isPinned(it.key, scope)) pinnedKeys += it.key }
+            // Usage growth: diameter factors from the recency-decayed launch
+            // scores; a folder grows with its most-used member.
+            val maxScore = list.maxOfOrNull { repo.usageScore(it.key) } ?: 0f
+            val factors = HashMap<String, Float>()
+            list.forEach { factors[it.key] = dev.watchreborn.ui.UsageScale.factor(repo.usageScore(it.key), maxScore) }
+            folders.filterIsInstance<Folder>().forEach { f ->
+                val hottest = f.apps.maxOfOrNull { repo.usageScore(it.key) } ?: 0f
+                factors[f.key] = dev.watchreborn.ui.UsageScale.factor(hottest, maxScore)
+            }
             view.post {
                 view.pinnedItemKeys = pinnedKeys
+                view.usageFactors = factors
                 view.setApps(list, byUse, folders, flatWithWidgets)
             }
         }
@@ -429,6 +440,11 @@ class MainActivity : Activity(), SensorEventListener {
                 prefs.edit().putBoolean(KEY_PER_LAYOUT_PINS, next).apply()
                 view.perLayoutPins = next
                 if (apps.isNotEmpty()) pushAppsToView(apps)
+            }
+            ClusterOption.USAGE_GROWTH -> {
+                val next = !view.usageGrowth
+                prefs.edit().putBoolean(KEY_USAGE_GROWTH, next).apply()
+                view.usageGrowth = next
             }
             ClusterOption.EDIT_LAYOUT -> {
                 // Handled inside WatchView: the sheet row enters edit mode directly.
@@ -1118,6 +1134,7 @@ class MainActivity : Activity(), SensorEventListener {
         const val KEY_CLUSTER_TOPOLOGY = "cluster_topology"
         const val KEY_BUBBLE_PHYSICS = "bubble_physics"
         const val KEY_PER_LAYOUT_PINS = "per_layout_pins"
+        const val KEY_USAGE_GROWTH = "usage_growth"
         const val KEY_PINNED_CARDS = "pinned_cards"
         const val KEY_HINTS_SEEN = "hints_seen"
         const val KEY_APPWIDGET_IDS = "appwidget_ids"
