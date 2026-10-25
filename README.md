@@ -16,12 +16,18 @@ Sibling of XMB, PS4, X360, Switch, C64U, VCS and TSF Reborn.
   - **Swipe up** for the Smart Stack; **swipe down** for Android's notifications.
   - **Hold** the face to change the accent colour or the home app.
 - **Home** works like the watch's crown: on the face it opens your apps, anywhere else it goes
-  back to the face. **Back** also returns to the face.
+  back to the face. **Back** steps out one layer at a time — layout picker, options sheet,
+  folder, widget pod, List view — and only then to the face.
 - **Apps** open on a cluster: the app you use most in the middle, the next six around it, and
   everything else blurred behind. **Drag** to spread out into the full honeycomb, which shrinks
   icons toward the edges and settles with an app in the middle when you let go.
   **List View** at the bottom switches to an A-Z list (and **Grid View** back); your choice is
   remembered. **Hold** an app for App Info or Uninstall.
+- **⚙ Cluster** (top right of the grid) opens the options sheet, grouped into **Layout**,
+  **Behavior** and **Actions**. The **Cluster Topology** row opens a picker for all 11 cluster
+  layouts (honeycomb, orbits, river, spiral, bezel, nebula, gravity, helix, hourglass, thumb-arc
+  dock and zero-G billiards) — tap one to apply it, no cycling. **Pinch out** on the grid for an
+  overview of the whole cluster; double-tap empty space to recenter.
 - **Smart Stack**: date and time, then cards for your next alarm, battery and recent apps.
   Scroll through them; pull down from the first card to go back to the face.
 - Work-profile apps show with Android's briefcase badge. Private Space apps stay out of the
