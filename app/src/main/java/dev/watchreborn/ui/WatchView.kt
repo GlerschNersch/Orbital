@@ -97,6 +97,7 @@ class WatchView(
     private val onCardAction: (CardAction) -> Unit,
     private val onTogglePinCard: (String) -> Unit,
     private val onClusterOptionChanged: (ClusterOption) -> Unit,
+    private val onTopologySelected: (ClusterTopology) -> Unit,
 ) : View(context) {
 
     init {
@@ -278,6 +279,9 @@ class WatchView(
     private val clusterPillRect = RectF()
     private val sheetRowRects = ArrayList<Pair<RectF, ClusterOption>>()
     private val sheetBoundsRect = RectF()
+    private val topologyRowRects = ArrayList<Pair<RectF, ClusterTopology>>()
+    private val pickerBackRect = RectF()
+    private var topologyPickerOpen = false
     private val widgetActionRects = ArrayList<Pair<RectF, String>>()
 
     /** Alphabet scrubber state in List View. */
@@ -622,6 +626,7 @@ class WatchView(
     }
 
     fun openClusterSheet() {
+        topologyPickerOpen = false
         clusterSheet.target = 1f
         performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
         invalidate()
@@ -657,6 +662,17 @@ class WatchView(
         } else {
             startConstellationSearch()
         }
+    }
+
+    /** Applies a layout chosen in the topology picker and reports it for persistence. */
+    fun selectTopology(topo: ClusterTopology) {
+        clusterTopology = topo
+        overview.target = 0f
+        userZoom.target = if (topo == ClusterTopology.NEBULA) 0.72f else 1f
+        topologyPickerOpen = false
+        onTopologySelected(topo)
+        performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+        invalidate()
     }
 
     fun cycleClusterTopology(): ClusterTopology {
@@ -2508,28 +2524,42 @@ class WatchView(
         fill.color = Color.argb((t * 195).toInt(), 0, 0, 0)
         c.drawRect(0f, 0f, w, h, fill)
 
+        if (topologyPickerOpen) {
+            drawTopologyPicker(c, w, h, t)
+            return
+        }
+
         val padX = dp(18f)
         val cardW = w - 2 * padX
         val rowH = dp(38f)
         val gap = dp(4f)
-        val rows = buildList {
-            add(Triple(ClusterOption.CLUSTER_TOPOLOGY, "Cluster Topology (${ClusterTopology.entries.size} Designs)", "${clusterTopology.fullTitle} • Tap to cycle"))
+        // Sectioned rows: a null option marks a section header (not tappable).
+        // Toggles live under LAYOUT / BEHAVIOR, one-shot actions under ACTIONS.
+        val rows = buildList<Triple<ClusterOption?, String, String>> {
+            add(Triple(null, "LAYOUT", ""))
+            add(Triple(ClusterOption.CLUSTER_TOPOLOGY, "Cluster Topology", "${clusterTopology.fullTitle} • Tap to browse all ${ClusterTopology.entries.size} designs"))
+            add(Triple(ClusterOption.FIXED_NEIGHBORHOODS, "Grid Layout", if (fixedNeighborhoods) "🧭 Fixed Compass Neighborhoods" else "🔥 Dynamic Usage Spiral"))
+            add(Triple(ClusterOption.HONEYCOMB_HOME, "Home Screen", if (honeycombHome) "🏠 Honeycomb Core Hub (0,0 Clock)" else "⌚ Watch Face First"))
+            add(Triple(null, "BEHAVIOR", ""))
             add(Triple(ClusterOption.BUBBLE_PHYSICS, "Bubble Physics", if (bubblePhysics) "🫧 Jello, Wake Wave, Spin & Billiards On" else "⚪ Off (Bubbles Sit Still)"))
-            add(Triple(ClusterOption.SET_DEFAULT_HOME, "Default Phone Launcher", "📲 Tap to Set Watch Reborn as Home App"))
-            add(Triple(ClusterOption.SYSTEM_WIDGETS, "Android System Widgets", "🧩 Tap to View / Add App Widgets"))
-            add(Triple(ClusterOption.HONEYCOMB_HOME, "Home Screen (#1)", if (honeycombHome) "🏠 Honeycomb Core Hub (0,0 Clock)" else "⌚ Watch Face First"))
-            add(Triple(ClusterOption.BLOOM_MODE, "Folder Open Style (#2)", if (bloomFolders) "🌊 Bloom In-Place (Shockwave)" else "📂 Full-Screen Folder"))
-            add(Triple(ClusterOption.QUICK_SNIPE, "Mini-Icon Tap (#3)", if (quickSnipe) "🎯 Quick-Snipe (Outer 6 Launch)" else "👆 Tap Anywhere Opens Folder"))
-            add(Triple(ClusterOption.CONSTELLATION_SEARCH, "Constellation Search (#4)", "✨ Tap to Unravel All Folders"))
-            add(Triple(ClusterOption.LIVE_WIDGETS, "Live Grid Widgets (#5)", if (liveWidgets) "⚡ Media, Timer, Calendar & Vitals On" else "⚪ Off (Apps & Folders Only)"))
-            add(Triple(ClusterOption.FIXED_NEIGHBORHOODS, "Grid Layout (#6)", if (fixedNeighborhoods) "🧭 Fixed Compass Neighborhoods" else "🔥 Dynamic Usage Spiral"))
+            add(Triple(ClusterOption.BLOOM_MODE, "Folder Open Style", if (bloomFolders) "🌊 Bloom In-Place (Shockwave)" else "📂 Full-Screen Folder"))
+            add(Triple(ClusterOption.QUICK_SNIPE, "Mini-Icon Tap", if (quickSnipe) "🎯 Quick-Snipe (Outer 6 Launch)" else "👆 Tap Anywhere Opens Folder"))
+            add(Triple(ClusterOption.LIVE_WIDGETS, "Live Grid Widgets", if (liveWidgets) "⚡ Media, Timer, Calendar & Vitals On" else "⚪ Off (Apps & Folders Only)"))
             add(Triple(ClusterOption.AUTO_FOLDERS, "Category Clustering", if (autoFolders) "🟢 Auto Folders On" else "⚪ Loose Apps Only"))
+            add(Triple(null, "ACTIONS", ""))
+            add(Triple(ClusterOption.CONSTELLATION_SEARCH, "App Search", "🔍 Search — folders unravel into the constellation"))
+            add(Triple(ClusterOption.SYSTEM_WIDGETS, "Android System Widgets", "🧩 Tap to View / Add App Widgets"))
+            add(Triple(ClusterOption.SET_DEFAULT_HOME, "Default Phone Launcher", "📲 Tap to Set Watch Reborn as Home App"))
             if (pinnedItemKeys.isNotEmpty()) {
                 add(Triple(ClusterOption.CLEAR_PINS, "Pinned Hex Slots (${pinnedItemKeys.size})", "📌 Tap to unpin all bubbles"))
             }
         }
 
-        val sheetH = dp(68f) + rows.size * (rowH + gap) + dp(52f)
+        val headerH = dp(19f)
+        val optionCount = rows.count { it.first != null }
+        val headerCount = rows.size - optionCount
+        val sheetH = dp(68f) + optionCount * (rowH + gap) + headerCount * headerH + dp(52f)
+
         val sheetTop = (h - sheetH) / 2f + (1f - t) * dp(36f)
         sheetBoundsRect.set(padX, sheetTop, padX + cardW, sheetTop + sheetH)
 
@@ -2546,11 +2576,18 @@ class WatchView(
 
         text.textSize = sp(11f)
         text.color = Color.argb((a * 0.7f).toInt(), 188, 190, 198)
-        val hint = "Toggle #1–#6 live • Long-press any bubble to Pin its hex slot"
+        val hint = "Layout • Behavior • Actions — long-press a bubble to pin it"
         c.drawText(hint, w / 2 - text.measureText(hint) / 2, sheetTop + dp(49f), text)
 
         var ry = sheetTop + dp(62f)
         for ((opt, label, valueText) in rows) {
+            if (opt == null) {
+                text.textSize = sp(10.5f)
+                text.color = Color.argb((a * 0.65f).toInt(), 168, 170, 178)
+                c.drawText(label, padX + dp(16f), ry + dp(13f), text)
+                ry += headerH
+                continue
+            }
             val r = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + rowH)
             fill.color = Color.argb(a, 40, 42, 48)
             c.drawRoundRect(r, dp(14f), dp(14f), fill)
@@ -2562,6 +2599,34 @@ class WatchView(
             text.textSize = sp(13f)
             text.color = withAlpha(accent, a)
             c.drawText(valueText, r.left + dp(14f), r.top + dp(34f), text)
+
+            // Right-side affordance: an ON/OFF chip for toggles, a chevron for actions,
+            // so the two kinds of row no longer look identical.
+            val toggleOn: Boolean? = when (opt) {
+                ClusterOption.FIXED_NEIGHBORHOODS -> fixedNeighborhoods
+                ClusterOption.HONEYCOMB_HOME -> honeycombHome
+                ClusterOption.BUBBLE_PHYSICS -> bubblePhysics
+                ClusterOption.BLOOM_MODE -> bloomFolders
+                ClusterOption.QUICK_SNIPE -> quickSnipe
+                ClusterOption.LIVE_WIDGETS -> liveWidgets
+                ClusterOption.AUTO_FOLDERS -> autoFolders
+                else -> null
+            }
+            if (toggleOn != null) {
+                val chipW = dp(38f)
+                val chipH = dp(17f)
+                val chip = RectF(r.right - dp(12f) - chipW, r.centerY() - chipH / 2, r.right - dp(12f), r.centerY() + chipH / 2)
+                fill.color = if (toggleOn) withAlpha(accent, a) else Color.argb(a, 84, 84, 90)
+                c.drawRoundRect(chip, chipH / 2, chipH / 2, fill)
+                text.textSize = sp(9f)
+                text.color = if (toggleOn) Color.argb(a, 0, 0, 0) else Color.argb(a, 235, 235, 240)
+                val s = if (toggleOn) "ON" else "OFF"
+                c.drawText(s, chip.centerX() - text.measureText(s) / 2, chip.centerY() + text.textSize * 0.35f, text)
+            } else {
+                text.textSize = sp(17f)
+                text.color = Color.argb((a * 0.6f).toInt(), 200, 202, 208)
+                c.drawText("›", r.right - dp(22f), r.centerY() + text.textSize * 0.35f, text)
+            }
 
             sheetRowRects += r to opt
             ry += rowH + gap
@@ -2577,6 +2642,76 @@ class WatchView(
         val doneStr = "Done"
         c.drawText(doneStr, w / 2 - text.measureText(doneStr) / 2, doneRect.centerY() + text.textSize * 0.35f, text)
         sheetRowRects += doneRect to ClusterOption.CLOSE_SHEET
+    }
+
+    /** Full list of cluster layouts: tap one to apply it directly (replaces tap-to-cycle). */
+    private fun drawTopologyPicker(c: Canvas, w: Float, h: Float, t: Float) {
+        val a = (t * 255).toInt().coerceIn(0, 255)
+        topologyRowRects.clear()
+
+        val padX = dp(18f)
+        val cardW = w - 2 * padX
+        val rowH = dp(38f)
+        val gap = dp(4f)
+        val all = ClusterTopology.entries
+        val sheetH = dp(68f) + all.size * (rowH + gap) + dp(52f)
+        val sheetTop = (h - sheetH) / 2f + (1f - t) * dp(36f)
+        sheetBoundsRect.set(padX, sheetTop, padX + cardW, sheetTop + sheetH)
+
+        fill.color = Color.argb(a, 24, 26, 30)
+        c.drawRoundRect(sheetBoundsRect, dp(24f), dp(24f), fill)
+        stroke.strokeWidth = dp(1.5f)
+        stroke.color = withAlpha(accent, (a * 0.6f).toInt())
+        c.drawRoundRect(sheetBoundsRect, dp(24f), dp(24f), stroke)
+
+        text.textSize = sp(16.5f)
+        text.color = Color.argb(a, 255, 255, 255)
+        val title = "Cluster Layout"
+        c.drawText(title, w / 2 - text.measureText(title) / 2, sheetTop + dp(30f), text)
+
+        text.textSize = sp(11f)
+        text.color = Color.argb((a * 0.7f).toInt(), 188, 190, 198)
+        val hint = "Tap a design to apply it instantly"
+        c.drawText(hint, w / 2 - text.measureText(hint) / 2, sheetTop + dp(49f), text)
+
+        var ry = sheetTop + dp(62f)
+        for (topo in all) {
+            val r = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + rowH)
+            fill.color = Color.argb(a, 40, 42, 48)
+            c.drawRoundRect(r, dp(14f), dp(14f), fill)
+            if (topo == clusterTopology) {
+                stroke.strokeWidth = dp(1.5f)
+                stroke.color = withAlpha(accent, (a * 0.8f).toInt())
+                c.drawRoundRect(r, dp(14f), dp(14f), stroke)
+            }
+
+            text.textSize = sp(13f)
+            text.color = Color.argb(a, 255, 255, 255)
+            c.drawText(topo.fullTitle, r.left + dp(14f), r.top + dp(16f), text)
+
+            text.textSize = sp(10.5f)
+            text.color = Color.argb((a * 0.75f).toInt(), 178, 180, 188)
+            c.drawText(topo.subtitle, r.left + dp(14f), r.top + dp(34f), text)
+
+            if (topo == clusterTopology) {
+                text.textSize = sp(15f)
+                text.color = withAlpha(accent, a)
+                c.drawText("✓", r.right - dp(26f), r.centerY() + text.textSize * 0.35f, text)
+            }
+
+            topologyRowRects += r to topo
+            ry += rowH + gap
+        }
+
+        val backW = dp(130f)
+        val backH = dp(38f)
+        pickerBackRect.set(w / 2 - backW / 2, ry + dp(4f), w / 2 + backW / 2, ry + dp(4f) + backH)
+        fill.color = Color.argb(a, 52, 54, 60)
+        c.drawRoundRect(pickerBackRect, backH / 2, backH / 2, fill)
+        text.textSize = sp(14f)
+        text.color = Color.argb(a, 255, 255, 255)
+        val backStr = "‹ Back"
+        c.drawText(backStr, w / 2 - text.measureText(backStr) / 2, pickerBackRect.centerY() + text.textSize * 0.35f, text)
     }
 
     /** Classic full-screen Folder View (used when [bloomFolders] is false). */
@@ -3666,6 +3801,24 @@ class WatchView(
     private fun tap(x: Float, y: Float) {
         // 0. Cluster Options Sheet taps
         if (clusterSheet.target == 1f) {
+            if (topologyPickerOpen) {
+                topologyRowRects.lastOrNull { it.first.contains(x, y) }?.let { (_, topo) ->
+                    selectTopology(topo)
+                    return
+                }
+                if (pickerBackRect.contains(x, y)) {
+                    topologyPickerOpen = false
+                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    invalidate()
+                    return
+                }
+                if (!sheetBoundsRect.contains(x, y)) {
+                    topologyPickerOpen = false
+                    clusterSheet.target = 0f
+                    invalidate()
+                }
+                return
+            }
             sheetRowRects.lastOrNull { it.first.contains(x, y) }?.let { (_, opt) ->
                 performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
                 when (opt) {
@@ -3675,6 +3828,10 @@ class WatchView(
                     }
                     ClusterOption.CONSTELLATION_SEARCH -> {
                         startConstellationSearch()
+                    }
+                    ClusterOption.CLUSTER_TOPOLOGY -> {
+                        topologyPickerOpen = true
+                        invalidate()
                     }
                     else -> {
                         onClusterOptionChanged(opt)

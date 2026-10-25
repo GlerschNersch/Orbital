@@ -137,6 +137,7 @@ class MainActivity : Activity(), SensorEventListener {
             onCardAction = ::handleCardAction,
             onTogglePinCard = ::togglePinCard,
             onClusterOptionChanged = ::handleClusterOptionChanged,
+            onTopologySelected = ::handleTopologySelected,
         )
         view.accent = prefs.getInt(KEY_ACCENT, ACCENTS[0].second)
         view.preferList = prefs.getBoolean(KEY_LIST, false)
@@ -315,6 +316,10 @@ class MainActivity : Activity(), SensorEventListener {
             volume = (curVol.toFloat() / maxVol).coerceIn(0f, 1f),
         )
         view.invalidate()
+    }
+
+    private fun handleTopologySelected(topo: ClusterTopology) {
+        prefs.edit().putString(KEY_CLUSTER_TOPOLOGY, topo.name).apply()
     }
 
     private fun handleClusterOptionChanged(opt: ClusterOption) {
