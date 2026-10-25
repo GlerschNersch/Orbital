@@ -35,9 +35,32 @@ Living list. The navigation cleanup of 2026-10-25 (commits `c5ad977`, `f8b7158`,
   asserts layered Back closes it, twice. Runs green on-device.
 - **Release hygiene** — versionName `0.2.0` / versionCode 2, with `CHANGELOG.md` started.
 
+## Done in 0.2.1 (2026-10-25, third pass)
+
+- **Drag-to-place** — long-press picks a grid bubble up; drag highlights the target hex
+  (with haptic ticks); drop pins it via the existing slot-pin store (occupant evicted,
+  per the established rule). Release without dragging opens the classic menu, so nothing
+  was lost. Pure drop logic in `PlaceSlots` with unit tests; full gesture covered by the
+  instrumented `DragPlaceTest`.
+
 ## Next
 
 Nothing queued — pick from Later below.
+
+## Ideas backlog (gathered 2026-10-25)
+
+- **Drag onto a folder to file an app into it** — drop target detection already exists;
+  a folder drop would call the same group-override the long-press Folder submenu uses.
+- **Unpin by dragging** — drag a pinned bubble to a "Release pin" zone (or shake it off
+  its slot) instead of the menu round-trip.
+- **Edit mode** — one long-press enters a mode where every bubble is draggable without
+  holding each time; Back/Done exits. Drag-to-place is the per-bubble version of this.
+- **Undo for placement** — the "placed at Hex #N" toast gains an Undo action that
+  restores the previous pin state (including the evicted occupant).
+- **Folder-view arranging** — the same drag-to-place inside an open folder, reordering
+  its members.
+- **Per-topology pins** — a slot index means different geometry in different layouts;
+  pins could optionally be remembered per layout instead of globally.
 
 ## Later (bigger bets)
 

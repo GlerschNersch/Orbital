@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1 — 2026-10-25
+
+- **Drag-to-place**: long-press any bubble in the full grid to pick it up, drag
+  it over the hex that should hold it (the target slot rings in the accent
+  colour, with a haptic tick as the target changes), and release to pin it
+  there. Releasing without dragging still opens the classic long-press menu.
+  Dropping a bubble on an occupied slot unpins the previous occupant, matching
+  the existing pin rules. The drop logic is unit-tested (`PlaceSlots`) and the
+  full gesture is covered by an instrumented test (`DragPlaceTest`).
+
 ## 0.2.0 — 2026-10-25
 
 Navigation cleanup release.

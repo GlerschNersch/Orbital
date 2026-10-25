@@ -22,7 +22,9 @@ Sibling of XMB, PS4, X360, Switch, C64U, VCS and TSF Reborn.
   everything else blurred behind. **Drag** to spread out into the full honeycomb, which shrinks
   icons toward the edges and settles with an app in the middle when you let go.
   **List View** at the bottom switches to an A-Z list (and **Grid View** back); your choice is
-  remembered. **Hold** an app for App Info or Uninstall.
+  remembered. **Hold** an app for App Info or Uninstall. In the full grid, **hold and drag**
+  any bubble to place it on the hex you want — it stays pinned there (hold without
+  dragging still opens the menu).
 - **⚙ Cluster** (top right of the grid) opens the options sheet, grouped into **Layout**,
   **Behavior** and **Actions**. The **Cluster Topology** row opens a picker for all 11 cluster
   layouts (honeycomb, orbits, river, spiral, bezel, nebula, gravity, helix, hourglass, thumb-arc
