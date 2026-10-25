@@ -22,5 +22,14 @@ object Motion {
         return 1f - (1f - x).pow(3)
     }
 
+    /** Overshoots past 1 before settling — the pop when quick-menu chips bloom out. */
+    fun easeOutBack(t: Float): Float {
+        val x = t.coerceIn(0f, 1f)
+        val c1 = 1.70158f
+        val c3 = c1 + 1f
+        val u = x - 1f
+        return 1f + c3 * u * u * u + c1 * u * u
+    }
+
     fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
 }

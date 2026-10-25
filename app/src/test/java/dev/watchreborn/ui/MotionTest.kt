@@ -32,6 +32,14 @@ class MotionTest {
         assertEquals(1f, Motion.easeOutCubic(2f), 0.0001f) // clamps
     }
 
+    @Test fun easeOutBackOvershootsThenSettles() {
+        assertEquals(0f, Motion.easeOutBack(0f), 0.0001f)
+        assertEquals(1f, Motion.easeOutBack(1f), 0.0001f)
+        val mid = Motion.easeOutBack(0.7f)
+        assertTrue("expected an overshoot past 1 mid-flight, was $mid", mid > 1f)
+        assertEquals(1f, Motion.easeOutBack(3f), 0.0001f) // clamps
+    }
+
     @Test fun lerpEndpoints() {
         assertEquals(10f, Motion.lerp(10f, 20f, 0f), 0.0001f)
         assertEquals(20f, Motion.lerp(10f, 20f, 1f), 0.0001f)

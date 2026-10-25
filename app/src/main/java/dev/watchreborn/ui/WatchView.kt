@@ -148,9 +148,16 @@ class WatchView(
     private var placeFolder: Folder? = null
     private val releasePinRect = RectF()
 
-    /** Quick-action drop zones shown while carrying an app: App Info and (when allowed) Uninstall. */
-    private val infoZoneRect = RectF()
-    private val uninstallZoneRect = RectF()
+    // --- Quick menu that blooms out of the carried app bubble (0.3.4).
+    /** One bloomed quick-menu option: kind plus its live circle (recomputed every frame). */
+    private class QuickChip(val kind: Int, val cx: Float, val cy: Float, val r: Float)
+
+    private val quickChips = ArrayList<QuickChip>()
+
+    /** Where the carried bubble was picked up — the quick menu blooms out of this spot. */
+    private var placeAnchorX: Float = 0f
+    private var placeAnchorY: Float = 0f
+    private var placeStartedMs: Long = 0L
 
     /** Keys of apps that may be uninstalled (not system apps, main user). Set by the activity. */
     var uninstallableKeys: Set<String> = emptySet()
@@ -944,6 +951,11 @@ class WatchView(
         placeDrawY = downY
         placeScale = 1f
         dropAnim = null
+        val originHit = hits.firstOrNull { it.slotIndex == slot }
+        placeAnchorX = originHit?.x ?: downX
+        placeAnchorY = originHit?.y ?: downY
+        placeStartedMs = SystemClock.uptimeMillis()
+        quickChips.clear()
         placeMoved = false
         placeInFolder = inFolder
         placeFolder = if (inFolder) activeFolder else null
@@ -966,16 +978,16 @@ class WatchView(
         placeInFolder = false
         placeFolder = null
 
-        // Quick-action zones first: App Info / Uninstall while carrying an app.
-        if (moved && !inFolder && item is App) {
-            if (!infoZoneRect.isEmpty && infoZoneRect.contains(dropX, dropY)) {
+        // Quick-menu chips first: releasing on a bloomed chip runs its action.
+        if (!inFolder && item is App) {
+            val chip = quickChips.firstOrNull { hypot(dropX - it.cx, dropY - it.cy) <= it.r + dp(14f) }
+            if (chip != null) {
                 performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                onQuickInfo(item)
-                return
-            }
-            if (!uninstallZoneRect.isEmpty && uninstallZoneRect.contains(dropX, dropY)) {
-                performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                onQuickUninstall(item)
+                when (chip.kind) {
+                    CHIP_INFO -> onQuickInfo(item)
+                    CHIP_UNINSTALL -> onQuickUninstall(item)
+                    CHIP_UNPIN -> onUnpinItem(item)
+                }
                 return
             }
         }
@@ -1011,20 +1023,58 @@ class WatchView(
         }
     }
 
-    /** One quick-action drop-zone pill (App Info / Uninstall) for the carry overlay. */
-    private fun drawQuickZone(c: Canvas, r: RectF, label: String, hot: Boolean, danger: Boolean, alpha: Float) {
-        fill.color = when {
-            hot && danger -> Color.argb((alpha * 245).toInt(), 120, 34, 40)
-            hot -> Color.argb((alpha * 245).toInt(), 38, 66, 34)
-            else -> Color.argb((alpha * 215).toInt(), 40, 40, 46)
+    /** Blooms the quick-menu chips out of the carried app's home spot, staggered with an overshoot pop. */
+    private fun drawQuickChips(c: Canvas, item: App, alpha: Float) {
+        val kinds = ArrayList<Int>()
+        if (item.key in pinnedItemKeys) kinds += CHIP_UNPIN
+        kinds += CHIP_INFO
+        if (item.key in uninstallableKeys) kinds += CHIP_UNINSTALL
+        val glyphs = mapOf(CHIP_INFO to "ℹ️", CHIP_UNINSTALL to "🗑", CHIP_UNPIN to "✕")
+        val labels = mapOf(CHIP_INFO to "Info", CHIP_UNINSTALL to "Uninstall", CHIP_UNPIN to "Unpin")
+        val offsets = when (kinds.size) {
+            1 -> floatArrayOf(0f)
+            2 -> floatArrayOf(-40f, 40f)
+            else -> floatArrayOf(-54f, 0f, 54f)
         }
-        c.drawRoundRect(r, r.height() / 2, r.height() / 2, fill)
-        stroke.strokeWidth = dp(1.2f)
-        stroke.color = if (danger) Color.argb((alpha * 200).toInt(), 255, 110, 110) else withAlpha(accent, (alpha * 200).toInt())
-        c.drawRoundRect(r, r.height() / 2, r.height() / 2, stroke)
-        text.textSize = sp(12.5f)
-        text.color = Color.argb((alpha * 255).toInt(), 245, 245, 248)
-        c.drawText(label, r.centerX() - text.measureText(label) / 2, r.centerY() + text.textSize * 0.35f, text)
+        // The arc opens upward, unless the bubble sits near the top — then downward.
+        val flip = placeAnchorY < dp(200f)
+        val dirY = if (flip) 1f else -1f
+        val reach = dp(96f)
+        val now = SystemClock.uptimeMillis()
+        quickChips.clear()
+        for ((i, kind) in kinds.withIndex()) {
+            val t = ((now - placeStartedMs - i * 45L) / 190f).coerceIn(0f, 1f)
+            if (t < 1f) motionAnimating = true
+            val e = Motion.easeOutBack(t)
+            val rad = Math.toRadians(offsets[i].toDouble())
+            val tx = placeAnchorX + reach * sin(rad).toFloat()
+            val ty = placeAnchorY + dirY * reach * cos(rad).toFloat()
+            val cx = Motion.lerp(placeAnchorX, tx, e)
+            val cy = Motion.lerp(placeAnchorY, ty, e)
+            val hot = hypot(placeX - tx, placeY - ty) <= dp(42f)
+            val r = dp(26f) * e.coerceIn(0f, 1.12f) * if (hot) 1.22f else 1f
+            if (r < 1f) continue
+            quickChips += QuickChip(kind, tx, ty, dp(26f))
+            val a = alpha * e.coerceIn(0f, 1f)
+            fill.color = when {
+                hot && kind != CHIP_INFO -> Color.argb((a * 245).toInt(), 150, 40, 46)
+                hot -> Color.argb((a * 245).toInt(), 46, 84, 40)
+                else -> Color.argb((a * 228).toInt(), 42, 42, 48)
+            }
+            c.drawCircle(cx, cy, r, fill)
+            stroke.strokeWidth = dp(1.2f)
+            stroke.color = if (kind != CHIP_INFO) Color.argb((a * 210).toInt(), 255, 120, 120) else withAlpha(accent, (a * 210).toInt())
+            c.drawCircle(cx, cy, r, stroke)
+            text.textSize = sp(15f) * e.coerceIn(0f, 1f)
+            text.color = Color.argb((a * 255).toInt(), 245, 245, 248)
+            val g = glyphs.getValue(kind)
+            c.drawText(g, cx - text.measureText(g) / 2, cy + text.textSize * 0.36f, text)
+            text.textSize = sp(9.5f)
+            val lab = labels.getValue(kind)
+            text.color = Color.argb((a * 235).toInt(), 235, 235, 240)
+            val labelY = if (flip) cy - r - dp(5f) else cy + r + dp(13f)
+            c.drawText(lab, cx - text.measureText(lab) / 2, labelY, text)
+        }
     }
 
     /** The 240ms glide that flies a dropped bubble from the release point into its slot. */
@@ -1062,7 +1112,8 @@ class WatchView(
         val item = placeItem ?: return
         advancePlaceSpring()
         // Release zone for unpinning, offered while carrying a pinned bubble.
-        if (placeMoved && item.key in pinnedItemKeys) {
+        // (Apps get their unpin as a bloom chip instead.)
+        if (placeMoved && item.key in pinnedItemKeys && item !is App) {
             val zw = dp(210f)
             val zh = dp(40f)
             releasePinRect.set(width / 2f - zw / 2, topInset + dp(64f), width / 2f + zw / 2, topInset + dp(64f) + zh)
@@ -1079,27 +1130,11 @@ class WatchView(
         } else {
             releasePinRect.setEmpty()
         }
-        // Quick-action zones while carrying an app: drop on one to run it.
+        // Quick menu: option chips bloom out of the bubble's home spot in an arc.
         if (item is App) {
-            val zw = dp(150f)
-            val zh = dp(42f)
-            val gap = dp(12f)
-            val zy = height - bottomInset - dp(120f)
-            val canUninstall = item.key in uninstallableKeys
-            val totalW = if (canUninstall) zw * 2f + gap else zw
-            var zx = width / 2f - totalW / 2f
-            infoZoneRect.set(zx, zy, zx + zw, zy + zh)
-            drawQuickZone(c, infoZoneRect, "ℹ️  App Info", infoZoneRect.contains(placeX, placeY), danger = false, alpha = alpha)
-            zx += zw + gap
-            if (canUninstall) {
-                uninstallZoneRect.set(zx, zy, zx + zw, zy + zh)
-                drawQuickZone(c, uninstallZoneRect, "🗑  Uninstall", uninstallZoneRect.contains(placeX, placeY), danger = true, alpha = alpha)
-            } else {
-                uninstallZoneRect.setEmpty()
-            }
+            drawQuickChips(c, item, alpha)
         } else {
-            infoZoneRect.setEmpty()
-            uninstallZoneRect.setEmpty()
+            quickChips.clear()
         }
         val origin = hits.firstOrNull { it.slotIndex == placeFromSlot }
         val hover = hits.firstOrNull { it.slotIndex == placeHoverSlot }
@@ -4859,6 +4894,9 @@ class WatchView(
         const val HINT_CROWN = "crown"
         const val HINT_PIN = "pin"
         const val HINT_SCRUB = "scrub"
+        const val CHIP_INFO = 0
+        const val CHIP_UNINSTALL = 1
+        const val CHIP_UNPIN = 2
         const val MODE_FACE = 0
         const val MODE_APPS = 1
         const val MODE_STACK = 2
