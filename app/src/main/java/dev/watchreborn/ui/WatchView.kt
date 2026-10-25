@@ -496,51 +496,82 @@ class WatchView(
     }
 
     fun back(): Boolean {
-        if (searching || gridSearching || searchQuery.isNotEmpty()) {
-            clearSearch()
-            return true
-        }
-        if (clusterSheet.target > 0f) {
-            clusterSheet.target = 0f
-            invalidate()
-            return true
-        }
-        if (controlIn.target > 0f && controlCenter.state.screenFlashlight) {
-            onControlAction(ControlAction.TORCH, null)
-            return true
-        }
-        if (stackIn.target > 0f || controlIn.target > 0f) {
-            if (honeycombHome) openFullHoneycomb() else toFace()
-            return true
-        }
-        if (apps.target == 1f && widgetIn.target == 1f) {
-            closeWidgetPod()
-            return true
-        }
-        if (apps.target == 1f && folderIn.target == 1f) {
-            closeFolder()
-            return true
-        }
-        if (apps.target == 1f && overview.target == 1f) {
-            overview.target = 0f
-            invalidate()
-            return true
-        }
-        if (honeycombHome && apps.target == 1f && grid.target == 1f && hypot(panX.target, panY.target) > dp(12f)) {
-            panX.target = 0f
-            panY.target = 0f
-            invalidate()
-            return true
-        }
-        if (onFace) {
-            if (honeycombHome) {
-                openFullHoneycomb()
-                return true
+        // The layer to pop is decided by the pure NavBack priority (unit-tested);
+        // this method only snapshots state and performs the side effects.
+        val state = NavState(
+            searching = searching || gridSearching || searchQuery.isNotEmpty(),
+            topologyPickerOpen = topologyPickerOpen && clusterSheet.target > 0f,
+            sheetOpen = clusterSheet.target > 0f,
+            torchOffViaBack = controlIn.target > 0f && controlCenter.state.screenFlashlight,
+            stackOrControlOpen = stackIn.target > 0f || controlIn.target > 0f,
+            inApps = apps.target == 1f,
+            widgetOpen = widgetIn.target == 1f,
+            folderOpen = folderIn.target == 1f,
+            overviewOpen = overview.target == 1f,
+            listOpen = list.target >= 0.5f,
+            gridOpen = grid.target == 1f,
+            panned = hypot(panX.target, panY.target) > dp(12f),
+            onFace = onFace,
+            honeycombHome = honeycombHome,
+        )
+        return when (NavBack.layerToPop(state)) {
+            NavLayer.SEARCH -> {
+                clearSearch()
+                true
             }
-            return false
+            NavLayer.TOPOLOGY_PICKER -> {
+                topologyPickerOpen = false
+                invalidate()
+                true
+            }
+            NavLayer.SHEET -> {
+                clusterSheet.target = 0f
+                invalidate()
+                true
+            }
+            NavLayer.TORCH_OFF -> {
+                onControlAction(ControlAction.TORCH, null)
+                true
+            }
+            NavLayer.STACK_OR_CONTROL -> {
+                if (honeycombHome) openFullHoneycomb() else toFace()
+                true
+            }
+            NavLayer.WIDGET_POD -> {
+                closeWidgetPod()
+                true
+            }
+            NavLayer.FOLDER -> {
+                closeFolder()
+                true
+            }
+            NavLayer.OVERVIEW -> {
+                overview.target = 0f
+                invalidate()
+                true
+            }
+            NavLayer.LIST -> {
+                list.target = 0f
+                grid.target = 1f
+                invalidate()
+                true
+            }
+            NavLayer.RECENTER -> {
+                panX.target = 0f
+                panY.target = 0f
+                invalidate()
+                true
+            }
+            NavLayer.FACE -> {
+                openFullHoneycomb()
+                true
+            }
+            NavLayer.EXIT_TO_FACE -> {
+                toFace()
+                true
+            }
+            NavLayer.NONE -> false
         }
-        toFace()
-        return true
     }
 
     fun openApps() {
