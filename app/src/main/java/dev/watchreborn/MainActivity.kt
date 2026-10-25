@@ -152,6 +152,13 @@ class MainActivity : Activity(), SensorEventListener {
         view.clusterTopology = runCatching { ClusterTopology.valueOf(savedTopo ?: ClusterTopology.HONEYCOMB.name) }
             .getOrDefault(ClusterTopology.HONEYCOMB)
         view.pinnedCardIds = prefs.getStringSet(KEY_PINNED_CARDS, emptySet()).orEmpty()
+        view.hintsSeen = prefs.getStringSet(KEY_HINTS_SEEN, emptySet()).orEmpty()
+        view.onHintSeen = { id ->
+            val cur = prefs.getStringSet(KEY_HINTS_SEEN, emptySet()).orEmpty().toMutableSet()
+            cur += id
+            prefs.edit().putStringSet(KEY_HINTS_SEEN, cur).apply()
+            view.hintsSeen = cur
+        }
         view.preferListChanged = { prefs.edit().putBoolean(KEY_LIST, it).apply() }
         view.applyInitialHomeMode()
         view.setOnApplyWindowInsetsListener { v, insets ->
@@ -163,7 +170,11 @@ class MainActivity : Activity(), SensorEventListener {
         }
         setContentView(view)
         window.setDecorFitsSystemWindows(false)
-        onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) { view.back() }
+        onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) {
+            // If the view didn't consume Back and we are not the default home app,
+            // let the user actually leave instead of swallowing the press.
+            if (!view.back() && !isDefaultHomeApp()) finish()
+        }
 
         val artPx = (96 * resources.displayMetrics.density).toInt()
         nowPlaying = NowPlaying(this, artPx) {
@@ -209,10 +220,16 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
-            view.back()
+            if (!view.back() && !isDefaultHomeApp()) finish()
             return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    private fun isDefaultHomeApp(): Boolean {
+        val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val resolved = packageManager.resolveActivity(homeIntent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)
+        return resolved?.activityInfo?.packageName == packageName
     }
 
     override fun onDestroy() {
@@ -1014,6 +1031,7 @@ class MainActivity : Activity(), SensorEventListener {
         const val KEY_CLUSTER_TOPOLOGY = "cluster_topology"
         const val KEY_BUBBLE_PHYSICS = "bubble_physics"
         const val KEY_PINNED_CARDS = "pinned_cards"
+        const val KEY_HINTS_SEEN = "hints_seen"
         const val KEY_APPWIDGET_IDS = "appwidget_ids"
         val ACCENTS = listOf(
             "Green" to Color.rgb(166, 227, 110),

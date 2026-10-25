@@ -115,6 +115,18 @@ class WatchView(
     var stepCount: Int = 0
     var pinnedCardIds: Set<String> = emptySet()
     var pinnedItemKeys: Set<String> = emptySet()
+        set(v) {
+            val grew = v.size > field.size
+            field = v
+            // Pinning something proves the long-press gesture is known.
+            if (grew) markHintSeen(HINT_PIN)
+        }
+
+    /** One-time coach hints: ids already seen (persisted by the activity). */
+    var hintsSeen: Set<String> = emptySet()
+    var onHintSeen: (String) -> Unit = {}
+    private val coachHintRect = RectF()
+    private var coachHintId: String? = null
 
     /** Apps A-Z (List view), by use (grid and cluster), folder-grouped grid items, and flat grid with widgets. */
     private var alphabetical: List<App> = emptyList()
@@ -278,6 +290,7 @@ class WatchView(
     private val sheetRowRects = ArrayList<Pair<RectF, ClusterOption>>()
     private val sheetBoundsRect = RectF()
     private val topologyRowRects = ArrayList<Pair<RectF, ClusterTopology>>()
+    private val previewTmp = FloatArray(2)
     private val pickerBackRect = RectF()
     private var topologyPickerOpen = false
     private val widgetActionRects = ArrayList<Pair<RectF, String>>()
@@ -654,6 +667,57 @@ class WatchView(
         invalidate()
     }
 
+    private fun markHintSeen(id: String) {
+        if (id !in hintsSeen) {
+            hintsSeen = hintsSeen + id
+            onHintSeen(id)
+            invalidate()
+        }
+    }
+
+    /** The one coach hint to show right now, if any: gesture-only features advertise themselves once. */
+    private fun currentCoachHint(): String? {
+        if (apps.target != 1f || clusterSheet.target > 0f || constellationIn.target > 0.5f ||
+            folderIn.target > 0.5f || widgetIn.target > 0.5f || gridSearching || searching
+        ) return null
+        return if (list.target >= 0.5f) {
+            HINT_SCRUB.takeIf { it !in hintsSeen }
+        } else if (grid.target >= 0.5f) {
+            listOf(HINT_PINCH, HINT_PIN, HINT_CROWN).firstOrNull { it !in hintsSeen }
+        } else {
+            null
+        }
+    }
+
+    private fun drawCoachHint(c: Canvas, w: Float, bottom: Float, alpha: Float) {
+        val id = currentCoachHint()
+        coachHintId = id
+        if (id == null) {
+            coachHintRect.setEmpty()
+            return
+        }
+        val label = when (id) {
+            HINT_PINCH -> "🤏 Pinch out for an overview of everything"
+            HINT_PIN -> "📌 Long-press any bubble to pin it in place"
+            HINT_CROWN -> "↕ Drag the right screen edge to zoom"
+            HINT_SCRUB -> "🔤 Drag the A–Z edge to jump through the list"
+            else -> return
+        }
+        text.textSize = sp(12.5f)
+        val tw = text.measureText(label)
+        val hh = dp(30f)
+        val hw = tw + dp(28f)
+        val hy = bottom - dp(16f) - dp(Metrics.PHONE_PILL_H_DP) - dp(10f) - hh
+        coachHintRect.set(w / 2 - hw / 2, hy, w / 2 + hw / 2, hy + hh)
+        fill.color = Color.argb((alpha * 235).toInt(), 30, 34, 40)
+        c.drawRoundRect(coachHintRect, hh / 2, hh / 2, fill)
+        stroke.strokeWidth = dp(1.2f)
+        stroke.color = withAlpha(accent, (alpha * 170).toInt())
+        c.drawRoundRect(coachHintRect, hh / 2, hh / 2, stroke)
+        text.color = Color.argb((alpha * 255).toInt(), 255, 255, 255)
+        c.drawText(label, coachHintRect.centerX() - tw / 2, coachHintRect.centerY() + text.textSize * 0.35f, text)
+    }
+
     fun openClusterSheet() {
         topologyPickerOpen = false
         clusterSheet.target = 1f
@@ -708,8 +772,11 @@ class WatchView(
      * Computes the 2D world coordinates `(out[0], out[1])` for item [index] of [total]
      * under the active [clusterTopology].
      */
-    private fun computeTopologyWorldPos(index: Int, total: Int, pitch: Float, out: FloatArray) {
-        when (clusterTopology) {
+    private fun computeTopologyWorldPos(index: Int, total: Int, pitch: Float, out: FloatArray) =
+        computeTopologyWorldPos(clusterTopology, index, total, pitch, out)
+
+    private fun computeTopologyWorldPos(topo: ClusterTopology, index: Int, total: Int, pitch: Float, out: FloatArray) {
+        when (topo) {
             ClusterTopology.HONEYCOMB, ClusterTopology.NEBULA -> {
                 if (index in gridHexes.indices) pointyCenter(gridHexes[index], pitch, out)
                 else { out[0] = 0f; out[1] = 0f }
@@ -1285,6 +1352,7 @@ class WatchView(
             if (folderAlpha > 0.001f) drawFolderView(c, w, h, top, folderAlpha)
             if (listAlpha > 0.001f) drawList(c, w, h, top, bottom, listAlpha)
             drawPill(c, w, bottom, a)
+            drawCoachHint(c, w, bottom, a)
             drawCrownTrack(c, w, h, top, bottom, a)
             if (clusterSheet.value > 0.001f) drawClusterSheet(c, w, h, top, bottom, clusterSheet.value)
         }
@@ -2548,7 +2616,7 @@ class WatchView(
 
         val padX = dp(18f)
         val cardW = w - 2 * padX
-        val rowH = dp(38f)
+        var rowH = dp(38f)
         val gap = dp(4f)
         // Sectioned rows: a null option marks a section header (not tappable).
         // Toggles live under LAYOUT / BEHAVIOR, one-shot actions under ACTIONS.
@@ -2575,7 +2643,13 @@ class WatchView(
         val headerH = dp(19f)
         val optionCount = rows.count { it.first != null }
         val headerCount = rows.size - optionCount
-        val sheetH = dp(68f) + optionCount * (rowH + gap) + headerCount * headerH + dp(52f)
+        var sheetH = dp(68f) + optionCount * (rowH + gap) + headerCount * headerH + dp(52f)
+        if (sheetH > h - dp(36f) && optionCount > 0) {
+            // Short screen (or the extra Clear Pins row): compress rows so the
+            // sheet — including its Done button — always fits.
+            rowH = ((h - dp(36f) - dp(68f) - headerCount * headerH - dp(52f)) / optionCount - gap).coerceAtLeast(dp(24f))
+            sheetH = dp(68f) + optionCount * (rowH + gap) + headerCount * headerH + dp(52f)
+        }
 
         val sheetTop = (h - sheetH) / 2f + (1f - t) * dp(36f)
         sheetBoundsRect.set(padX, sheetTop, padX + cardW, sheetTop + sheetH)
@@ -2668,10 +2742,15 @@ class WatchView(
 
         val padX = dp(18f)
         val cardW = w - 2 * padX
-        val rowH = dp(38f)
+        var rowH = dp(38f)
         val gap = dp(4f)
         val all = ClusterTopology.entries
-        val sheetH = dp(68f) + all.size * (rowH + gap) + dp(52f)
+        var sheetH = dp(68f) + all.size * (rowH + gap) + dp(52f)
+        if (sheetH > h - dp(36f)) {
+            // Short screen: compress rows so the picker always fits.
+            rowH = ((h - dp(36f) - dp(68f) - dp(52f)) / all.size - gap).coerceAtLeast(dp(24f))
+            sheetH = dp(68f) + all.size * (rowH + gap) + dp(52f)
+        }
         val sheetTop = (h - sheetH) / 2f + (1f - t) * dp(36f)
         sheetBoundsRect.set(padX, sheetTop, padX + cardW, sheetTop + sheetH)
 
@@ -2709,6 +2788,37 @@ class WatchView(
             text.textSize = sp(10.5f)
             text.color = Color.argb((a * 0.75f).toInt(), 178, 180, 188)
             c.drawText(topo.subtitle, r.left + dp(14f), r.top + dp(34f), text)
+
+            // Miniature preview of the layout's geometry, so designs are recognisable
+            // before applying. (Liquid Pool previews as its hex seed; the live pool
+            // positions are stateful simulation data.)
+            run {
+                val n = 19
+                val pts = Array(n) { FloatArray(2) }
+                var minX = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE
+                var minY = Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
+                for (i in 0 until n) {
+                    if (topo == ClusterTopology.LIQUID_POOL) {
+                        if (i in gridHexes.indices) pointyCenter(gridHexes[i], dp(6f), pts[i])
+                        else { pts[i][0] = 0f; pts[i][1] = 0f }
+                    } else {
+                        computeTopologyWorldPos(topo, i, n, dp(6f), pts[i])
+                    }
+                    minX = min(minX, pts[i][0]); maxX = max(maxX, pts[i][0])
+                    minY = min(minY, pts[i][1]); maxY = max(maxY, pts[i][1])
+                }
+                val spanX = (maxX - minX).coerceAtLeast(1f)
+                val spanY = (maxY - minY).coerceAtLeast(1f)
+                val scale = min(dp(26f) / spanX, dp(26f) / spanY)
+                val pcx = r.right - dp(58f)
+                val pcy = r.centerY()
+                val ccx = (minX + maxX) / 2f
+                val ccy = (minY + maxY) / 2f
+                for (i in 0 until n) {
+                    fill.color = withAlpha(accent, (a * (if (i == 0) 255 else 165)).toInt())
+                    c.drawCircle(pcx + (pts[i][0] - ccx) * scale, pcy + (pts[i][1] - ccy) * scale, if (i == 0) dp(2.4f) else dp(1.6f), fill)
+                }
+            }
 
             if (topo == clusterTopology) {
                 text.textSize = sp(15f)
@@ -3363,6 +3473,7 @@ class WatchView(
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
             if (apps.target == 1f && list.target == 0f && clusterSheet.target == 0f) {
+                markHintSeen(HINT_PINCH)
                 pinching = true
                 removeCallbacks(longPress)
                 pinchCumulative = 1f
@@ -3541,6 +3652,7 @@ class WatchView(
         val ch = letters[idx]
         if (ch != scrubbingLetter) {
             scrubbingLetter = ch
+            markHintSeen(HINT_SCRUB)
             performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
             val listApps = filteredAlphabetical
             val targetIdx = if (ch == '#') {
@@ -3557,6 +3669,7 @@ class WatchView(
     }
 
     private fun scrubCrownZoom(totalDy: Float) {
+        markHintSeen(HINT_CROWN)
         if (grid.target == 0f) grid.target = 1f
         val newZ = (crownStartZoom - totalDy / dp(170f)).coerceIn(0.46f, 1.32f)
         val wasOv = userZoom.value < 0.58f || overview.target >= 0.5f
@@ -3812,6 +3925,15 @@ class WatchView(
     }
 
     private fun tap(x: Float, y: Float) {
+        // Coach hint: tapping it dismisses it for good.
+        if (!coachHintRect.isEmpty && coachHintRect.contains(x, y)) {
+            coachHintId?.let { markHintSeen(it) }
+            coachHintRect.setEmpty()
+            performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+            invalidate()
+            return
+        }
+
         // 0. Cluster Options Sheet taps
         if (clusterSheet.target == 1f) {
             if (topologyPickerOpen) {
@@ -4208,6 +4330,10 @@ class WatchView(
     private fun hitEntryAt(x: Float, y: Float): Hit? = hits.lastOrNull { hypot(x - it.x, y - it.y) <= it.r }
 
     private companion object {
+        const val HINT_PINCH = "pinch"
+        const val HINT_CROWN = "crown"
+        const val HINT_PIN = "pin"
+        const val HINT_SCRUB = "scrub"
         const val MODE_FACE = 0
         const val MODE_APPS = 1
         const val MODE_STACK = 2
