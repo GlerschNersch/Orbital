@@ -30,6 +30,9 @@ Sibling of XMB, PS4, X360, Switch, C64U, VCS and TSF Reborn.
   **Edit Layout** mode where bubbles drag immediately (no hold), and an optional
   **Per-Layout Pins** toggle that keeps a separate pin set for each layout. In the
   full-screen Folder view, hold and drag a member to reorder the folder.
+  **Usage Growth** (in Behavior) also sizes bubbles by how much you use each app —
+  your most-used app grows up to half again as large, and folders grow with their
+  most-used member.
 - **⚙ Cluster** (top right of the grid) opens the options sheet, grouped into **Layout**,
   **Behavior** and **Actions**. The **Cluster Topology** row opens a picker for all 11 cluster
   layouts (honeycomb, orbits, river, spiral, bezel, nebula, gravity, helix, hourglass, thumb-arc

@@ -35,6 +35,13 @@ Living list. The navigation cleanup of 2026-10-25 (commits `c5ad977`, `f8b7158`,
   asserts layered Back closes it, twice. Runs green on-device.
 - **Release hygiene** — versionName `0.2.0` / versionCode 2, with `CHANGELOG.md` started.
 
+## Done in 0.3.1 (2026-10-25, fifth pass)
+
+- **Usage Growth** — bubbles scale with the recency-decayed launch score (log curve,
+  0.85×–1.5×; folders follow their hottest member). Behavior toggle, on by default;
+  pure math in `UsageScale` with unit tests. Verified on-device with temporarily
+  seeded usage counts (real counts restored afterwards).
+
 ## Done in 0.3.0 (2026-10-25, fourth pass)
 
 The whole 0.2.1 ideas backlog, built:

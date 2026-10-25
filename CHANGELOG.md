@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 — 2026-10-25
+
+- **Usage Growth** (Cluster sheet → Behavior, on by default): bubbles grow with
+  how much you use their app. Size follows the same recency-decayed launch score
+  that already orders the cluster — most-used app up to 1.5×, never-opened apps
+  at 0.85×, on a log curve so a couple of launches already show. Folder bubbles
+  grow with their most-used member. Applies to the grid, the focus cluster,
+  bloomed members and the Folder view; the pure scaling math is unit-tested
+  (`UsageScale`).
+
 ## 0.3.0 — 2026-10-25
 
 The drag-to-place follow-through release — everything the 0.2.1 notes proposed:
