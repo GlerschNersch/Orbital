@@ -2444,25 +2444,16 @@ class WatchView(
         val y = top + dp(8f)
         val sideW = dp(86f)
 
-        // Top-left: Overview / Zoom In / 1.0x Reset button
-        overviewPillRect.set(dp(14f), y, dp(14f) + sideW, y + pillH)
-        fill.color = Color.argb((alpha * 210).toInt(), 44, 44, 48)
-        c.drawRoundRect(overviewPillRect, pillH / 2, pillH / 2, fill)
-        text.textSize = sp(12f)
-        val uz = userZoom.value
-        val isCustomZoom = abs(uz - 1f) > 0.08f && ov <= 0.5f
-        text.color = if (ov > 0.5f || isCustomZoom) withAlpha(accent, (alpha * 255).toInt()) else Color.argb((alpha * 240).toInt(), 255, 255, 255)
-        val ovLabel = when {
-            ov > 0.5f -> "Zoom In"
-            isCustomZoom -> "${"%.1f".format(uz)}x Reset"
-            else -> "Overview"
-        }
-        c.drawText(ovLabel, overviewPillRect.centerX() - text.measureText(ovLabel) / 2, overviewPillRect.centerY() + text.textSize * 0.35f, text)
+        // Top-left is intentionally empty: Overview is reached by pinching out (and a
+        // double-tap on empty space resets zoom), so no permanent Overview pill competes
+        // with the bubbles. Overview itself is now signalled by the crown-track thumb.
+        overviewPillRect.setEmpty()
 
         // Top-right: Cluster Mode selector button
         clusterPillRect.set(w - dp(14f) - sideW, y, w - dp(14f), y + pillH)
         fill.color = Color.argb((alpha * 210).toInt(), 44, 44, 48)
         c.drawRoundRect(clusterPillRect, pillH / 2, pillH / 2, fill)
+        text.textSize = sp(12f)
         text.color = withAlpha(accent, (alpha * 255).toInt())
         val clLabel = "⚙ Cluster"
         c.drawText(clLabel, clusterPillRect.centerX() - text.measureText(clLabel) / 2, clusterPillRect.centerY() + text.textSize * 0.35f, text)
@@ -2522,7 +2513,7 @@ class WatchView(
         val rowH = dp(38f)
         val gap = dp(4f)
         val rows = buildList {
-            add(Triple(ClusterOption.CLUSTER_TOPOLOGY, "Cluster Topology (7 Designs)", "${clusterTopology.fullTitle} • Tap to cycle"))
+            add(Triple(ClusterOption.CLUSTER_TOPOLOGY, "Cluster Topology (${ClusterTopology.entries.size} Designs)", "${clusterTopology.fullTitle} • Tap to cycle"))
             add(Triple(ClusterOption.BUBBLE_PHYSICS, "Bubble Physics", if (bubblePhysics) "🫧 Jello, Wake Wave, Spin & Billiards On" else "⚪ Off (Bubbles Sit Still)"))
             add(Triple(ClusterOption.SET_DEFAULT_HOME, "Default Phone Launcher", "📲 Tap to Set Watch Reborn as Home App"))
             add(Triple(ClusterOption.SYSTEM_WIDGETS, "Android System Widgets", "🧩 Tap to View / Add App Widgets"))
@@ -2786,56 +2777,6 @@ class WatchView(
         val ph = dp(Metrics.PHONE_PILL_H_DP)
         val pw = dp(Metrics.PHONE_PILL_W_DP)
         val py = bottom - ph - dp(16f)
-
-        if (list.target < 0.5f && grid.target >= 0.5f) {
-            val gap = dp(8f)
-            val cw = dp(104f)
-            val twBtn = dp(98f)
-            val lw = dp(96f)
-            val totalW = cw + gap + twBtn + gap + lw
-            val startX = w / 2 - totalW / 2
-
-            // Left button: ✨ Unravel / ✨ Collapse Constellation
-            constellationPillRect.set(startX, py, startX + cw, py + ph)
-            val active = constellationIn.target > 0.5f
-            fill.color = if (active) withAlpha(accent, (alpha * 240).toInt()) else Color.argb((alpha * 230).toInt(), 44, 44, 46)
-            c.drawRoundRect(constellationPillRect, ph / 2, ph / 2, fill)
-            if (!active) {
-                stroke.strokeWidth = dp(1.2f)
-                stroke.color = withAlpha(accent, (alpha * 150).toInt())
-                c.drawRoundRect(constellationPillRect, ph / 2, ph / 2, stroke)
-            }
-            text.textSize = sp(12.5f)
-            text.color = if (active) Color.BLACK else Color.argb((alpha * 255).toInt(), 255, 255, 255)
-            val cLabel = if (active) "✨ Collapse" else "✨ Unravel"
-            val ctw = text.measureText(cLabel)
-            c.drawText(cLabel, constellationPillRect.centerX() - ctw / 2, constellationPillRect.centerY() + text.textSize * 0.35f, text)
-
-            // Center button: Topology Switcher (⬡ Hex / 🪐 Orbit / 🌊 River / 🌻 Spiral / 🎡 Bezel / 🌌 Nebula / 🫧 Gravity)
-            val txLeft = startX + cw + gap
-            topologyPillRect.set(txLeft, py, txLeft + twBtn, py + ph)
-            val isAltTopology = clusterTopology != ClusterTopology.HONEYCOMB
-            fill.color = if (isAltTopology) Color.argb((alpha * 235).toInt(), 30, 38, 48) else Color.argb((alpha * 230).toInt(), 44, 44, 46)
-            c.drawRoundRect(topologyPillRect, ph / 2, ph / 2, fill)
-            stroke.strokeWidth = dp(1.2f)
-            stroke.color = withAlpha(accent, (alpha * (if (isAltTopology) 210 else 130)).toInt())
-            c.drawRoundRect(topologyPillRect, ph / 2, ph / 2, stroke)
-            text.color = if (isAltTopology) withAlpha(accent, (alpha * 255).toInt()) else Color.argb((alpha * 255).toInt(), 255, 255, 255)
-            val tLabel = clusterTopology.shortTitle
-            val ttw = text.measureText(tLabel)
-            c.drawText(tLabel, topologyPillRect.centerX() - ttw / 2, topologyPillRect.centerY() + text.textSize * 0.35f, text)
-
-            // Right button: List View
-            val lxLeft = txLeft + twBtn + gap
-            pill.set(lxLeft, py, lxLeft + lw, py + ph)
-            fill.color = Color.argb((alpha * 230).toInt(), 44, 44, 46)
-            c.drawRoundRect(pill, ph / 2, ph / 2, fill)
-            text.color = Color.argb((alpha * 255).toInt(), 255, 255, 255)
-            val label = "List View"
-            val tw = text.measureText(label)
-            c.drawText(label, pill.centerX() - tw / 2, pill.centerY() + text.textSize * 0.35f, text)
-            return
-        }
 
         constellationPillRect.setEmpty()
         topologyPillRect.setEmpty()
@@ -3782,15 +3723,6 @@ class WatchView(
 
         // 3. Apps View (Honeycomb / Constellation Search / Folder / List)
         if (apps.target == 1f) {
-            if (!constellationPillRect.isEmpty && constellationPillRect.contains(x, y)) {
-                toggleConstellation()
-                return
-            }
-            if (!topologyPillRect.isEmpty && topologyPillRect.contains(x, y)) {
-                performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                onClusterOptionChanged(ClusterOption.CLUSTER_TOPOLOGY)
-                return
-            }
             if (!pill.isEmpty && pill.contains(x, y)) {
                 clearSearch()
                 if (folderIn.target == 1f) closeFolder()
@@ -3899,25 +3831,6 @@ class WatchView(
                 return
             }
             if (list.target < 0.5f) {
-                if (!overviewPillRect.isEmpty && overviewPillRect.contains(x, y)) {
-                    if (grid.target < 0.5f) grid.target = 1f
-                    val isCustomZoom = abs(userZoom.value - 1f) > 0.08f && overview.target < 0.5f
-                    if (isCustomZoom) {
-                        userZoom.target = 1f
-                        overview.target = 0f
-                        panX.target = 0f
-                        panY.target = 0f
-                    } else if (overview.target >= 0.5f || userZoom.value < 0.62f) {
-                        overview.target = 0f
-                        userZoom.target = 1f
-                    } else {
-                        overview.target = 1f
-                        userZoom.target = 0.48f
-                    }
-                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                    invalidate()
-                    return
-                }
                 if (!clusterPillRect.isEmpty && clusterPillRect.contains(x, y)) {
                     openClusterSheet()
                     return
