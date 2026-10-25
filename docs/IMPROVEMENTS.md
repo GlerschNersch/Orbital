@@ -35,6 +35,22 @@ Living list. The navigation cleanup of 2026-10-25 (commits `c5ad977`, `f8b7158`,
   asserts layered Back closes it, twice. Runs green on-device.
 - **Release hygiene** — versionName `0.2.0` / versionCode 2, with `CHANGELOG.md` started.
 
+## Done in 0.3.0 (2026-10-25, fourth pass)
+
+The whole 0.2.1 ideas backlog, built:
+
+- **Edit Layout mode** — sheet row or long-press menu entry; bubbles drag immediately;
+  Done pill or Back exits; EDIT_MODE layer added to the NavBack priority (tested).
+- **Drag onto a folder files the app into it** (same-group drops fall back to placement).
+- **Unpin by dragging** — pinned bubbles show a red release zone during the drag.
+- **Undo bar for placements** — place / file / unpin / folder-reorder all undoable for
+  6s, restoring evicted occupants too.
+- **Folder-view arranging** — long-press-drag members in the full-screen Folder view;
+  order persists per folder (`forder:<group>` in the repo prefs). Bloom-mode member
+  arranging is not covered — bloom members are placed via the grid.
+- **Per-Layout Pins** — opt-in sheet toggle; pins stored per topology scope
+  (`pin@<TOPOLOGY>:<key>`) when on, one global set when off.
+
 ## Done in 0.2.1 (2026-10-25, third pass)
 
 - **Drag-to-place** — long-press picks a grid bubble up; drag highlights the target hex
@@ -47,20 +63,13 @@ Living list. The navigation cleanup of 2026-10-25 (commits `c5ad977`, `f8b7158`,
 
 Nothing queued — pick from Later below.
 
-## Ideas backlog (gathered 2026-10-25)
+## Ideas backlog
 
-- **Drag onto a folder to file an app into it** — drop target detection already exists;
-  a folder drop would call the same group-override the long-press Folder submenu uses.
-- **Unpin by dragging** — drag a pinned bubble to a "Release pin" zone (or shake it off
-  its slot) instead of the menu round-trip.
-- **Edit mode** — one long-press enters a mode where every bubble is draggable without
-  holding each time; Back/Done exits. Drag-to-place is the per-bubble version of this.
-- **Undo for placement** — the "placed at Hex #N" toast gains an Undo action that
-  restores the previous pin state (including the evicted occupant).
-- **Folder-view arranging** — the same drag-to-place inside an open folder, reordering
-  its members.
-- **Per-topology pins** — a slot index means different geometry in different layouts;
-  pins could optionally be remembered per layout instead of globally.
+Empty — the 2026-10-25 list shipped in 0.3.0. New candidates:
+
+- **Bloom-mode member arranging** — reorder members while a folder is bloomed in place
+  (0.3.0 covers the full-screen Folder view only).
+- **Drag between grid and List view** — carry a bubble across the view switch.
 
 ## Later (bigger bets)
 

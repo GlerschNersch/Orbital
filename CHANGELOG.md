@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.0 — 2026-10-25
+
+The drag-to-place follow-through release — everything the 0.2.1 notes proposed:
+
+- **Edit Layout mode**: Cluster sheet → Edit Layout (or a bubble's long-press menu)
+  makes every bubble draggable immediately, no long-press per bubble. A status
+  pill with **✓ Done** sits above the List/Grid pill; Back also exits. Edit mode
+  is a proper layer in the NavBack priority, with tests.
+- **Drag onto a folder to file an app into it**: dropping an app on a folder
+  bubble moves it into that folder's group; dropping it on its own folder just
+  places it.
+- **Unpin by dragging**: while carrying a pinned bubble, a red
+  "✕ Drop here to unpin" zone appears at the top of the grid.
+- **Undo for every placement mutation**: placing, filing into a folder, unpinning
+  and folder reordering all show a 6-second undo bar that restores the exact
+  previous state — including a pin occupant evicted by the placement.
+- **Folder-view arranging**: in the full-screen Folder view (Folder Open Style:
+  full-screen), long-press a member and drag to reorder it; the order persists
+  per folder.
+- **Per-Layout Pins** (Cluster sheet → Behavior, off by default): each cluster
+  layout keeps its own pin set instead of sharing one global set.
+
 ## 0.2.1 — 2026-10-25
 
 - **Drag-to-place**: long-press any bubble in the full grid to pick it up, drag

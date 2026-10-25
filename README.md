@@ -24,7 +24,12 @@ Sibling of XMB, PS4, X360, Switch, C64U, VCS and TSF Reborn.
   **List View** at the bottom switches to an A-Z list (and **Grid View** back); your choice is
   remembered. **Hold** an app for App Info or Uninstall. In the full grid, **hold and drag**
   any bubble to place it on the hex you want — it stays pinned there (hold without
-  dragging still opens the menu).
+  dragging still opens the menu). Drag an app onto a folder bubble to file it into
+  that folder; drag a pinned bubble to the red zone at the top to unpin it. Every
+  placement shows an **Undo** bar for a few seconds. Cluster Options also has an
+  **Edit Layout** mode where bubbles drag immediately (no hold), and an optional
+  **Per-Layout Pins** toggle that keeps a separate pin set for each layout. In the
+  full-screen Folder view, hold and drag a member to reorder the folder.
 - **⚙ Cluster** (top right of the grid) opens the options sheet, grouped into **Layout**,
   **Behavior** and **Actions**. The **Cluster Topology** row opens a picker for all 11 cluster
   layouts (honeycomb, orbits, river, spiral, bezel, nebula, gravity, helix, hourglass, thumb-arc
