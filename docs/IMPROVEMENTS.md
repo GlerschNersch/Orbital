@@ -35,6 +35,14 @@ Living list. The navigation cleanup of 2026-10-25 (commits `c5ad977`, `f8b7158`,
   asserts layered Back closes it, twice. Runs green on-device.
 - **Release hygiene** — versionName `0.2.0` / versionCode 2, with `CHANGELOG.md` started.
 
+## Done in 0.3.2 (2026-10-25, sixth pass)
+
+- **Bubble motion pass** — per-item world-position glide (110ms exponential damping,
+  snap beyond 4.5 pitches) for placements/filing/layout switches and folder-view
+  reorders; carried-bubble spring (55ms trail, 90ms scale pop to 1.12×); 240ms
+  ease-out drop glide into the slot (shrinks into folders when filing). Pure helpers
+  in `Motion` with unit tests; Liquid Pool opts out (own simulated motion).
+
 ## Done in 0.3.1 (2026-10-25, fifth pass)
 
 - **Usage Growth** — bubbles scale with the recency-decayed launch score (log curve,

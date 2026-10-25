@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2 — 2026-10-25
+
+- **Bubble motion pass**: moving bubbles no longer teleport.
+  - **Rearrangement glide** — when a placement, filing or layout switch changes a
+    bubble's slot, its position springs to the new slot (~110ms damping) instead
+    of snapping; pan, zoom and fisheye still apply on top. Folder-view members
+    glide the same way when reordered.
+  - **Carried-bubble spring** — a picked-up bubble pops smoothly to full drag
+    size and trails the finger by a few pixels, so it feels held, not glued.
+  - **Drop glide** — on release, the bubble flies from your finger into its slot
+    over 240ms (ease-out); filing into a folder glides in and shrinks away.
+  - Pure motion math in `Motion` (damping/easing), unit-tested.
+
 ## 0.3.1 — 2026-10-25
 
 - **Usage Growth** (Cluster sheet → Behavior, on by default): bubbles grow with
