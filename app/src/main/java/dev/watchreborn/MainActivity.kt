@@ -1,44 +1,101 @@
 package dev.watchreborn
 
+import android.accessibilityservice.AccessibilityService
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.ActivityManager
 import android.app.AlarmManager
+import android.app.Dialog
 import android.app.role.RoleManager
+import android.appwidget.AppWidgetHost
+import android.appwidget.AppWidgetManager
+import android.bluetooth.BluetoothManager
 import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.LauncherApps
 import android.graphics.Color
 import android.graphics.RectF
+import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
+import android.media.AudioManager
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Bundle
+import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.os.Process
+import android.os.StatFs
 import android.os.UserHandle
+import android.provider.AlarmClock
+import android.provider.CalendarContract
+import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
+import android.view.KeyEvent
+import android.view.ViewGroup
+import android.view.Window
 import android.view.WindowInsets
+import android.widget.LinearLayout
 import android.widget.PopupMenu
+import android.widget.ScrollView
+import android.widget.TextView
 import android.widget.Toast
 import android.window.OnBackInvokedDispatcher
 import dev.watchreborn.apps.App
+import dev.watchreborn.apps.AppGroup
 import dev.watchreborn.apps.AppRepo
+import dev.watchreborn.apps.Folder
+import dev.watchreborn.apps.GridItem
+import dev.watchreborn.apps.WidgetBubble
+import dev.watchreborn.apps.WidgetKind
+import dev.watchreborn.ui.CardAction
+import dev.watchreborn.ui.ClusterOption
+import dev.watchreborn.ui.ClusterTopology
+import dev.watchreborn.ui.ControlAction
 import dev.watchreborn.ui.FaceInfo
 import dev.watchreborn.ui.Metrics
 import dev.watchreborn.ui.WatchView
 import java.util.concurrent.Executors
+import kotlin.math.roundToInt
 
-class MainActivity : Activity() {
+class MainActivity : Activity(), SensorEventListener {
     private lateinit var view: WatchView
     private lateinit var repo: AppRepo
+    private lateinit var nowPlaying: NowPlaying
     private val loader = Executors.newSingleThreadExecutor()
     private val launcherApps by lazy { getSystemService(LauncherApps::class.java) }
+    private val cameraManager by lazy { getSystemService(CameraManager::class.java) }
+    private val audioManager by lazy { getSystemService(AudioManager::class.java) }
+    private val sensorManager by lazy { getSystemService(SensorManager::class.java) }
+    private val appWidgetManager by lazy { AppWidgetManager.getInstance(this) }
+    private val appWidgetHost by lazy { AppWidgetHost(this, APPWIDGET_HOST_ID) }
+    private var widgetsDialog: Dialog? = null
     private val prefs by lazy { getSharedPreferences("watch", Context.MODE_PRIVATE) }
     private var apps: List<App> = emptyList()
     private var battery = -1
     private var charging = false
+    private var torchCameraId: String? = null
+    private var torchOn = false
+    private var screenFlashlight = false
+
+    private val iconPx: Int
+        get() {
+            val unitPx = minOf(resources.displayMetrics.widthPixels.toFloat(), Metrics.WATCH_WIDTH_DP * resources.displayMetrics.density)
+            return (unitPx * Metrics.FOCUS_CENTER_D).toInt().coerceIn(96, 288)
+        }
 
     private val appsChanged = object : LauncherApps.Callback() {
         override fun onPackageRemoved(packageName: String, user: UserHandle) = reload()
@@ -59,13 +116,43 @@ class MainActivity : Activity() {
         }
     }
 
+    private val torchCallback = object : CameraManager.TorchCallback() {
+        override fun onTorchModeChanged(cameraId: String, enabled: Boolean) {
+            if (cameraId == torchCameraId) {
+                torchOn = enabled
+                syncControlState()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         repo = AppRepo(this)
-        view = WatchView(this, ::launch, ::appOptions, ::faceOptions, ::expandNotifications)
+        view = WatchView(
+            context = this,
+            onLaunch = ::launch,
+            onLongPressItem = ::itemOptions,
+            onLongPressFace = ::faceOptions,
+            onControlAction = ::handleControlAction,
+            onCardAction = ::handleCardAction,
+            onTogglePinCard = ::togglePinCard,
+            onClusterOptionChanged = ::handleClusterOptionChanged,
+        )
         view.accent = prefs.getInt(KEY_ACCENT, ACCENTS[0].second)
         view.preferList = prefs.getBoolean(KEY_LIST, false)
+        view.autoFolders = prefs.getBoolean(KEY_FOLDERS, true)
+        view.honeycombHome = prefs.getBoolean(KEY_HONEYCOMB_HOME, true)
+        view.bloomFolders = prefs.getBoolean(KEY_BLOOM, true)
+        view.quickSnipe = prefs.getBoolean(KEY_QUICK_SNIPE, false)
+        view.liveWidgets = prefs.getBoolean(KEY_LIVE_WIDGETS, true)
+        view.fixedNeighborhoods = prefs.getBoolean(KEY_FIXED_NEIGHBORHOODS, true)
+        view.bubblePhysics = prefs.getBoolean(KEY_BUBBLE_PHYSICS, true)
+        val savedTopo = prefs.getString(KEY_CLUSTER_TOPOLOGY, ClusterTopology.HONEYCOMB.name)
+        view.clusterTopology = runCatching { ClusterTopology.valueOf(savedTopo ?: ClusterTopology.HONEYCOMB.name) }
+            .getOrDefault(ClusterTopology.HONEYCOMB)
+        view.pinnedCardIds = prefs.getStringSet(KEY_PINNED_CARDS, emptySet()).orEmpty()
         view.preferListChanged = { prefs.edit().putBoolean(KEY_LIST, it).apply() }
+        view.applyInitialHomeMode()
         view.setOnApplyWindowInsetsListener { v, insets ->
             val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
             view.topInset = bars.top.toFloat()
@@ -75,60 +162,361 @@ class MainActivity : Activity() {
         }
         setContentView(view)
         window.setDecorFitsSystemWindows(false)
-        // targetSdk 36 uses predictive back, which never calls onBackPressed.
         onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) { view.back() }
+
+        val artPx = (96 * resources.displayMetrics.density).toInt()
+        nowPlaying = NowPlaying(this, artPx) {
+            view.nowPlayingTrack = nowPlaying.track
+            view.refreshCards()
+        }
+        nowPlaying.start()
+
+        findTorchCamera()
+        runCatching { cameraManager.registerTorchCallback(torchCallback, Handler(Looper.getMainLooper())) }
+        runCatching {
+            sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)?.let {
+                sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+            }
+        }
+
         launcherApps.registerCallback(appsChanged)
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         reload()
     }
 
+    override fun onStart() {
+        super.onStart()
+        runCatching { appWidgetHost.startListening() }
+    }
+
+    override fun onStop() {
+        runCatching { appWidgetHost.stopListening() }
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         refreshInfo()
-        // Back from an app, the apps it was opened from are reordered by use.
-        if (apps.isNotEmpty()) view.setApps(apps, repo.byUse(apps))
+        syncControlState()
+        if (apps.isNotEmpty()) pushAppsToView(apps)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // The Home key is the crown: from the face to the apps, from anywhere else to the face.
         if (Intent.ACTION_MAIN == intent.action && hasWindowFocus()) view.home()
     }
 
-    /**
-     * On some phones (Android 16 on OnePlus) the Back key never reaches the predictive-back
-     * callback and would finish the activity, so it's handled here too. Back on the face does
-     * nothing: a home screen has nowhere to go back to.
-     */
-    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
-        if (keyCode == android.view.KeyEvent.KEYCODE_BACK) { view.back(); return true }
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            view.back()
+            return true
+        }
         return super.onKeyDown(keyCode, event)
     }
 
     override fun onDestroy() {
+        nowPlaying.stop()
+        runCatching { cameraManager.unregisterTorchCallback(torchCallback) }
+        runCatching { sensorManager?.unregisterListener(this) }
         launcherApps.unregisterCallback(appsChanged)
         unregisterReceiver(batteryReceiver)
         loader.shutdownNow()
         super.onDestroy()
     }
 
+    override fun onSensorChanged(event: SensorEvent?) {
+        if (event?.sensor?.type == Sensor.TYPE_STEP_COUNTER) {
+            val steps = event.values.firstOrNull()?.toInt() ?: 0
+            if (steps != view.stepCount) {
+                view.stepCount = steps
+                view.refreshCards()
+            }
+        }
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
     private fun reload() {
-        // Sized for the cluster's centre icon, capped: ~190 apps at 288 px is about 60 MB.
-        val unitPx = minOf(resources.displayMetrics.widthPixels.toFloat(), Metrics.WATCH_WIDTH_DP * resources.displayMetrics.density)
-        val iconPx = (unitPx * Metrics.FOCUS_CENTER_D).toInt().coerceIn(96, 288)
+        val px = iconPx
         loader.execute {
-            val loaded = runCatching { repo.load(iconPx) }
+            val loaded = runCatching { repo.load(px) }
                 .onFailure { Log.e(TAG, "Loading apps failed", it) }
                 .getOrNull() ?: return@execute
-            val byUse = repo.byUse(loaded)
-            view.post { apps = loaded; view.setApps(loaded, byUse) }
+            view.post {
+                apps = loaded
+                pushAppsToView(loaded)
+            }
+        }
+    }
+
+    private fun pushAppsToView(list: List<App>) {
+        val px = iconPx
+        val fixedNeighborhoods = view.fixedNeighborhoods
+        val coreClockHub = view.honeycombHome
+        val liveWidgets = view.liveWidgets
+        loader.execute {
+            val rawUse = repo.byUse(list)
+            val byUse = repo.applyPins(rawUse)
+            val folders = repo.buildFolderGrid(list, rawUse, px, fixedNeighborhoods, coreClockHub, liveWidgets)
+            val flatWithWidgets = repo.buildFlatGridWithWidgets(rawUse, px, coreClockHub, liveWidgets)
+            val pinnedKeys = HashSet<String>()
+            list.forEach { if (repo.isPinned(it.key)) pinnedKeys += it.key }
+            folders.forEach { if (repo.isPinned(it.key)) pinnedKeys += it.key }
+            WidgetKind.entries.forEach { if (repo.isPinned(it.key)) pinnedKeys += it.key }
+            view.post {
+                view.pinnedItemKeys = pinnedKeys
+                view.setApps(list, byUse, folders, flatWithWidgets)
+            }
         }
     }
 
     private fun refreshInfo() {
         val alarm = getSystemService(AlarmManager::class.java).nextAlarmClock?.triggerTime
         view.info = FaceInfo(battery, charging, alarm)
+        runCatching {
+            val am = getSystemService(ActivityManager::class.java)
+            val mem = ActivityManager.MemoryInfo()
+            am.getMemoryInfo(mem)
+            if (mem.totalMem > 0) view.ramUsedRatio = ((mem.totalMem - mem.availMem).toFloat() / mem.totalMem).coerceIn(0f, 1f)
+            val stat = StatFs(Environment.getDataDirectory().path)
+            if (stat.totalBytes > 0) view.storageUsedRatio = ((stat.totalBytes - stat.availableBytes).toFloat() / stat.totalBytes).coerceIn(0f, 1f)
+        }
+        view.nowPlayingTrack = nowPlaying.track
         view.refreshCards()
+    }
+
+    private fun findTorchCamera() {
+        torchCameraId = runCatching {
+            cameraManager.cameraIdList.firstOrNull { id ->
+                cameraManager.getCameraCharacteristics(id).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            }
+        }.getOrNull()
+    }
+
+    private fun syncControlState() {
+        val wifiOn = runCatching {
+            applicationContext.getSystemService(WifiManager::class.java)?.isWifiEnabled == true
+        }.getOrDefault(false)
+        val btOn = runCatching {
+            getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled == true
+        }.getOrDefault(false)
+        val ringer = runCatching { audioManager.ringerMode }.getOrDefault(AudioManager.RINGER_MODE_NORMAL)
+        val maxVol = runCatching { audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1) }.getOrDefault(15)
+        val curVol = runCatching { audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) }.getOrDefault(7)
+
+        view.controlCenter.state = view.controlCenter.state.copy(
+            wifiOn = wifiOn,
+            bluetoothOn = btOn,
+            torchOn = torchOn,
+            screenFlashlight = screenFlashlight,
+            ringerMode = ringer,
+            autoFolders = view.autoFolders,
+            notifCount = NowPlayingListener.activePackages.size,
+            volume = (curVol.toFloat() / maxVol).coerceIn(0f, 1f),
+        )
+        view.invalidate()
+    }
+
+    private fun handleClusterOptionChanged(opt: ClusterOption) {
+        when (opt) {
+            ClusterOption.CLUSTER_TOPOLOGY -> {
+                val next = view.cycleClusterTopology()
+                prefs.edit().putString(KEY_CLUSTER_TOPOLOGY, next.name).apply()
+            }
+            ClusterOption.BUBBLE_PHYSICS -> {
+                val next = !view.bubblePhysics
+                prefs.edit().putBoolean(KEY_BUBBLE_PHYSICS, next).apply()
+                view.bubblePhysics = next
+            }
+            ClusterOption.HONEYCOMB_HOME -> {
+                val next = !view.honeycombHome
+                prefs.edit().putBoolean(KEY_HONEYCOMB_HOME, next).apply()
+                view.honeycombHome = next
+                if (apps.isNotEmpty()) pushAppsToView(apps)
+            }
+            ClusterOption.BLOOM_MODE -> {
+                val next = !view.bloomFolders
+                prefs.edit().putBoolean(KEY_BLOOM, next).apply()
+                view.bloomFolders = next
+            }
+            ClusterOption.QUICK_SNIPE -> {
+                val next = !view.quickSnipe
+                prefs.edit().putBoolean(KEY_QUICK_SNIPE, next).apply()
+                view.quickSnipe = next
+            }
+            ClusterOption.CONSTELLATION_SEARCH -> {
+                view.startConstellationSearch()
+            }
+            ClusterOption.LIVE_WIDGETS -> {
+                val next = !view.liveWidgets
+                prefs.edit().putBoolean(KEY_LIVE_WIDGETS, next).apply()
+                view.liveWidgets = next
+                if (apps.isNotEmpty()) pushAppsToView(apps)
+            }
+            ClusterOption.SYSTEM_WIDGETS -> {
+                openSystemWidgetsPortal()
+            }
+            ClusterOption.FIXED_NEIGHBORHOODS -> {
+                val next = !view.fixedNeighborhoods
+                prefs.edit().putBoolean(KEY_FIXED_NEIGHBORHOODS, next).apply()
+                view.fixedNeighborhoods = next
+                if (apps.isNotEmpty()) pushAppsToView(apps)
+            }
+            ClusterOption.AUTO_FOLDERS -> {
+                handleControlAction(ControlAction.FOLDERS, null)
+            }
+            ClusterOption.SET_DEFAULT_HOME -> {
+                chooseHome()
+            }
+            ClusterOption.CLEAR_PINS -> {
+                repo.clearAllPins()
+                if (apps.isNotEmpty()) pushAppsToView(apps)
+                Toast.makeText(this, "Cleared all pinned hex slots", Toast.LENGTH_SHORT).show()
+            }
+            ClusterOption.CLOSE_SHEET -> Unit
+        }
+    }
+
+    private fun handleControlAction(action: ControlAction, value: Float?) {
+        when (action) {
+            ControlAction.WIFI -> {
+                val panel = Intent(Settings.Panel.ACTION_WIFI)
+                if (runCatching { startActivity(panel) }.isFailure) {
+                    runCatching { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+                }
+            }
+            ControlAction.BLUETOOTH -> {
+                runCatching { startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
+            }
+            ControlAction.TORCH -> {
+                if (screenFlashlight) {
+                    screenFlashlight = false
+                    setWindowBrightness(-1f)
+                    syncControlState()
+                    return
+                }
+                val camId = torchCameraId
+                if (camId != null && runCatching { cameraManager.setTorchMode(camId, !torchOn) }.isSuccess) {
+                    return
+                }
+                // Fallback to bright watchOS screen-flashlight overlay
+                screenFlashlight = !screenFlashlight
+                setWindowBrightness(if (screenFlashlight) 1f else -1f)
+                syncControlState()
+            }
+            ControlAction.RINGER -> {
+                val nextMode = if (audioManager.ringerMode == AudioManager.RINGER_MODE_NORMAL) {
+                    AudioManager.RINGER_MODE_VIBRATE
+                } else {
+                    AudioManager.RINGER_MODE_NORMAL
+                }
+                if (runCatching { audioManager.ringerMode = nextMode }.isFailure) {
+                    runCatching { startActivity(Intent(Settings.Panel.ACTION_VOLUME)) }
+                }
+                syncControlState()
+            }
+            ControlAction.FOLDERS -> {
+                val next = !view.autoFolders
+                prefs.edit().putBoolean(KEY_FOLDERS, next).apply()
+                view.autoFolders = next
+                syncControlState()
+            }
+            ControlAction.LOCK -> {
+                if (!TurnOffService.perform(AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN)) {
+                    Toast.makeText(this, "Enable Watch Reborn in Accessibility to lock screen", Toast.LENGTH_SHORT).show()
+                    runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                }
+            }
+            ControlAction.NOTIFICATIONS -> {
+                view.toFace()
+                expandNotifications()
+            }
+            ControlAction.SET_HOME -> {
+                chooseHome()
+            }
+            ControlAction.VOLUME_DOWN -> {
+                runCatching { audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, 0) }
+                syncControlState()
+            }
+            ControlAction.VOLUME_UP -> {
+                if (value != null) {
+                    val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                    val target = (value * maxVol).roundToInt().coerceIn(0, maxVol)
+                    runCatching { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0) }
+                } else {
+                    runCatching { audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, 0) }
+                }
+                syncControlState()
+            }
+        }
+    }
+
+    private fun setWindowBrightness(brightness: Float) {
+        val lp = window.attributes
+        lp.screenBrightness = brightness
+        window.attributes = lp
+    }
+
+    private fun handleCardAction(action: CardAction) {
+        when (action) {
+            CardAction.MEDIA_PREV -> {
+                if (nowPlaying.track != null) nowPlaying.previous()
+                else sendMediaKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
+            }
+            CardAction.MEDIA_PLAY_PAUSE -> {
+                if (nowPlaying.track != null) nowPlaying.playPause()
+                else sendMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
+            }
+            CardAction.MEDIA_NEXT -> {
+                if (nowPlaying.track != null) nowPlaying.next()
+                else sendMediaKey(KeyEvent.KEYCODE_MEDIA_NEXT)
+            }
+            CardAction.MEDIA_OPEN -> {
+                if (nowPlaying.open()) return
+                if (!nowPlaying.allowed) {
+                    Toast.makeText(this, "Enable Notification Access for live Now Playing info", Toast.LENGTH_SHORT).show()
+                    runCatching { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+                    return
+                }
+                val music = Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_MUSIC)
+                runCatching { startActivity(music) }
+            }
+            CardAction.OPEN_ALARMS -> {
+                if (runCatching { startActivity(Intent(AlarmClock.ACTION_SHOW_ALARMS)) }.isFailure) {
+                    apps.firstOrNull { it.label.contains("Clock", ignoreCase = true) }?.let { launch(it, RectF()) }
+                }
+            }
+            CardAction.OPEN_BATTERY -> {
+                if (runCatching { startActivity(Intent(Intent.ACTION_POWER_USAGE_SUMMARY)) }.isFailure) {
+                    runCatching { startActivity(Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS)) }
+                }
+            }
+            CardAction.OPEN_CALENDAR -> {
+                val builder = CalendarContract.CONTENT_URI.buildUpon().appendPath("time")
+                ContentUris.appendId(builder, System.currentTimeMillis())
+                val intent = Intent(Intent.ACTION_VIEW).setData(builder.build())
+                if (runCatching { startActivity(intent) }.isFailure) {
+                    apps.firstOrNull { it.label.contains("Calendar", ignoreCase = true) }?.let { launch(it, RectF()) }
+                }
+            }
+        }
+    }
+
+    private fun sendMediaKey(keyCode: Int) {
+        runCatching {
+            val now = android.os.SystemClock.uptimeMillis()
+            audioManager.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0))
+            audioManager.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0))
+        }
+    }
+
+    private fun togglePinCard(cardId: String) {
+        val current = prefs.getStringSet(KEY_PINNED_CARDS, emptySet()).orEmpty().toMutableSet()
+        val pinned = if (cardId in current) { current.remove(cardId); false } else { current.add(cardId); true }
+        prefs.edit().putStringSet(KEY_PINNED_CARDS, current).apply()
+        view.pinnedCardIds = current
+        view.refreshCards()
+        Toast.makeText(this, if (pinned) "Card pinned to top" else "Card unpinned", Toast.LENGTH_SHORT).show()
     }
 
     private fun launch(app: App, from: RectF) {
@@ -143,27 +531,193 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun appOptions(app: App) {
+    private fun itemOptions(item: GridItem, slotIndex: Int) {
         val menu = PopupMenu(this, view, Gravity.CENTER)
-        menu.menu.add(0, 1, 0, "App Info")
-        // ACTION_DELETE always means the personal profile; work apps are removed from App Info.
-        if (!app.system && app.user == Process.myUserHandle()) menu.menu.add(0, 2, 1, "Uninstall")
-        menu.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                1 -> runCatching { launcherApps.startAppDetailsActivity(app.component, app.user, null, null) }
-                2 -> runCatching { startActivity(Intent(Intent.ACTION_DELETE, Uri.fromParts("package", app.component.packageName, null))) }
+        val currentlyPinnedSlot = repo.pinnedSlotOf(item.key)
+
+        // #6 Hex Slot Pinning options for both Apps and Folders
+        if (currentlyPinnedSlot != null) {
+            menu.menu.add(0, 300, 0, "📌 Unpin Hex Slot (#${currentlyPinnedSlot + 1})")
+        } else if (slotIndex >= 0) {
+            menu.menu.add(0, 301, 0, "📌 Pin to Current Hex (#${slotIndex + 1})")
+        }
+        if (currentlyPinnedSlot != 0 && slotIndex != 0) {
+            menu.menu.add(0, 302, 1, "📌 Pin to Center Core (#1)")
+        }
+
+        when (item) {
+            is WidgetBubble -> {
+                menu.menu.add(1, 319, 4, "⚡ Open Blooming Widget Pod")
+                when (item.kind) {
+                    WidgetKind.CORE_CLOCK -> {
+                        menu.menu.add(1, 320, 5, "⌚ Open Full Watch Face")
+                        menu.menu.add(1, 321, 6, "📊 Open Smart Stack")
+                        menu.menu.add(1, 322, 7, "🎛️ Open Control Center")
+                    }
+                    WidgetKind.NOW_PLAYING -> {
+                        menu.menu.add(1, 330, 5, "⏯ Play / Pause")
+                        menu.menu.add(1, 331, 6, "⏭ Next Track")
+                        menu.menu.add(1, 332, 7, "⏮ Previous Track")
+                        menu.menu.add(1, 333, 8, "🎵 Open Media App")
+                    }
+                    WidgetKind.CONTROLS -> {
+                        menu.menu.add(1, 322, 5, "🎛️ Open Control Center")
+                    }
+                    WidgetKind.VITALS -> {
+                        menu.menu.add(1, 321, 5, "📊 Open Smart Stack")
+                        menu.menu.add(1, 340, 6, "🔋 Battery & Vitals Settings")
+                    }
+                    WidgetKind.TIMER -> {
+                        menu.menu.add(1, 341, 5, "⏰ Open System Clock / Alarms")
+                    }
+                    WidgetKind.CALENDAR -> {
+                        menu.menu.add(1, 342, 5, "📅 Open System Calendar")
+                        menu.menu.add(1, 341, 6, "⏰ Open Alarms")
+                    }
+                }
+                menu.menu.add(2, 345, 14, "🧩 Android System Widgets...")
+                menu.menu.add(2, 311, 15, "⚙ Honeycomb Cluster Options...")
+                menu.menu.add(2, 312, 16, "🏠 Set as Default Launcher")
+                menu.setOnMenuItemClickListener { mi ->
+                    when (mi.itemId) {
+                        300 -> {
+                            repo.setPinnedSlot(item.key, null)
+                            pushAppsToView(apps)
+                            Toast.makeText(this, "Unpinned ${item.label}", Toast.LENGTH_SHORT).show()
+                        }
+                        301 -> {
+                            repo.setPinnedSlot(item.key, slotIndex)
+                            pushAppsToView(apps)
+                            Toast.makeText(this, "Pinned ${item.label} to Hex #${slotIndex + 1}", Toast.LENGTH_SHORT).show()
+                        }
+                        302 -> {
+                            repo.setPinnedSlot(item.key, 0)
+                            pushAppsToView(apps)
+                            Toast.makeText(this, "Pinned ${item.label} to Center Core", Toast.LENGTH_SHORT).show()
+                        }
+                        319 -> view.openWidgetPod(item)
+                        320 -> view.toFace()
+                        321 -> view.openStack()
+                        322 -> view.openControlCenter()
+                        330 -> handleCardAction(CardAction.MEDIA_PLAY_PAUSE)
+                        331 -> handleCardAction(CardAction.MEDIA_NEXT)
+                        332 -> handleCardAction(CardAction.MEDIA_PREV)
+                        333 -> handleCardAction(CardAction.MEDIA_OPEN)
+                        340 -> handleCardAction(CardAction.OPEN_BATTERY)
+                        341 -> handleCardAction(CardAction.OPEN_ALARMS)
+                        342 -> handleCardAction(CardAction.OPEN_CALENDAR)
+                        345 -> openSystemWidgetsPortal()
+                        311 -> view.openClusterSheet()
+                        312 -> chooseHome()
+                    }
+                    true
+                }
             }
-            true
+            is Folder -> {
+                menu.menu.add(1, 310, 5, "Open ${item.label} (${item.apps.size} apps)")
+                menu.menu.add(1, 311, 6, "⚙ Honeycomb Cluster Options...")
+                menu.menu.add(1, 312, 7, "🏠 Set as Default Launcher")
+                menu.setOnMenuItemClickListener { mi ->
+                    when (mi.itemId) {
+                        300 -> {
+                            repo.setPinnedSlot(item.key, null)
+                            pushAppsToView(apps)
+                            Toast.makeText(this, "Unpinned ${item.label}", Toast.LENGTH_SHORT).show()
+                        }
+                        301 -> {
+                            repo.setPinnedSlot(item.key, slotIndex)
+                            pushAppsToView(apps)
+                            Toast.makeText(this, "Pinned ${item.label} to Hex #${slotIndex + 1}", Toast.LENGTH_SHORT).show()
+                        }
+                        302 -> {
+                            repo.setPinnedSlot(item.key, 0)
+                            pushAppsToView(apps)
+                            Toast.makeText(this, "Pinned ${item.label} to Center Core", Toast.LENGTH_SHORT).show()
+                        }
+                        310 -> view.openFolder(item)
+                        311 -> view.openClusterSheet()
+                        312 -> chooseHome()
+                    }
+                    true
+                }
+            }
+            is App -> {
+                val shortcuts = Shortcuts.forApp(launcherApps, item.component, item.user)
+                shortcuts.forEachIndexed { idx, s ->
+                    val label = s.shortLabel ?: s.longLabel ?: s.id
+                    menu.menu.add(1, 10 + idx, 5 + idx, "⚡ $label")
+                }
+
+                // Move to Folder submenu
+                val currentGroup = repo.groupOf(item)
+                val folderSub = menu.menu.addSubMenu(2, 50, 20, "Folder: ${currentGroup.title}")
+                AppGroup.entries.forEachIndexed { idx, g ->
+                    val prefix = if (g == currentGroup) "✓ " else ""
+                    folderSub.add(2, 200 + idx, idx, "$prefix${g.title}")
+                }
+
+                menu.menu.add(3, 311, 25, "⚙ Honeycomb Cluster Options...")
+                menu.menu.add(3, 1, 30, "App Info")
+                if (!item.system && item.user == Process.myUserHandle()) {
+                    menu.menu.add(3, 2, 31, "Uninstall")
+                }
+
+                menu.setOnMenuItemClickListener { mi ->
+                    when (mi.itemId) {
+                        300 -> {
+                            repo.setPinnedSlot(item.key, null)
+                            pushAppsToView(apps)
+                            Toast.makeText(this, "Unpinned ${item.label}", Toast.LENGTH_SHORT).show()
+                        }
+                        301 -> {
+                            repo.setPinnedSlot(item.key, slotIndex)
+                            pushAppsToView(apps)
+                            Toast.makeText(this, "Pinned ${item.label} to Hex #${slotIndex + 1}", Toast.LENGTH_SHORT).show()
+                        }
+                        302 -> {
+                            repo.setPinnedSlot(item.key, 0)
+                            pushAppsToView(apps)
+                            Toast.makeText(this, "Pinned ${item.label} to Center Core", Toast.LENGTH_SHORT).show()
+                        }
+                        in 10 until 10 + shortcuts.size -> {
+                            val s = shortcuts[mi.itemId - 10]
+                            runCatching { launcherApps.startShortcut(s, null, null) }
+                        }
+                        in 200 until 200 + AppGroup.entries.size -> {
+                            val g = AppGroup.entries[mi.itemId - 200]
+                            repo.setGroupOverride(item, g)
+                            pushAppsToView(apps)
+                        }
+                        311 -> view.openClusterSheet()
+                        1 -> runCatching { launcherApps.startAppDetailsActivity(item.component, item.user, null, null) }
+                        2 -> runCatching { startActivity(Intent(Intent.ACTION_DELETE, Uri.fromParts("package", item.component.packageName, null))) }
+                    }
+                    true
+                }
+            }
         }
         menu.show()
     }
 
     private fun faceOptions() {
         val menu = PopupMenu(this, view, Gravity.CENTER)
-        ACCENTS.forEachIndexed { i, (name, _) -> menu.menu.add(1, 100 + i, i, "Colour: $name") }
+        menu.menu.add(0, 10, 0, "Open Control Center")
+        menu.menu.add(0, 13, 1, "⚙ Honeycomb Cluster Options...")
+        menu.menu.add(0, 11, 2, "Auto Folders: ${if (view.autoFolders) "On" else "Off"}")
+        if (!nowPlaying.allowed) {
+            menu.menu.add(0, 12, 3, "Enable Now Playing & Badges")
+        }
+        ACCENTS.forEachIndexed { i, (name, _) -> menu.menu.add(1, 100 + i, 10 + i, "Colour: $name") }
         menu.menu.add(2, 2, 50, "Choose Home App")
         menu.setOnMenuItemClickListener { item ->
             when (item.itemId) {
+                10 -> view.openControlCenter()
+                13 -> {
+                    view.openApps()
+                    view.openClusterSheet()
+                }
+                11 -> handleControlAction(ControlAction.FOLDERS, null)
+                12 -> runCatching { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
                 2 -> chooseHome()
                 in 100 until 100 + ACCENTS.size -> {
                     val c = ACCENTS[item.itemId - 100].second
@@ -177,16 +731,17 @@ class MainActivity : Activity() {
     }
 
     private fun chooseHome() {
+        val homeSettings = Intent(Settings.ACTION_HOME_SETTINGS)
+        if (runCatching { startActivity(homeSettings) }.isSuccess) return
         val roles = getSystemService(RoleManager::class.java)
         if (roles.isRoleAvailable(RoleManager.ROLE_HOME) && !roles.isRoleHeld(RoleManager.ROLE_HOME)) {
             @Suppress("DEPRECATION")
-            startActivityForResult(roles.createRequestRoleIntent(RoleManager.ROLE_HOME), 1)
+            runCatching { startActivityForResult(roles.createRequestRoleIntent(RoleManager.ROLE_HOME), 1) }
         } else {
-            runCatching { startActivity(Intent(android.provider.Settings.ACTION_HOME_SETTINGS)) }
+            runCatching { startActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)) }
         }
     }
 
-    /** Swipe down on the face: Android's notifications, where the watch shows its own. */
     @SuppressLint("WrongConstant")
     private fun expandNotifications() {
         runCatching {
@@ -195,10 +750,266 @@ class MainActivity : Activity() {
         }.onFailure { Log.w(TAG, "Can't open notifications", it) }
     }
 
+    private fun savedWidgetIds(): List<Int> {
+        return prefs.getStringSet(KEY_APPWIDGET_IDS, emptySet()).orEmpty()
+            .mapNotNull { it.toIntOrNull() }
+            .sorted()
+    }
+
+    private fun saveWidgetIds(ids: List<Int>) {
+        prefs.edit().putStringSet(KEY_APPWIDGET_IDS, ids.map { it.toString() }.toSet()).apply()
+    }
+
+    private fun dpPx(v: Float): Int = (v * resources.displayMetrics.density).toInt()
+
+    private fun openSystemWidgetsPortal() {
+        widgetsDialog?.dismiss()
+        val d = Dialog(this)
+        d.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        d.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpPx(18f), dpPx(20f), dpPx(18f), dpPx(18f))
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(22, 24, 30))
+                cornerRadius = dpPx(26f).toFloat()
+                setStroke(dpPx(1.5f), view.accent)
+            }
+        }
+
+        val title = TextView(this).apply {
+            text = "🧩 Android System Widgets"
+            textSize = 17f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        root.addView(title)
+
+        val sub = TextView(this).apply {
+            text = "Host real interactive Android widgets inside Watch Reborn"
+            textSize = 11.5f
+            setTextColor(Color.rgb(180, 185, 195))
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, dpPx(4f), 0, dpPx(12f))
+        }
+        root.addView(sub)
+
+        val scroll = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                (resources.displayMetrics.heightPixels * 0.56f).toInt(),
+            )
+        }
+        val listCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        scroll.addView(listCol)
+        root.addView(scroll)
+
+        fun populateWidgets() {
+            listCol.removeAllViews()
+            val ids = savedWidgetIds().toMutableList()
+            val validIds = ArrayList<Int>()
+            for (id in ids) {
+                val info = appWidgetManager.getAppWidgetInfo(id)
+                if (info == null) {
+                    runCatching { appWidgetHost.deleteAppWidgetId(id) }
+                    continue
+                }
+                validIds += id
+                val card = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dpPx(12f), dpPx(10f), dpPx(12f), dpPx(12f))
+                    background = GradientDrawable().apply {
+                        setColor(Color.rgb(34, 36, 44))
+                        cornerRadius = dpPx(18f).toFloat()
+                    }
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ).apply { bottomMargin = dpPx(10f) }
+                }
+
+                val hdr = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
+                val lbl = TextView(this).apply {
+                    text = info.loadLabel(packageManager) ?: "App Widget"
+                    textSize = 12.5f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(view.accent)
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                val rem = TextView(this).apply {
+                    text = "✕ Remove"
+                    textSize = 11f
+                    setTextColor(Color.rgb(255, 100, 100))
+                    setPadding(dpPx(8f), dpPx(4f), dpPx(8f), dpPx(4f))
+                    setOnClickListener {
+                        runCatching { appWidgetHost.deleteAppWidgetId(id) }
+                        saveWidgetIds(savedWidgetIds().filter { it != id })
+                        populateWidgets()
+                    }
+                }
+                hdr.addView(lbl)
+                hdr.addView(rem)
+                card.addView(hdr)
+
+                runCatching {
+                    val hv = appWidgetHost.createView(applicationContext, id, info)
+                    hv.setAppWidget(id, info)
+                    val minH = info.minHeight.coerceAtLeast(dpPx(110f))
+                    card.addView(
+                        hv,
+                        LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, minH).apply {
+                            topMargin = dpPx(6f)
+                        },
+                    )
+                }.onFailure {
+                    val err = TextView(this).apply {
+                        text = "Widget preview unavailable"
+                        textSize = 11f
+                        setTextColor(Color.GRAY)
+                    }
+                    card.addView(err)
+                }
+                listCol.addView(card)
+            }
+            if (validIds.size != ids.size) saveWidgetIds(validIds)
+
+            if (validIds.isEmpty()) {
+                val empty = TextView(this).apply {
+                    text = "No Android system widgets added yet.\n\nTap '+ Add Android Widget' below to pick any Clock, Weather, Calendar, Music, or third-party widget installed on your phone!"
+                    textSize = 12.5f
+                    setTextColor(Color.rgb(200, 205, 215))
+                    gravity = Gravity.CENTER
+                    setPadding(dpPx(16f), dpPx(36f), dpPx(16f), dpPx(36f))
+                }
+                listCol.addView(empty)
+            }
+        }
+
+        populateWidgets()
+
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(0, dpPx(12f), 0, 0)
+        }
+
+        val addBtn = TextView(this).apply {
+            text = "＋ Add Android Widget"
+            textSize = 13.5f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.BLACK)
+            gravity = Gravity.CENTER
+            setPadding(dpPx(18f), dpPx(10f), dpPx(18f), dpPx(10f))
+            background = GradientDrawable().apply {
+                setColor(view.accent)
+                cornerRadius = dpPx(20f).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dpPx(8f)
+            }
+            setOnClickListener {
+                launchWidgetPicker()
+            }
+        }
+
+        val closeBtn = TextView(this).apply {
+            text = "Done"
+            textSize = 13.5f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(dpPx(18f), dpPx(10f), dpPx(18f), dpPx(10f))
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(52, 54, 62))
+                cornerRadius = dpPx(20f).toFloat()
+            }
+            setOnClickListener { d.dismiss() }
+        }
+
+        btnRow.addView(addBtn)
+        btnRow.addView(closeBtn)
+        root.addView(btnRow)
+
+        d.setContentView(root)
+        d.window?.setLayout(
+            (resources.displayMetrics.widthPixels * 0.92f).toInt(),
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        )
+        widgetsDialog = d
+        d.show()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun launchWidgetPicker() {
+        val appWidgetId = appWidgetHost.allocateAppWidgetId()
+        val pickIntent = Intent(AppWidgetManager.ACTION_APPWIDGET_PICK).apply {
+            putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
+        }
+        runCatching { startActivityForResult(pickIntent, REQ_PICK_APPWIDGET) }
+            .onFailure {
+                appWidgetHost.deleteAppWidgetId(appWidgetId)
+                Toast.makeText(this, "Widget picker unavailable on this device", Toast.LENGTH_SHORT).show()
+            }
+    }
+
+    @Deprecated("Deprecated in Java")
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        val widgetId = data?.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, -1) ?: -1
+        if (requestCode == REQ_PICK_APPWIDGET) {
+            if (resultCode == RESULT_OK && widgetId != -1) {
+                val info = appWidgetManager.getAppWidgetInfo(widgetId)
+                if (info?.configure != null) {
+                    val cfg = Intent(AppWidgetManager.ACTION_APPWIDGET_CONFIGURE).apply {
+                        component = info.configure
+                        putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId)
+                    }
+                    if (runCatching { startActivityForResult(cfg, REQ_CREATE_APPWIDGET) }.isSuccess) return
+                }
+                finishAddWidget(widgetId)
+            } else if (widgetId != -1) {
+                runCatching { appWidgetHost.deleteAppWidgetId(widgetId) }
+            }
+        } else if (requestCode == REQ_CREATE_APPWIDGET) {
+            if (resultCode == RESULT_OK && widgetId != -1) {
+                finishAddWidget(widgetId)
+            } else if (widgetId != -1) {
+                runCatching { appWidgetHost.deleteAppWidgetId(widgetId) }
+            }
+        }
+    }
+
+    private fun finishAddWidget(widgetId: Int) {
+        val updated = (savedWidgetIds() + widgetId).distinct()
+        saveWidgetIds(updated)
+        openSystemWidgetsPortal()
+    }
+
     private companion object {
         const val TAG = "WatchReborn"
+        const val APPWIDGET_HOST_ID = 2048
+        const val REQ_PICK_APPWIDGET = 401
+        const val REQ_CREATE_APPWIDGET = 402
         const val KEY_ACCENT = "accent"
         const val KEY_LIST = "list"
+        const val KEY_FOLDERS = "auto_folders"
+        const val KEY_HONEYCOMB_HOME = "honeycomb_home"
+        const val KEY_BLOOM = "bloom_folders"
+        const val KEY_QUICK_SNIPE = "quick_snipe_opt"
+        const val KEY_LIVE_WIDGETS = "live_widgets"
+        const val KEY_FIXED_NEIGHBORHOODS = "fixed_neighborhoods"
+        const val KEY_CLUSTER_TOPOLOGY = "cluster_topology"
+        const val KEY_BUBBLE_PHYSICS = "bubble_physics"
+        const val KEY_PINNED_CARDS = "pinned_cards"
+        const val KEY_APPWIDGET_IDS = "appwidget_ids"
         val ACCENTS = listOf(
             "Green" to Color.rgb(166, 227, 110),
             "Orange" to Color.rgb(255, 159, 10),
