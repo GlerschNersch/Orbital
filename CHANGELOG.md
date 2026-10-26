@@ -20,6 +20,14 @@ First production release.
   framework: the host advertises its virtual children and accessibility
   clients can fetch them all. Still host-only (not yet node-mapped): the
   Cluster sheet, topology picker, widget pod and Control Center.
+- **Back fixed for real** — the "Back from the Smart Stack sometimes exits
+  the app" gremlin is root-caused: MainActivity is a HOME-category activity,
+  and for those the framework never translates KEYCODE_BACK into the
+  OnBackInvokedCallback (verified by instrumentation on Android 13 and 16 —
+  the key arrives, the callback doesn't, the default handler finishes the
+  activity). Back now also travels dispatchKeyEvent, both paths funnel into
+  one handler with a 350 ms guard against double-pops. Verified end-to-end:
+  Stack → Back → grid → face → grid, app never exits.
 - Version scheme moves to 1.0.0 (versionCode 10); 40 unit tests green.
 
 ## 0.3.5 — 2026-10-25

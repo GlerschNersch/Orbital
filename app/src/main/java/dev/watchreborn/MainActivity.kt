@@ -179,9 +179,7 @@ class MainActivity : Activity(), SensorEventListener {
         setContentView(view)
         window.setDecorFitsSystemWindows(false)
         onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) {
-            // If the view didn't consume Back and we are not the default home app,
-            // let the user actually leave instead of swallowing the press.
-            if (!view.back() && !isDefaultHomeApp()) finish()
+            handleBack()
         }
 
         val artPx = (96 * resources.displayMetrics.density).toInt()
@@ -221,16 +219,46 @@ class MainActivity : Activity(), SensorEventListener {
         if (apps.isNotEmpty()) pushAppsToView(apps)
     }
 
+    private var lastBackHandledMs = 0L
+
+    /**
+     * One Back press, whichever path delivered it. The OnBackInvokedCallback
+     * is the primary path, but for this HOME-category activity the framework
+     * does not translate KEYCODE_BACK into that callback (verified on Android
+     * 13 and 16: the key reaches dispatchKeyEvent, the callback never runs,
+     * and the default handler finishes the activity — Back from the Smart
+     * Stack exited the app instead of popping the stack). dispatchKeyEvent
+     * below covers key-delivered Back; the timestamp guard keeps a press
+     * that arrives through both paths from popping two layers.
+     */
+    private fun handleBack() {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastBackHandledMs < 350L) return
+        lastBackHandledMs = now
+        // If the view didn't consume Back and we are not the default home app,
+        // let the user actually leave instead of swallowing the press.
+        if (!view.back() && !isDefaultHomeApp()) finish()
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+            if (event.action == KeyEvent.ACTION_UP && event.repeatCount == 0) handleBack()
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (Intent.ACTION_MAIN == intent.action && hasWindowFocus()) view.home()
     }
 
-    // Back is handled solely by the OnBackInvokedCallback registered in
-    // onCreate (minSdk 33 covers it). There used to be a second handler here
-    // (onKeyDown for KEYCODE_BACK) running the same logic — two delivery
-    // paths for one press could pop two layers, and on the second pop a
-    // plain-face state legitimately answers "not consumed" and finishes.
+    // Back arrives via two paths — the OnBackInvokedCallback registered in
+    // onCreate and KEYCODE_BACK in dispatchKeyEvent — both funnelled into
+    // handleBack(), whose 350 ms guard stops one press popping two layers.
+    // (An earlier version relied on the callback alone; for this
+    // HOME-category activity the framework never fires it for key-delivered
+    // Back, so Stack/face Back presses finished the app instead.)
 
     /** Pin scope for repo calls: per-layout when enabled, else the global set. */
     private fun pinScope(): String? =
