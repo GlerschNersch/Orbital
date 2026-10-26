@@ -125,7 +125,24 @@ The whole 0.2.1 ideas backlog, built:
 
 ## Next
 
-Nothing queued — pick from Later below.
+Queued by Matt, 2026-10-25 evening (after trying 1.6.0):
+
+- **Dock polish pass** (S) — the 1.6.0 bottom dock works but looks rough: the four
+  segments mix text glyphs (⌂ ▦ ☰) with one emoji (🗂), the glyph+label stack is
+  cramped in the 48dp bar, and the active-segment highlight is a plain tint box.
+  Redraw the four icons as one consistent drawn set, tune spacing and baselines,
+  and give the active segment a cleaner treatment (consider a slightly taller bar).
+- **Folder delete people can actually find** (S) — Delete/Rename ship in 1.6.0 but
+  only on a custom folder's long-press Context Card; Matt went looking and never
+  found them, and automatic category folders can't be deleted at all. Add
+  Rename/Delete to the open folder's own header, and give category folders a
+  "Hide folder" (spill the members loose and suppress the folder) so every folder
+  bubble has an obvious way out.
+- **Remove apps from folders, visibly** (S–M) — the only way out today is a
+  classic-menu row inside the folder view; undiscoverable, and the bloom has
+  none. Put "Remove from folder" on the member's press card inside folders
+  (bloom + full view) and finish **Drag out of a folder** (below) so un-filing
+  is a gesture, not a menu hunt.
 
 ## Ideas backlog (comprehensive pass, 2026-10-25)
 
