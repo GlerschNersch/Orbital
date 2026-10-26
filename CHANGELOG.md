@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.4.0 — 2026-10-26
+
+- **Settings is a page now, not a pop-up.** It opens as an
+  opaque full-screen surface (the cluster no longer shows
+  through a dim), content anchored at the top; the Cluster
+  Layout picker gets the same page treatment. Done or Back
+  returns to the cluster.
+- **Lattice brightened.** The honeycomb's connecting lattice
+  was barely visible: filament alpha roughly doubled
+  (58 → 130 at the centre, higher floor toward the edges)
+  and the stroke thickened from 1.3dp to 2dp.
+
 ## 2.3.0 — 2026-10-26
 
 - **Long-press is rearrange-only.** The quick menu (Context

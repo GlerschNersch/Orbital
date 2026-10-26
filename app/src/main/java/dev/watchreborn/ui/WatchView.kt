@@ -2542,8 +2542,10 @@ class WatchView(
                 }
                 else -> {
                     // Reactive Hexagonal Lattice Matrix (used by HONEYCOMB & GRAVITY)
+                    // Brightened in 2.4.0 (Matt: the lattice was too faint) —
+                    // thicker filament, ~2.2x the alpha, higher outer floor.
                     val maxLinkDist = basePitch * effZoom * 1.42f
-                    stroke.strokeWidth = dp(1.3f)
+                    stroke.strokeWidth = dp(2f)
                     for (i in items.indices) {
                         if (bubbleDia[i] <= 2f) continue
                         val x1 = bubbleX[i]; val y1 = bubbleY[i]
@@ -2552,8 +2554,8 @@ class WatchView(
                             val x2 = bubbleX[j]; val y2 = bubbleY[j]
                             val dist = hypot(x2 - x1, y2 - y1)
                             if (dist <= maxLinkDist) {
-                                val centerBoost = (1f - min(bubbleDist[i], bubbleDist[j]) * 1.4f).coerceIn(0.18f, 1f)
-                                stroke.color = withAlpha(accent, (itemAlpha * 58f * centerBoost).toInt())
+                                val centerBoost = (1f - min(bubbleDist[i], bubbleDist[j]) * 1.4f).coerceIn(0.35f, 1f)
+                                stroke.color = withAlpha(accent, (itemAlpha * 130f * centerBoost).toInt())
                                 c.drawLine(x1, y1, x2, y2, stroke)
                             }
                         }
@@ -3614,11 +3616,13 @@ class WatchView(
         sheetRowRects.clear()
         sheetRowLabels.clear()
 
-        fill.color = Color.argb((t * 195).toInt(), 0, 0, 0)
+        // 2.4.0: Settings is a full PAGE, not a popup — an opaque
+        // full-screen surface; the cluster no longer shows through.
+        fill.color = Color.argb(a, 24, 26, 30)
         c.drawRect(0f, 0f, w, h, fill)
 
         if (topologyPickerOpen) {
-            drawTopologyPicker(c, w, h, t)
+            drawTopologyPicker(c, w, h, top, t)
             return
         }
 
@@ -3683,14 +3687,8 @@ class WatchView(
         // No slide-in offset: the sheet fades in at its final position, so a
         // row is in the same place on the first frame as the last. (The old
         // (1-t) rise made rows drift upward while the sheet animated open.)
-        val sheetTop = (h - sheetH) / 2f
-        sheetBoundsRect.set(padX, sheetTop, padX + cardW, sheetTop + sheetH)
-
-        fill.color = Color.argb(a, 24, 26, 30)
-        c.drawRoundRect(sheetBoundsRect, dp(24f), dp(24f), fill)
-        stroke.strokeWidth = dp(1.5f)
-        stroke.color = withAlpha(accent, (a * 0.6f).toInt())
-        c.drawRoundRect(sheetBoundsRect, dp(24f), dp(24f), stroke)
+        val sheetTop = top + dp(6f)
+        sheetBoundsRect.set(0f, 0f, w, h)
 
         text.textSize = sp(18.5f)
         text.color = Color.argb(a, 255, 255, 255)
@@ -3778,7 +3776,7 @@ class WatchView(
     }
 
     /** Full list of cluster layouts: tap one to apply it directly (replaces tap-to-cycle). */
-    private fun drawTopologyPicker(c: Canvas, w: Float, h: Float, t: Float) {
+    private fun drawTopologyPicker(c: Canvas, w: Float, h: Float, top: Float, t: Float) {
         val a = (t * 255).toInt().coerceIn(0, 255)
         topologyRowRects.clear()
 
@@ -3794,14 +3792,8 @@ class WatchView(
             sheetH = dp(74f) + all.size * (rowH + gap) + dp(52f)
         }
         // Same no-slide rule as the options sheet: rows never drift while opening.
-        val sheetTop = (h - sheetH) / 2f
-        sheetBoundsRect.set(padX, sheetTop, padX + cardW, sheetTop + sheetH)
-
-        fill.color = Color.argb(a, 24, 26, 30)
-        c.drawRoundRect(sheetBoundsRect, dp(24f), dp(24f), fill)
-        stroke.strokeWidth = dp(1.5f)
-        stroke.color = withAlpha(accent, (a * 0.6f).toInt())
-        c.drawRoundRect(sheetBoundsRect, dp(24f), dp(24f), stroke)
+        val sheetTop = top + dp(6f)
+        sheetBoundsRect.set(0f, 0f, w, h)
 
         text.textSize = sp(18.5f)
         text.color = Color.argb(a, 255, 255, 255)
