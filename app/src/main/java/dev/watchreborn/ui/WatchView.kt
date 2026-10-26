@@ -2552,7 +2552,11 @@ class WatchView(
         val bubbleY = FloatArray(items.size)
         val bubbleDia = FloatArray(items.size)
         val bubbleDist = FloatArray(items.size) { Float.MAX_VALUE }
-        val basePitch = Metrics.GRID_PITCH * u * (1f + 0.32f * ov)
+        // 2.9.1 core tuning: the lattice runs 10% wider than the raw
+        // watchOS pitch — GRID_PITCH/GRID_CENTER_D leaves only ~13%
+        // headroom, so heavily-used neighbours (growth up to 1.5x)
+        // physically overlapped, worst around the new centre app.
+        val basePitch = Metrics.GRID_PITCH * u * (1f + 0.32f * ov) * 1.10f
 
         val isBezel = clusterTopology == ClusterTopology.CHRONO_BEZEL
         val isRiver = clusterTopology == ClusterTopology.RIVER
@@ -2675,7 +2679,12 @@ class WatchView(
             // In the pool, Usage Growth is damped (1.4.0): at full size the
             // most-used bubbles render ~2x their collision radius and bury
             // the clock hub at the centre of the tank.
-            val growth = if (isPool) 1f + (growthFor(item) - 1f) * 0.35f else growthFor(item)
+            val rawGrowth = growthFor(item)
+            // 2.9.1: compress growth above 1 (1.5 max -> ~1.28) so a
+            // cluster of favourites can't swallow each other; the
+            // centre still reads biggest via the fisheye's centre size.
+            val growth = if (isPool) 1f + (rawGrowth - 1f) * 0.35f
+                else if (rawGrowth > 1f) 1f + (rawGrowth - 1f) * 0.55f else rawGrowth
             bubbleDia[i] = Metrics.GRID_CENTER_D * u * size * effZoom * scaleMod * growth * gulpFactor(item.key)
         }
 

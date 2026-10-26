@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.9.1 — 2026-10-26
+
+Core spacing tuned (Matt's screenshot showed the new centre app and its ring swallowing each other): the lattice pitch leaves only ~13% headroom over the base bubble diameter, while usage growth runs to 1.5x and the logarithmic curve parks many favourites near that max — overlap was arithmetically guaranteed. The lattice now runs 10% wider, and growth above 1.0 is compressed (1.5 max → ~1.28) while the below-1 shrink is untouched, so rankings stay readable, the centre still reads biggest (the fisheye already favours it), and even a worst-case pair of max-growth neighbours now fits with a small gap.
+
 ## 2.9.0 — 2026-10-26
 
 The clock leaves the centre (Matt's call): slot 0 of the cluster now belongs to the most-used app. The grid builders already order by recency-weighted use, so with the Core Clock hub no longer placed, the top app takes the centre — biggest bubble on the surface, fully live (tap to launch, badge dot, notification peek, jiggle, long-press) — and the centre changes hands as your usage does. The top pill names the centre app instead of "Clock & Status" and still opens search. The clock widget stays in the catalog for the Widgets page; the Clock app remains in the grid as a normal app; the time stays in the status bar. Saved pins were stored against grids that included the clock at slot 0, so a one-time migration shifts every pin down one slot to keep each pinned app in its exact visual spot.
