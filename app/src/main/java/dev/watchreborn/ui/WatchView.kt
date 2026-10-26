@@ -2374,8 +2374,19 @@ class WatchView(
         // the Face is fully in front.
         if (apps.value == 0f && stackIn.value == 0f && controlIn.value == 0f) {
             drawCoachHint(c, w, bottom, faceAlpha)
-            // The bottom dock lives on the Face too (1.12.0), so the four
-            // destinations are one tap away from every main surface.
+        }
+
+        // The bottom dock lives on the Face too (1.12.0), so the four
+        // destinations are one tap away from every main surface. It is
+        // gated on the springs' TARGETS, not their values (1.17.0):
+        // gating on apps.value == 0f made the dock fade out with the
+        // cluster during a Cluster → Face switch and only pop back in
+        // once the spring fully settled — a visible dock-less gap
+        // (Matt: "disappears for about 2 seconds"). On targets, the
+        // Face's dock crossfades in with faceAlpha while the cluster's
+        // dock fades out with apps.value; both bars share one rect, so
+        // the dock never leaves the screen.
+        if (apps.target == 0f && stackIn.target == 0f && controlIn.target == 0f) {
             drawDock(c, w, bottom, faceAlpha)
         }
 

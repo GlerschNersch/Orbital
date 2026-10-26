@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.17.0 — 2026-10-26
+
+- **The dock no longer vanishes during a Cluster → Face switch** —
+  the Face's dock was gated on the animation fully settling, so it
+  faded out with the cluster and popped back in late. It now
+  crossfades with the surfaces: the dock stays on screen through
+  the whole switch.
+
 ## 1.16.0 — 2026-10-26
 
 - **The app is now called Orbital** — display name, in-app
