@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.6.0 — 2026-10-26
+
+Grouped-list restyle of Settings (Matt's reference screenshot) + the dock on the Settings page:
+- Sections are now single panels with hairline dividers instead of separate floating cards, on both the Settings page and the Cluster Layout picker.
+- Rows are single-line: a small line glyph on the left, the label in white, the current value in grey on the right with a chevron for navigation rows.
+- Toggles are iOS-style switches (accent track, sliding knob) instead of ON/OFF pills; the mode-changing toggles still name their mode next to the switch ("Spiral"/"Fixed", "Bloom"/"Full-screen").
+- Done and the picker's Back are full-width panel rows.
+- The bottom dock is drawn on the Settings page (Settings segment highlighted) and its segments work there: Cluster closes the page, Widgets jumps to the Widgets page. Page content compresses to clear the dock on short screens.
+- No behaviour changes elsewhere: same rows, same order, same hit rects and TalkBack labels.
+
 ## 2.5.0 — 2026-10-26
 
 Settings declutter — five entries removed, behaviour frozen at

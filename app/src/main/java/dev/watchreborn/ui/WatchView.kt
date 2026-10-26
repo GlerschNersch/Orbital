@@ -2157,6 +2157,7 @@ class WatchView(
             drawEditDone(c, w, bottom, a)
             drawCrownTrack(c, w, h, top, bottom, a)
             if (clusterSheet.value > 0.001f) drawClusterSheet(c, w, h, top, bottom, clusterSheet.value)
+            if (clusterSheet.value > 0.001f) drawDock(c, w, bottom, a) // 2.6.0: the dock stays on the Settings page
             if (cardItem != null) drawCardMenu(c, w, h, cal, cardMenu.value)
         }
 
@@ -3608,11 +3609,8 @@ class WatchView(
         var rowH = dp(50f)
         val gap = dp(4f)
         // Sectioned rows: a null option marks a section header (not tappable).
-        // Simplified in 1.9.0, slimmed again in 1.11.2 (Matt's call): the
-        // front page is just Topology, Bubble Physics and
-        // everything set-and-forget lives behind "More Options". The old
-        // App Search row is gone entirely: the pill at the top of the
-        // cluster already opens search. Hidden Folders stays visible
+        // The front page is just Topology (2.5.0 declutter); set-and-forget
+        // rows live behind "More Options". Hidden Folders stays visible
         // while collapsed when folders are hidden: it's an active state,
         // not a setting.
         val rows = buildList<Triple<ClusterOption?, String, String>> {
@@ -3649,10 +3647,12 @@ class WatchView(
         // the compression and shift every row by up to ~40px between opens.
         val layoutCount = optionCount + if (sheetExpanded && pinnedItemKeys.isEmpty()) 1 else 0
         var sheetH = dp(74f) + layoutCount * (rowH + gap) + headerCount * headerH + dp(52f)
-        if (sheetH > h - dp(36f) && layoutCount > 0) {
+        // 2.6.0: the page must also clear the dock, which now stays visible.
+        val availH = (if (!dockSegs[0].isEmpty) dockSegs[0].top - dp(10f) else h - dp(36f)) - (top + dp(6f))
+        if (sheetH > availH && layoutCount > 0) {
             // Short screen: compress rows so the sheet — including its Done
             // button — always fits.
-            rowH = ((h - dp(36f) - dp(74f) - headerCount * headerH - dp(52f)) / layoutCount - gap).coerceAtLeast(dp(34f))
+            rowH = ((availH - dp(74f) - headerCount * headerH - dp(52f)) / layoutCount - gap).coerceAtLeast(dp(34f))
             sheetH = dp(74f) + layoutCount * (rowH + gap) + headerCount * headerH + dp(52f)
         }
 
@@ -3672,31 +3672,57 @@ class WatchView(
         val hint = if (sheetExpanded) "Layout • Behavior • Actions" else "Essentials up front — More Options has the rest"
         c.drawText(hint, w / 2 - text.measureText(hint) / 2, sheetTop + dp(55f), text)
 
+        // 2.6.0 restyle (Matt's reference shot): iOS-style grouped list —
+        // one panel per section with hairline dividers, single-line rows:
+        // a line glyph on the left, the label in white, the value in grey
+        // on the right, and a real switch for toggles. Row positions and
+        // hit rects are unchanged from the old card layout.
+        data class SheetBox(val opt: ClusterOption, val label: String, val rect: RectF, val panel: Int)
+        val boxes = mutableListOf<SheetBox>()
+        val headers = mutableListOf<Pair<RectF, String>>()
+        var panelId = -1
         var ry = sheetTop + dp(68f)
-        for ((opt, label, valueText) in rows) {
+        for ((opt, label, _) in rows) {
             if (opt == null) {
-                text.textSize = sp(12f)
-                text.color = Color.argb((a * 0.65f).toInt(), 168, 170, 178)
-                c.drawText(label, padX + dp(16f), ry + dp(15f), text)
+                headers += RectF(padX, ry, w - padX, ry + headerH) to label
+                panelId++
                 ry += headerH
                 continue
             }
+            if (panelId < 0) panelId = 0
+            val solo = opt == ClusterOption.MORE_OPTIONS || opt == ClusterOption.UNHIDE_FOLDERS
+            if (solo) panelId++
             val r = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + rowH)
-            fill.color = Color.argb(a, 40, 42, 48)
-            c.drawRoundRect(r, dp(14f), dp(14f), fill)
+            boxes += SheetBox(opt, label, r, panelId)
+            if (solo) panelId++
+            ry += rowH + gap
+        }
 
-            // Baselines scale with the row height so the bigger text
-            // (1.11.2) still fits when a short screen compresses rows.
-            text.textSize = sp(12.5f)
-            text.color = Color.argb((a * 0.75f).toInt(), 178, 180, 188)
-            c.drawText(label, r.left + dp(14f), r.top + rowH * 0.40f, text)
+        // Panels first (one rounded surface per section), with a hairline
+        // divider in the gap between rows of the same panel.
+        val panelFill = Color.argb(a, 35, 37, 43)
+        for ((_, group) in boxes.groupBy { it.panel }) {
+            val pr = RectF(group.first().rect.left, group.first().rect.top, group.first().rect.right, group.last().rect.bottom)
+            fill.color = panelFill
+            c.drawRoundRect(pr, dp(16f), dp(16f), fill)
+            for (i in 0 until group.size - 1) {
+                val dy = (group[i].rect.bottom + group[i + 1].rect.top) / 2f
+                stroke.strokeWidth = dp(1f)
+                stroke.color = Color.argb((a * 0.5f).toInt(), 96, 98, 106)
+                c.drawLine(pr.left + dp(46f), dy, pr.right - dp(14f), dy, stroke)
+            }
+        }
+        for ((hr, hlabel) in headers) {
+            text.textSize = sp(12f)
+            text.color = Color.argb((a * 0.65f).toInt(), 168, 170, 178)
+            c.drawText(hlabel, padX + dp(16f), hr.top + dp(15f), text)
+        }
 
-            text.textSize = sp(15.5f)
-            text.color = withAlpha(accent, a)
-            c.drawText(valueText, r.left + dp(14f), r.top + rowH * 0.86f, text)
-
-            // Right-side affordance: an ON/OFF chip for toggles, a chevron for actions,
-            // so the two kinds of row no longer look identical.
+        val glyphColor = Color.argb((a * 0.9f).toInt(), 205, 207, 213)
+        for (box in boxes) {
+            val r = box.rect
+            val opt = box.opt
+            val label = box.label
             val toggleOn: Boolean? = when (opt) {
                 ClusterOption.FIXED_NEIGHBORHOODS -> fixedNeighborhoods
                 ClusterOption.PER_LAYOUT_PINS -> perLayoutPins
@@ -3704,17 +3730,47 @@ class WatchView(
                 ClusterOption.BLOOM_MODE -> bloomFolders
                 else -> null
             }
+            drawSheetGlyph(c, opt, r.left + dp(24f), r.centerY(), dp(21f), glyphColor)
+
+            text.textSize = sp(15.5f)
+            text.color = Color.argb(a, 255, 255, 255)
+            c.drawText(label, r.left + dp(44f), r.centerY() + text.textSize * 0.35f, text)
+
             if (toggleOn != null) {
-                val chipW = dp(44f)
-                val chipH = dp(20f)
-                val chip = RectF(r.right - dp(12f) - chipW, r.centerY() - chipH / 2, r.right - dp(12f), r.centerY() + chipH / 2)
+                // iOS-style switch: accent track when on, knob slides.
+                val swW = dp(46f)
+                val swH = dp(28f)
+                val sw = RectF(r.right - dp(12f) - swW, r.centerY() - swH / 2, r.right - dp(12f), r.centerY() + swH / 2)
                 fill.color = if (toggleOn) withAlpha(accent, a) else Color.argb(a, 84, 84, 90)
-                c.drawRoundRect(chip, chipH / 2, chipH / 2, fill)
-                text.textSize = sp(10.5f)
-                text.color = if (toggleOn) Color.argb(a, 0, 0, 0) else Color.argb(a, 235, 235, 240)
-                val s = if (toggleOn) "ON" else "OFF"
-                c.drawText(s, chip.centerX() - text.measureText(s) / 2, chip.centerY() + text.textSize * 0.35f, text)
+                c.drawRoundRect(sw, swH / 2, swH / 2, fill)
+                fill.color = Color.argb(a, 255, 255, 255)
+                val knobR = dp(11f)
+                val knobX = if (toggleOn) sw.right - dp(3f) - knobR else sw.left + dp(3f) + knobR
+                c.drawCircle(knobX, sw.centerY(), knobR, fill)
+                // Two toggles switch MODES, not just on/off — name the mode
+                // in grey left of the switch.
+                val modeText = when (opt) {
+                    ClusterOption.FIXED_NEIGHBORHOODS -> if (fixedNeighborhoods) "Fixed" else "Spiral"
+                    ClusterOption.BLOOM_MODE -> if (bloomFolders) "Bloom" else "Full-screen"
+                    else -> ""
+                }
+                if (modeText.isNotEmpty()) {
+                    text.textSize = sp(13f)
+                    text.color = Color.argb((a * 0.85f).toInt(), 170, 172, 180)
+                    c.drawText(modeText, sw.left - dp(10f) - text.measureText(modeText), r.centerY() + text.textSize * 0.35f, text)
+                }
             } else {
+                val valueText = when (opt) {
+                    ClusterOption.CLUSTER_TOPOLOGY -> clusterTopology.fullTitle
+                    ClusterOption.CLEAR_PINS -> "Unpin all"
+                    ClusterOption.UNHIDE_FOLDERS -> "Restore"
+                    else -> ""
+                }
+                if (valueText.isNotEmpty()) {
+                    text.textSize = sp(13f)
+                    text.color = Color.argb((a * 0.85f).toInt(), 170, 172, 180)
+                    c.drawText(valueText, r.right - dp(32f) - text.measureText(valueText), r.centerY() + text.textSize * 0.35f, text)
+                }
                 text.textSize = sp(20f)
                 text.color = Color.argb((a * 0.6f).toInt(), 200, 202, 208)
                 c.drawText("›", r.right - dp(22f), r.centerY() + text.textSize * 0.35f, text)
@@ -3727,16 +3783,14 @@ class WatchView(
                 opt == ClusterOption.MORE_OPTIONS -> if (sheetExpanded) "Show fewer options" else "More options"
                 else -> label
             }
-            ry += rowH + gap
         }
 
-        val doneW = dp(140f)
-        val doneH = dp(42f)
-        val doneRect = RectF(w / 2 - doneW / 2, ry + dp(4f), w / 2 + doneW / 2, ry + dp(4f) + doneH)
-        fill.color = withAlpha(accent, a)
-        c.drawRoundRect(doneRect, doneH / 2, doneH / 2, fill)
-        text.textSize = sp(15.5f)
-        text.color = Color.argb(a, 0, 0, 0)
+        // Done: a full-width panel row with centred accent text.
+        val doneRect = RectF(padX + dp(12f), ry + dp(4f), padX + cardW - dp(12f), ry + dp(4f) + dp(50f))
+        fill.color = panelFill
+        c.drawRoundRect(doneRect, dp(16f), dp(16f), fill)
+        text.textSize = sp(16f)
+        text.color = withAlpha(accent, a)
         val doneStr = "Done"
         c.drawText(doneStr, w / 2 - text.measureText(doneStr) / 2, doneRect.centerY() + text.textSize * 0.35f, text)
         sheetRowRects += doneRect to ClusterOption.CLOSE_SHEET
@@ -3754,9 +3808,10 @@ class WatchView(
         val gap = dp(4f)
         val all = ClusterTopology.entries
         var sheetH = dp(74f) + all.size * (rowH + gap) + dp(52f)
-        if (sheetH > h - dp(36f)) {
+        val availH = (if (!dockSegs[0].isEmpty) dockSegs[0].top - dp(10f) else h - dp(36f)) - (top + dp(6f))
+        if (sheetH > availH) {
             // Short screen: compress rows so the picker always fits.
-            rowH = ((h - dp(36f) - dp(74f) - dp(52f)) / all.size - gap).coerceAtLeast(dp(34f))
+            rowH = ((availH - dp(74f) - dp(52f)) / all.size - gap).coerceAtLeast(dp(34f))
             sheetH = dp(74f) + all.size * (rowH + gap) + dp(52f)
         }
         // Same no-slide rule as the options sheet: rows never drift while opening.
@@ -3774,10 +3829,12 @@ class WatchView(
         c.drawText(hint, w / 2 - text.measureText(hint) / 2, sheetTop + dp(55f), text)
 
         var ry = sheetTop + dp(68f)
+        // 2.6.0: one grouped panel behind all rows (Settings restyle).
+        val panelRect = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + all.size * (rowH + gap) - gap)
+        fill.color = Color.argb(a, 35, 37, 43)
+        c.drawRoundRect(panelRect, dp(16f), dp(16f), fill)
         for (topo in all) {
             val r = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + rowH)
-            fill.color = Color.argb(a, 40, 42, 48)
-            c.drawRoundRect(r, dp(14f), dp(14f), fill)
             if (topo == clusterTopology) {
                 stroke.strokeWidth = dp(1.5f)
                 stroke.color = withAlpha(accent, (a * 0.8f).toInt())
@@ -3833,12 +3890,19 @@ class WatchView(
             ry += rowH + gap
         }
 
-        val backW = dp(140f)
-        val backH = dp(42f)
-        pickerBackRect.set(w / 2 - backW / 2, ry + dp(4f), w / 2 + backW / 2, ry + dp(4f) + backH)
-        fill.color = Color.argb(a, 52, 54, 60)
-        c.drawRoundRect(pickerBackRect, backH / 2, backH / 2, fill)
-        text.textSize = sp(15.5f)
+        // Hairline dividers between the panel rows.
+        stroke.strokeWidth = dp(1f)
+        stroke.color = Color.argb((a * 0.5f).toInt(), 96, 98, 106)
+        for (i in 0 until topologyRowRects.size - 1) {
+            val dy = (topologyRowRects[i].first.bottom + topologyRowRects[i + 1].first.top) / 2f
+            c.drawLine(panelRect.left + dp(14f), dy, panelRect.right - dp(14f), dy, stroke)
+        }
+
+        // Back: a full-width panel row, same treatment as the sheet's Done.
+        pickerBackRect.set(padX + dp(12f), ry + dp(4f), padX + cardW - dp(12f), ry + dp(4f) + dp(50f))
+        fill.color = Color.argb(a, 35, 37, 43)
+        c.drawRoundRect(pickerBackRect, dp(16f), dp(16f), fill)
+        text.textSize = sp(16f)
         text.color = Color.argb(a, 255, 255, 255)
         val backStr = "‹ Back"
         c.drawText(backStr, w / 2 - text.measureText(backStr) / 2, pickerBackRect.centerY() + text.textSize * 0.35f, text)
@@ -4012,6 +4076,76 @@ class WatchView(
      * Restyled 1.12.0 as a light bar with a purple pill highlight on the
      * active segment (inactive segments are icon-only).
      */
+    /** Small line glyphs for the Settings rows (2.6.0 grouped-list style). */
+    private fun drawSheetGlyph(c: Canvas, opt: ClusterOption, cx: Float, cy: Float, s: Float, color: Int) {
+        stroke.strokeWidth = dp(1.6f)
+        stroke.color = color
+        val path = Path()
+        when (opt) {
+            ClusterOption.CLUSTER_TOPOLOGY -> {
+                for (k in 0 until 6) {
+                    val ang = Math.toRadians(60.0 * k - 90.0)
+                    val px = cx + (s * 0.5f * cos(ang)).toFloat()
+                    val py = cy + (s * 0.5f * sin(ang)).toFloat()
+                    if (k == 0) path.moveTo(px, py) else path.lineTo(px, py)
+                }
+                path.close()
+                c.drawPath(path, stroke)
+            }
+            ClusterOption.FIXED_NEIGHBORHOODS -> {
+                val q = s * 0.17f
+                for ((ox, oy) in listOf(-1f to -1f, 1f to -1f, -1f to 1f, 1f to 1f)) {
+                    c.drawRect(cx + ox * s * 0.24f - q, cy + oy * s * 0.24f - q, cx + ox * s * 0.24f + q, cy + oy * s * 0.24f + q, stroke)
+                }
+            }
+            ClusterOption.BLOOM_MODE -> {
+                for (k in 0 until 5) {
+                    val ang = Math.toRadians(72.0 * k - 90.0)
+                    c.drawCircle(cx + (s * 0.27f * cos(ang)).toFloat(), cy + (s * 0.27f * sin(ang)).toFloat(), s * 0.16f, stroke)
+                }
+                fill.color = color
+                c.drawCircle(cx, cy, s * 0.09f, fill)
+            }
+            ClusterOption.PER_LAYOUT_PINS -> {
+                c.drawCircle(cx, cy, s * 0.34f, stroke)
+                fill.color = color
+                c.drawCircle(cx, cy, s * 0.11f, fill)
+            }
+            ClusterOption.USAGE_GROWTH -> {
+                path.moveTo(cx - s * 0.42f, cy + s * 0.28f)
+                path.lineTo(cx - s * 0.12f, cy - s * 0.04f)
+                path.lineTo(cx + s * 0.12f, cy + s * 0.10f)
+                path.lineTo(cx + s * 0.42f, cy - s * 0.32f)
+                c.drawPath(path, stroke)
+            }
+            ClusterOption.SET_DEFAULT_HOME -> {
+                path.moveTo(cx - s * 0.42f, cy + s * 0.02f)
+                path.lineTo(cx, cy - s * 0.40f)
+                path.lineTo(cx + s * 0.42f, cy + s * 0.02f)
+                c.drawPath(path, stroke)
+                c.drawLine(cx - s * 0.28f, cy, cx - s * 0.28f, cy + s * 0.38f, stroke)
+                c.drawLine(cx + s * 0.28f, cy, cx + s * 0.28f, cy + s * 0.38f, stroke)
+                c.drawLine(cx - s * 0.28f, cy + s * 0.38f, cx + s * 0.28f, cy + s * 0.38f, stroke)
+            }
+            ClusterOption.CLEAR_PINS -> {
+                c.drawCircle(cx, cy, s * 0.36f, stroke)
+                val d = s * 0.17f
+                c.drawLine(cx - d, cy - d, cx + d, cy + d, stroke)
+                c.drawLine(cx + d, cy - d, cx - d, cy + d, stroke)
+            }
+            ClusterOption.UNHIDE_FOLDERS -> {
+                c.drawOval(RectF(cx - s * 0.44f, cy - s * 0.27f, cx + s * 0.44f, cy + s * 0.27f), stroke)
+                fill.color = color
+                c.drawCircle(cx, cy, s * 0.11f, fill)
+            }
+            ClusterOption.MORE_OPTIONS -> {
+                fill.color = color
+                for (ox in listOf(-0.30f, 0f, 0.30f)) c.drawCircle(cx + ox * s, cy, s * 0.09f, fill)
+            }
+            else -> { /* CLOSE_SHEET and friends: no glyph */ }
+        }
+    }
+
     private fun drawDock(c: Canvas, w: Float, bottom: Float, alpha: Float) {
         if (alpha <= 0.01f) {
             pill.setEmpty()
@@ -4032,7 +4166,7 @@ class WatchView(
         // white bar, violet accent, inactive segments go icon-only.
         fill.color = Color.argb((alpha * 246).toInt(), 248, 248, 252)
         c.drawRoundRect(pill, dp(24f), dp(24f), fill)
-        val activeSeg = if (widgetsPageOpen) DOCK_WIDGETS else DOCK_CLUSTER
+        val activeSeg = when { clusterSheet.target > 0f -> DOCK_SETTINGS; widgetsPageOpen -> DOCK_WIDGETS; else -> DOCK_CLUSTER }
         val labels = arrayOf("Cluster", "Widgets", "Settings")
         for (i in 0 until 3) {
             val seg = RectF(pill.left + i * segW, py, pill.left + (i + 1) * segW, py + ph)
@@ -5009,6 +5143,17 @@ class WatchView(
 
         // 0. Settings Sheet taps
         if (clusterSheet.target == 1f) {
+            // 2.6.0: the dock is drawn on the page, so it stays tappable.
+            val dockHit = (0 until 3).firstOrNull { !dockSegs[it].isEmpty && dockSegs[it].contains(x, y) }
+            if (dockHit != null) {
+                performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                when (dockHit) {
+                    DOCK_CLUSTER -> { topologyPickerOpen = false; clusterSheet.target = 0f; invalidate() }
+                    DOCK_WIDGETS -> { topologyPickerOpen = false; clusterSheet.target = 0f; onWidgetsPage() }
+                    else -> { /* Settings segment: already here */ }
+                }
+                return
+            }
             if (topologyPickerOpen) {
                 topologyRowRects.lastOrNull { it.first.contains(x, y) }?.let { (_, topo) ->
                     selectTopology(topo)
