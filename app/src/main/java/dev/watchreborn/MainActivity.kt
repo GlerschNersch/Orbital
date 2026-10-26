@@ -677,6 +677,7 @@ class MainActivity : Activity(), SensorEventListener {
                 if (apps.isNotEmpty()) pushAppsToView(apps)
                 Toast.makeText(this, "Cleared all pinned hex slots", Toast.LENGTH_SHORT).show()
             }
+            ClusterOption.MORE_OPTIONS -> Unit // expand/collapse is view-local
             ClusterOption.CLOSE_SHEET -> Unit
         }
     }

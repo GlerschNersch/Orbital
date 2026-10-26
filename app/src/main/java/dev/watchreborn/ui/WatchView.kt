@@ -79,6 +79,7 @@ enum class ClusterOption {
     SET_DEFAULT_HOME,
     CLEAR_PINS,
     UNHIDE_FOLDERS,
+    MORE_OPTIONS,
     CLOSE_SHEET,
 }
 
@@ -637,6 +638,10 @@ class WatchView(
     private val previewTmp = FloatArray(2)
     private val pickerBackRect = RectF()
     private var topologyPickerOpen = false
+
+    /** Cluster sheet starts compact (essentials only); "More Options"
+     *  expands the set-and-forget rows. Session state, not a pref. */
+    private var sheetExpanded = false
     private val widgetActionRects = ArrayList<Pair<RectF, String>>()
 
     /** Alphabet scrubber state in List View. */
@@ -3723,31 +3728,42 @@ class WatchView(
         var rowH = dp(38f)
         val gap = dp(4f)
         // Sectioned rows: a null option marks a section header (not tappable).
-        // Toggles live under LAYOUT / BEHAVIOR, one-shot actions under ACTIONS.
+        // Simplified in 1.9.0: the sheet opens compact — the handful of
+        // options that actually get changed, plus Search / Edit Layout —
+        // and "More Options" expands the set-and-forget rows in place.
+        // Hidden Folders stays visible while collapsed when folders are
+        // hidden: it's an active state, not a setting.
         val rows = buildList<Triple<ClusterOption?, String, String>> {
             add(Triple(null, "LAYOUT", ""))
-            add(Triple(ClusterOption.CLUSTER_TOPOLOGY, "Cluster Topology", "${clusterTopology.fullTitle} • Tap to browse all ${ClusterTopology.entries.size} designs"))
-            add(Triple(ClusterOption.FIXED_NEIGHBORHOODS, "Grid Layout", if (fixedNeighborhoods) "🧭 Fixed Compass Neighborhoods" else "🔥 Dynamic Usage Spiral"))
-            add(Triple(ClusterOption.HONEYCOMB_HOME, "Home Screen", if (honeycombHome) "🏠 Honeycomb Core Hub (0,0 Clock)" else "⌚ Watch Face First"))
+            add(Triple(ClusterOption.CLUSTER_TOPOLOGY, "Cluster Topology", "${clusterTopology.fullTitle} • Tap for all ${ClusterTopology.entries.size} designs"))
+            add(Triple(ClusterOption.FIXED_NEIGHBORHOODS, "Grid Layout", if (fixedNeighborhoods) "Fixed Compass Neighborhoods" else "Dynamic Usage Spiral"))
+            if (sheetExpanded) {
+                add(Triple(ClusterOption.HONEYCOMB_HOME, "Home Screen", if (honeycombHome) "Honeycomb Core Hub" else "Watch Face First"))
+            }
             add(Triple(null, "BEHAVIOR", ""))
-            add(Triple(ClusterOption.BUBBLE_PHYSICS, "Bubble Physics", if (bubblePhysics) "🫧 Jello, Wake Wave, Spin & Billiards On" else "⚪ Off (Bubbles Sit Still)"))
-            add(Triple(ClusterOption.PER_LAYOUT_PINS, "Per-Layout Pins", if (perLayoutPins) "🗂 Separate pins for each layout" else "🌐 One pin set for all layouts"))
-            add(Triple(ClusterOption.USAGE_GROWTH, "Usage Growth", if (usageGrowth) "📈 Bubbles grow with app use" else "⚪ All bubbles the same size"))
-            add(Triple(ClusterOption.BLOOM_MODE, "Folder Open Style", if (bloomFolders) "🌊 Bloom In-Place (Shockwave)" else "📂 Full-Screen Folder"))
-            add(Triple(ClusterOption.QUICK_SNIPE, "Mini-Icon Tap", if (quickSnipe) "🎯 Quick-Snipe (Outer 6 Launch)" else "👆 Tap Anywhere Opens Folder"))
-            add(Triple(ClusterOption.LIVE_WIDGETS, "Live Grid Widgets", if (liveWidgets) "⚡ Media, Timer, Calendar & Vitals On" else "⚪ Off (Apps & Folders Only)"))
-            add(Triple(ClusterOption.AUTO_FOLDERS, "Category Clustering", if (autoFolders) "🟢 Auto Folders On" else "⚪ Loose Apps Only"))
+            add(Triple(ClusterOption.BUBBLE_PHYSICS, "Bubble Physics", if (bubblePhysics) "Jello, waves & billiards" else "Off — bubbles sit still"))
+            add(Triple(ClusterOption.BLOOM_MODE, "Folder Open Style", if (bloomFolders) "Bloom in place" else "Full-screen folder"))
+            add(Triple(ClusterOption.AUTO_FOLDERS, "Category Clustering", if (autoFolders) "Apps grouped by category" else "All apps loose"))
+            if (sheetExpanded) {
+                add(Triple(ClusterOption.PER_LAYOUT_PINS, "Per-Layout Pins", if (perLayoutPins) "Separate pins per layout" else "One pin set everywhere"))
+                add(Triple(ClusterOption.USAGE_GROWTH, "Usage Growth", if (usageGrowth) "Bubbles grow with use" else "Uniform bubble sizes"))
+                add(Triple(ClusterOption.QUICK_SNIPE, "Mini-Icon Tap", if (quickSnipe) "Outer 6 icons launch" else "Tap opens the folder"))
+                add(Triple(ClusterOption.LIVE_WIDGETS, "Live Grid Widgets", if (liveWidgets) "Media, timer, calendar, vitals" else "Apps & folders only"))
+            }
             add(Triple(null, "ACTIONS", ""))
-            add(Triple(ClusterOption.CONSTELLATION_SEARCH, "App Search", "🔍 Search all apps in the constellation"))
-            add(Triple(ClusterOption.EDIT_LAYOUT, "Edit Layout", "✥ Drag bubbles to place them — no long-press"))
-            add(Triple(ClusterOption.SYSTEM_WIDGETS, "Android System Widgets", "🧩 Tap to View / Add App Widgets"))
-            add(Triple(ClusterOption.SET_DEFAULT_HOME, "Default Phone Launcher", "📲 Tap to Set Watch Reborn as Home App"))
-            if (pinnedItemKeys.isNotEmpty()) {
-                add(Triple(ClusterOption.CLEAR_PINS, "Pinned Hex Slots (${pinnedItemKeys.size})", "📌 Tap to unpin all bubbles"))
+            add(Triple(ClusterOption.CONSTELLATION_SEARCH, "App Search", "Search all apps"))
+            add(Triple(ClusterOption.EDIT_LAYOUT, "Edit Layout", "Drag bubbles to place them"))
+            if (sheetExpanded) {
+                add(Triple(ClusterOption.SYSTEM_WIDGETS, "Android System Widgets", "View / add app widgets"))
+                add(Triple(ClusterOption.SET_DEFAULT_HOME, "Default Phone Launcher", "Set Watch Reborn as Home app"))
+                if (pinnedItemKeys.isNotEmpty()) {
+                    add(Triple(ClusterOption.CLEAR_PINS, "Pinned Hex Slots (${pinnedItemKeys.size})", "Tap to unpin all bubbles"))
+                }
             }
             if (hiddenFolderCount > 0) {
-                add(Triple(ClusterOption.UNHIDE_FOLDERS, "Hidden Folders ($hiddenFolderCount)", "👁 Tap to bring them back"))
+                add(Triple(ClusterOption.UNHIDE_FOLDERS, "Hidden Folders ($hiddenFolderCount)", "Tap to bring them back"))
             }
+            add(Triple(ClusterOption.MORE_OPTIONS, if (sheetExpanded) "Show Fewer" else "More Options", if (sheetExpanded) "Collapse to the essentials" else "All the other settings"))
         }
 
         val headerH = dp(19f)
@@ -3757,7 +3773,7 @@ class WatchView(
         // the row height (and therefore every row's position) is identical
         // whether or not that conditional row is present. It used to change
         // the compression and shift every row by up to ~40px between opens.
-        val layoutCount = optionCount + if (pinnedItemKeys.isEmpty()) 1 else 0
+        val layoutCount = optionCount + if (sheetExpanded && pinnedItemKeys.isEmpty()) 1 else 0
         var sheetH = dp(68f) + layoutCount * (rowH + gap) + headerCount * headerH + dp(52f)
         if (sheetH > h - dp(36f) && layoutCount > 0) {
             // Short screen: compress rows so the sheet — including its Done
@@ -3780,12 +3796,12 @@ class WatchView(
 
         text.textSize = sp(16.5f)
         text.color = Color.argb(a, 255, 255, 255)
-        val title = "Honeycomb Cluster Options"
+        val title = "Cluster Options"
         c.drawText(title, w / 2 - text.measureText(title) / 2, sheetTop + dp(30f), text)
 
         text.textSize = sp(11f)
         text.color = Color.argb((a * 0.7f).toInt(), 188, 190, 198)
-        val hint = "Layout • Behavior • Actions — drag a bubble to place it"
+        val hint = if (sheetExpanded) "Layout • Behavior • Actions" else "Essentials up front — More Options has the rest"
         c.drawText(hint, w / 2 - text.measureText(hint) / 2, sheetTop + dp(49f), text)
 
         var ry = sheetTop + dp(62f)
@@ -3843,6 +3859,7 @@ class WatchView(
             sheetRowLabels += r to when {
                 toggleOn != null -> "$label, ${if (toggleOn) "on" else "off"}"
                 opt == ClusterOption.CLUSTER_TOPOLOGY -> "$label, ${clusterTopology.fullTitle}"
+                opt == ClusterOption.MORE_OPTIONS -> if (sheetExpanded) "Show fewer options" else "More options"
                 else -> label
             }
             ry += rowH + gap
@@ -5353,6 +5370,10 @@ class WatchView(
                     }
                     ClusterOption.CLUSTER_TOPOLOGY -> {
                         topologyPickerOpen = true
+                        invalidate()
+                    }
+                    ClusterOption.MORE_OPTIONS -> {
+                        sheetExpanded = !sheetExpanded
                         invalidate()
                     }
                     else -> {

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.9.0 — 2026-10-25
+
+- **The Cluster Options sheet is half the size** — it had grown to 17
+  rows. It now opens compact with just the essentials: Cluster Topology,
+  Grid Layout, Bubble Physics, Folder Open Style, Category Clustering,
+  App Search and Edit Layout. A "More Options" row at the bottom expands
+  the rest in place (Home Screen, Per-Layout Pins, Usage Growth,
+  Mini-Icon Tap, Live Grid Widgets, System Widgets, Default Launcher,
+  Clear Pins) and collapses back with "Show Fewer". Hidden Folders still
+  surfaces on its own whenever folders are hidden. Row subtitles were
+  shortened throughout (the ON/OFF chip already says the state), and the
+  sheet is retitled "Cluster Options".
+
 ## 1.8.1 — 2026-10-25
 
 - **Fix: folder members in Bloom mode can be long-pressed again** — the

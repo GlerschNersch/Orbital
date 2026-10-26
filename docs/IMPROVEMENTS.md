@@ -160,6 +160,20 @@ The whole 0.2.1 ideas backlog, built:
   the time string's ink spans 91.5% of the width against the 92% budget;
   the shrink-to-fit holds and nothing clips.
 
+## Done in 1.9.0 (2026-10-25, night — Matt's "the cluster options are getting big")
+
+- **Cluster Options sheet simplified** — Matt flagged the sheet had grown
+  too big (17 rows). It now opens compact: Topology, Grid Layout, Bubble
+  Physics, Folder Open Style, Category Clustering, App Search, Edit
+  Layout (8 rows incl. the expander). A new "More Options" row
+  (ClusterOption.MORE_OPTIONS, handled view-locally via `sheetExpanded`)
+  expands the set-and-forget rows in place; "Show Fewer" collapses.
+  Hidden Folders still surfaces while collapsed when folders are hidden.
+  Subtitles shortened across the board (the ON/OFF chip carries state);
+  sheet retitled "Cluster Options". Verified on the emulator: compact
+  and expanded renders, expand tap works, short-screen compression fits
+  the full expanded list + Done.
+
 ## Done in 1.8.1 (2026-10-25, late evening)
 
 - **Bloom-mode folder members fixed** — live-testing 1.8.0 on the phone
