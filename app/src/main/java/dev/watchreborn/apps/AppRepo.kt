@@ -22,6 +22,7 @@ import android.os.UserManager
 import android.provider.MediaStore
 import dev.watchreborn.listedProfiles
 import dev.watchreborn.ui.CustomFolders
+import dev.watchreborn.ui.Frecency
 import java.text.Collator
 import kotlin.math.cos
 import kotlin.math.sin
@@ -616,18 +617,23 @@ class AppRepo(private val context: Context) {
     }
 
     fun markOpened(key: String) {
+        val now = System.currentTimeMillis()
         val count = prefs.getInt("n:$key", 0)
-        prefs.edit().putInt("n:$key", count + 1).putLong("t:$key", System.currentTimeMillis()).apply()
+        // The frecency score (s:) is stored as its value at the moment of
+        // this launch (t:), so score() only ever has to age it forward.
+        val next = score(key, now) + 1f
+        prefs.edit().putInt("n:$key", count + 1).putLong("t:$key", now).putFloat("s:$key", next).apply()
     }
 
-    /** Recency-decayed launch score for [key] right now (0 for never opened). */
+    /** Frecency launch score for [key] right now (0 for never opened); see Frecency. */
     fun usageScore(key: String): Float = score(key, System.currentTimeMillis())
 
     private fun score(key: String, now: Long): Float {
-        val count = prefs.getInt("n:$key", 0)
-        if (count == 0) return 0f
-        val days = (now - prefs.getLong("t:$key", 0L)) / 86_400_000f
-        return count / (1f + days / 7f)
+        val last = prefs.getLong("t:$key", 0L)
+        if (prefs.contains("s:$key")) return Frecency.decay(prefs.getFloat("s:$key", 0f), last, now)
+        // Pre-1.18.0 data holds only an all-time count: seed the frecency
+        // score from it (computed on the fly until the next launch stores s:).
+        return Frecency.seedFromLegacy(prefs.getInt("n:$key", 0), last, now)
     }
 
     private fun roundIcon(info: LauncherActivityInfo, otherUser: UserHandle?, px: Int): Bitmap {

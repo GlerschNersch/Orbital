@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.18.0 — 2026-10-26
+
+- **The cluster centre now follows what you actually use lately** —
+  usage ranking switched from all-time launch counts to a true
+  frecency score: every launch adds to an app's score and the score
+  halves every 10 days, so daily apps hold the centre, an app you
+  stop opening drifts outward on its own, and a new habit climbs
+  within days. Existing launch history carries over, capped and
+  aged, so the centre starts sensible rather than blank.
+
 ## 1.17.0 — 2026-10-26
 
 - **The dock no longer vanishes during a Cluster → Face switch** —
