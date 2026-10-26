@@ -1202,6 +1202,13 @@ class WatchView(
         }
     }
 
+    /** How far the Face's favourites row (and its coach hint) lift so the
+     *  bottom dock (1.12.0) never overlaps them: enough for the dock's
+     *  height + its bottom margin + a 10dp gap, minus the clearance the
+     *  favourites already had. Zero on narrow screens that already fit. */
+    private fun faceDockLift(w: Float): Float =
+        (dp(74f) - 0.07f * w).coerceAtLeast(0f)
+
     private fun drawCoachHint(c: Canvas, w: Float, bottom: Float, alpha: Float) {
         // The undo bar and the Edit-mode pill take this screen slot while active.
         val id = if (editMode || undoActive) null else currentCoachHint()
@@ -1222,9 +1229,9 @@ class WatchView(
         val tw = text.measureText(label)
         val hh = dp(30f)
         val hw = tw + dp(28f)
-        // On the Face there is no dock to clear; the pill sits just above
-        // the favourites row instead.
-        val hy = if (id == HINT_FACE_SWIPE) bottom - 0.27f * w - hh - dp(10f)
+        // On the Face the pill sits just above the favourites row, which
+        // itself lifts to clear the bottom dock (1.12.0) — lift with it.
+        val hy = if (id == HINT_FACE_SWIPE) bottom - 0.27f * w - faceDockLift(w) - hh - dp(10f)
         else bottom - dp(16f) - dp(Metrics.PHONE_PILL_H_DP) - dp(10f) - hh
         coachHintRect.set(w / 2 - hw / 2, hy, w / 2 + hw / 2, hy + hh)
         fill.color = Color.argb((alpha * 235).toInt(), 30, 34, 40)
@@ -2367,7 +2374,7 @@ class WatchView(
             val scale = 1f - 0.12f * overlayMax
             c.save()
             c.scale(scale, scale, w / 2, h / 2)
-            face.draw(c, w, h, top, bottom, cal, info, faceAlpha)
+            face.draw(c, w, h, top, bottom, cal, info, faceAlpha, faceDockLift(w))
             c.restore()
         }
 
@@ -2375,6 +2382,9 @@ class WatchView(
         // the Face is fully in front.
         if (apps.value == 0f && stackIn.value == 0f && controlIn.value == 0f) {
             drawCoachHint(c, w, bottom, faceAlpha)
+            // The bottom dock lives on the Face too (1.12.0), so the four
+            // destinations are one tap away from every main surface.
+            drawDock(c, w, bottom, faceAlpha)
         }
 
         if (stackIn.value > 0f) {
@@ -4383,8 +4393,10 @@ class WatchView(
     /**
      * Bottom navigation dock (1.6.0): one floating bar, four segments —
      * Face / Cluster / List / Stack — replacing the single List/Grid pill.
-     * The current mode's segment is lit in the accent; tapping Cluster
-     * while already in the cluster recentres the field.
+     * Tapping Cluster while already in the cluster recentres the field.
+     * Restyled 1.12.0 as a light bar with a purple pill highlight on the
+     * active segment (inactive segments are icon-only), and it now also
+     * shows on the Face.
      */
     private fun drawDock(c: Canvas, w: Float, bottom: Float, alpha: Float) {
         if (alpha <= 0.01f) {
@@ -4398,9 +4410,13 @@ class WatchView(
         val py = bottom - ph - dp(16f)
 
         pill.set(w / 2 - pw / 2, py, w / 2 + pw / 2, py + ph)
-        fill.color = Color.argb((alpha * 230).toInt(), 44, 44, 46)
-        c.drawRoundRect(pill, ph / 2, ph / 2, fill)
+        // Light floating bar with a purple pill highlight on the active
+        // segment (style Matt picked from a reference sheet, 2026-10-26):
+        // white bar, violet accent, inactive segments go icon-only.
+        fill.color = Color.argb((alpha * 246).toInt(), 248, 248, 252)
+        c.drawRoundRect(pill, dp(22f), dp(22f), fill)
         val activeSeg = when {
+            apps.target < 0.5f -> DOCK_FACE
             list.target >= 0.5f -> DOCK_LIST
             grid.target >= 0.5f -> DOCK_CLUSTER
             else -> DOCK_FACE
@@ -4411,19 +4427,23 @@ class WatchView(
             dockSegs[i].set(seg)
             val active = i == activeSeg
             if (active) {
-                fill.color = withAlpha(accent, (alpha * 40).toInt())
+                fill.color = Color.argb((alpha * 255).toInt(), 233, 224, 255)
                 val hl = RectF(seg.left + dp(6f), seg.top + dp(6f), seg.right - dp(6f), seg.bottom - dp(6f))
                 c.drawRoundRect(hl, dp(16f), dp(16f), fill)
             }
-            val iconColor = if (active) withAlpha(accent, (alpha * 255).toInt())
-                else Color.argb((alpha * 205).toInt(), 235, 235, 240)
-            drawDockIcon(c, i, seg.centerX(), py + dp(19f), dp(17f), iconColor)
-            text.textAlign = Paint.Align.CENTER
-            text.textSize = sp(9f)
-            text.color = if (active) withAlpha(accent, (alpha * 255).toInt())
-                else Color.argb((alpha * 165).toInt(), 195, 195, 200)
-            c.drawText(labels[i], seg.centerX(), py + ph - dp(6f), text)
-            text.textAlign = Paint.Align.LEFT
+            val iconColor = if (active) Color.argb((alpha * 255).toInt(), 124, 58, 237)
+                else Color.argb((alpha * 255).toInt(), 130, 130, 142)
+            // Inactive segments centre their icon in the bar (no label);
+            // the active one keeps the icon-over-label layout in its pill.
+            val iconY = if (active) py + dp(19f) else seg.centerY()
+            drawDockIcon(c, i, seg.centerX(), iconY, dp(17f), iconColor)
+            if (active) {
+                text.textAlign = Paint.Align.CENTER
+                text.textSize = sp(9f)
+                text.color = Color.argb((alpha * 255).toInt(), 124, 58, 237)
+                c.drawText(labels[i], seg.centerX(), py + ph - dp(6f), text)
+                text.textAlign = Paint.Align.LEFT
+            }
         }
     }
 
@@ -5802,6 +5822,22 @@ class WatchView(
         }
 
         // 4. On the Watch Face
+        // The dock lives on the Face too (1.12.0): same four destinations.
+        if (!pill.isEmpty && pill.contains(x, y)) {
+            val seg = dockSegs.indexOfFirst { it.contains(x, y) }
+            performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+            when (seg) {
+                DOCK_FACE -> Unit // already here
+                DOCK_CLUSTER -> if (honeycombHome) openFullHoneycomb() else { openApps(); grid.target = 1f }
+                DOCK_LIST -> {
+                    openApps()
+                    list.target = 1f
+                    preferListChanged(true)
+                }
+                DOCK_STACK -> openStack()
+            }
+            return
+        }
         if (face.topRects[0].contains(x, y)) {
             performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
             onCardAction(CardAction.OPEN_BATTERY)

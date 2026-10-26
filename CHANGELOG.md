@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.12.0 — 2026-10-26
+
+- **The bottom dock now lives on the Face too** — Face · Cluster ·
+  List · Stack is one tap away from the watch face, not just from
+  the cluster. The favourites row (and the swipe hint above it)
+  lift to clear the dock, and the Face segment lights up correctly
+  while you're on the Face.
+- **Dock restyled** — a light floating bar with a purple pill
+  highlight on the active segment; inactive segments go icon-only
+  (style picked from a reference sheet).
+
 ## 1.11.2 — 2026-10-26
 
 - **Cluster Options slimmed again** — the front page is now just

@@ -54,7 +54,7 @@ class Face {
     val favoriteRects = Array(3) { RectF() }
     var favorites: List<App?> = emptyList()
 
-    fun draw(c: Canvas, w: Float, h: Float, top: Float, bottom: Float, now: Calendar, info: FaceInfo, alpha: Float) {
+    fun draw(c: Canvas, w: Float, h: Float, top: Float, bottom: Float, now: Calendar, info: FaceInfo, alpha: Float, dockLift: Float = 0f) {
         val a = (alpha * 255).toInt().coerceIn(0, 255)
         if (a == 0) return
         drawTicks(c, w, h, top, bottom, now, a)
@@ -113,9 +113,10 @@ class Face {
 
         if (spare > 0.3f * w) drawTimeline(c, w, timeY + 0.3f * w + spare * 0.3f, now, info, a)
 
-        // Bottom row: the three apps you use most.
+        // Bottom row: your pinned favourites (most-used apps fill gaps).
+        // Lifted by dockLift so the row clears the bottom dock (1.12.0).
         val big = 0.2f * w
-        val bottomY = bottom - 0.17f * w
+        val bottomY = bottom - 0.17f * w - dockLift
         for (i in 0 until 3) {
             val cx = xs[i]
             favoriteRects[i].set(cx - big / 2, bottomY - big / 2, cx + big / 2, bottomY + big / 2)

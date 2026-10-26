@@ -160,6 +160,25 @@ The whole 0.2.1 ideas backlog, built:
   the time string's ink spans 91.5% of the width against the 92% budget;
   the shrink-to-fit holds and nothing clips.
 
+## Done in 1.12.0 (2026-10-26)
+
+- **Dock on the Face + restyle (Matt's asks)** — drawDock now also runs
+  on the Face (gated to Face-front state, same condition as the Face
+  coach hint); Face.draw takes a dockLift so the favourites row and
+  the swipe hint rise clear of the bar (formula: 74dp of dock+margin+
+  gap minus the clearance favourites already had); drawDock's active
+  segment now keys off apps.target so Face lights correctly after
+  toFace(); tap() section 4 handles dock segments (Cluster →
+  honeycomb/openApps, List → openApps + list, Stack → openStack).
+  Restyle per Matt's reference pick: white floating bar, lavender
+  pill highlight with violet icon+label on the active segment,
+  inactive segments icon-only grey. Verified on the emulator in both
+  directions (Face↔Cluster) and in the new style on both surfaces.
+  (One cold-start ANR seen during testing was emulator load after
+  reinstall, not the new path — the same taps run clean warm.)
+  Known gap noted: the dock still has no TalkBack nodes on any
+  surface — pre-existing, follow-up candidate.
+
 ## Done in 1.11.2 (2026-10-26)
 
 - **Cluster Options slimmed again (Matt's call from his phone
