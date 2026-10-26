@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.1 — 2026-10-25
+
+- **Folder swallow animation** — filing an app into a folder (or creating
+  one) now reads as being eaten: the carried bubble accelerates into the
+  folder and shrinks to a speck over 300ms, and the folder does a quick
+  "gulp" swell when it lands. Folder creation previously cancelled its
+  drop glide entirely (the target app's key is replaced by the folder's
+  in the rebuild) and the name prompt covered the moment — the swallow
+  now flies to a fixed endpoint, and the prompt waits ~300ms so the
+  animation finishes first.
+
 ## 1.5.0 — 2026-10-25
 
 - **Custom folders** — until now folders were only the fixed auto

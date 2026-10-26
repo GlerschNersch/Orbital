@@ -298,6 +298,7 @@ class MainActivity : Activity(), SensorEventListener {
         if (existing != null) {
             repo.addToCustomFolder(existing.id, carried.key)
             pushAppsToView(apps)
+            view.gulpFolder("cfolder:${existing.id}", 150L)
             view.showPlaceUndo("📁 ${carried.label} added to ${existing.name}") {
                 repo.removeFromCustomFolder(existing.id, carried.key)
                 pushAppsToView(apps)
@@ -306,15 +307,19 @@ class MainActivity : Activity(), SensorEventListener {
             return
         }
         val suggestion = if (target.defaultGroup != AppGroup.OTHER) target.defaultGroup.title else "Folder"
-        showFolderNameDialog("New Folder", suggestion, "Create") { name ->
-            val id = repo.createCustomFolder(name, listOf(target.key, carried.key))
-            pushAppsToView(apps)
-            view.showPlaceUndo("📁 Folder \u201C$name\u201D created") {
-                repo.deleteCustomFolder(id)
+        // Let the swallow animation land before the name prompt covers it.
+        view.postDelayed({
+            showFolderNameDialog("New Folder", suggestion, "Create") { name ->
+                val id = repo.createCustomFolder(name, listOf(target.key, carried.key))
                 pushAppsToView(apps)
-                Toast.makeText(this, "Folder deleted", Toast.LENGTH_SHORT).show()
+                view.gulpFolder("cfolder:$id", 120L)
+                view.showPlaceUndo("📁 Folder \u201C$name\u201D created") {
+                    repo.deleteCustomFolder(id)
+                    pushAppsToView(apps)
+                    Toast.makeText(this, "Folder deleted", Toast.LENGTH_SHORT).show()
+                }
             }
-        }
+        }, 300L)
     }
 
     private fun showFolderNameDialog(title: String, initial: String, okLabel: String, onOk: (String) -> Unit) {

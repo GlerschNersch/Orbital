@@ -312,9 +312,49 @@ class WatchView(
         val toKey: String,
         val shrink: Boolean,
         val startMs: Long,
+        /** Swallow drops (1.5.1) accelerate into a folder and shrink to a
+         *  speck instead of gliding to a stop at half size. */
+        val swallow: Boolean = false,
+        /** Fixed destination used when [toKey] vanishes mid-flight — folder
+         *  creation replaces the target app's key with the new folder's. */
+        val fixedX: Float = Float.NaN,
+        val fixedY: Float = Float.NaN,
+        val fixedDia: Float = 0f,
     )
 
     private var dropAnim: DropAnim? = null
+
+    // Folder "gulp" pulse (1.5.1): a quick swell when a folder swallows an app.
+    private var gulpKey: String? = null
+    private var gulpStartMs: Long = 0L
+
+    /** Starts the gulp pulse for the folder with [key]; [delayMs] lets a
+     *  caller line the pulse up with the end of a swallow flight. */
+    fun gulpFolder(key: String, delayMs: Long = 0L) {
+        if (delayMs > 0L) {
+            postDelayed({
+                gulpKey = key
+                gulpStartMs = SystemClock.uptimeMillis()
+                invalidate()
+            }, delayMs)
+        } else {
+            gulpKey = key
+            gulpStartMs = SystemClock.uptimeMillis()
+            invalidate()
+        }
+    }
+
+    private fun gulpFactor(key: String): Float {
+        if (key != gulpKey) return 1f
+        val t = (SystemClock.uptimeMillis() - gulpStartMs) / 340f
+        if (t >= 1f) {
+            gulpKey = null
+            return 1f
+        }
+        if (t < 0f) return 1f
+        motionAnimating = true
+        return 1f + 0.16f * sin(t * Math.PI.toFloat())
+    }
 
     /** Damps [key]'s animated position toward (tx, ty); far jumps snap. Result lands in [glideTmp]. */
     private fun glideToward(map: HashMap<String, FloatArray>, key: String, tx: Float, ty: Float, snapDist: Float) {
@@ -1161,12 +1201,21 @@ class WatchView(
                 val carriedDia = (hits.firstOrNull { it.slotIndex == from }?.r ?: dp(31f)) * 2f * placeScale
                 if (!inFolder && item is App && armed && hoverItem is App && hoverItem.key != item.key) {
                     // Dwell-armed drop on another app: create a folder (or
-                    // join the target's folder — MainActivity decides).
-                    dropAnim = DropAnim(item, placeDrawX, placeDrawY, carriedDia, hoverItem.key, true, SystemClock.uptimeMillis())
+                    // join the target's folder — MainActivity decides). The
+                    // target app becomes the folder, so its key vanishes in
+                    // the rebuild — the swallow flies to a fixed endpoint.
+                    val hoverHit = hits.firstOrNull { it.slotIndex == hover }
+                    dropAnim = DropAnim(
+                        item, placeDrawX, placeDrawY, carriedDia, hoverItem.key, true,
+                        SystemClock.uptimeMillis(), swallow = true,
+                        fixedX = hoverHit?.x ?: dropX, fixedY = hoverHit?.y ?: dropY,
+                        fixedDia = (hoverHit?.r ?: dp(31f)) * 2f,
+                    )
                     onCreateFolder(item, hoverItem)
                 } else if (!inFolder && item is App && hoverItem is Folder) {
-                    // Glide into the folder bubble and shrink away.
-                    dropAnim = DropAnim(item, placeDrawX, placeDrawY, carriedDia, hoverItem.key, true, SystemClock.uptimeMillis())
+                    // Swallowed by the folder bubble: accelerate in, shrink
+                    // to a speck, and the folder gulps on arrival.
+                    dropAnim = DropAnim(item, placeDrawX, placeDrawY, carriedDia, hoverItem.key, true, SystemClock.uptimeMillis(), swallow = true)
                     onFileIntoFolder(item, hoverItem, hover)
                 } else if (inFolder && folder != null) {
                     // Folder members glide via their own position springs.
@@ -1334,23 +1383,44 @@ class WatchView(
         }
     }
 
-    /** The 240ms glide that flies a dropped bubble from the release point into its slot. */
+    /** The glide that flies a dropped bubble from the release point into
+     *  its slot — 240ms ease-out for placements; swallow drops (into or
+     *  creating a folder) run 300ms, accelerate in and shrink to a speck. */
     private fun drawDropAnim(c: Canvas, cal: Calendar, alpha: Float, bubbleX: FloatArray, bubbleY: FloatArray, bubbleDia: FloatArray) {
         val da = dropAnim ?: return
         val items = activeGridItems
         val idx = items.indexOfFirst { it.key == da.toKey }
-        if (idx < 0 || idx >= bubbleDia.size || bubbleDia[idx] <= 2f) {
+        val hasLive = idx >= 0 && idx < bubbleDia.size && bubbleDia[idx] > 2f
+        if (!hasLive && da.fixedDia <= 0f) {
             dropAnim = null
             return
         }
-        val p = ((SystemClock.uptimeMillis() - da.startMs) / 240f).coerceIn(0f, 1f)
-        val e = Motion.easeOutCubic(p)
-        val endDia = bubbleDia[idx] * if (da.shrink) 0.45f else 1f
-        val x = Motion.lerp(da.fromX, bubbleX[idx], e)
-        val y = Motion.lerp(da.fromY, bubbleY[idx], e)
-        val d = Motion.lerp(da.fromDia, endDia, e)
-        drawGridItem(c, da.item, x, y, d, alpha, cal, jiggle = false)
-        if (p >= 1f) dropAnim = null else motionAnimating = true
+        val tx = if (hasLive) bubbleX[idx] else da.fixedX
+        val ty = if (hasLive) bubbleY[idx] else da.fixedY
+        val td = if (hasLive) bubbleDia[idx] else da.fixedDia
+        val dur = if (da.swallow) 300f else 240f
+        val p = ((SystemClock.uptimeMillis() - da.startMs) / dur).coerceIn(0f, 1f)
+        if (da.swallow) {
+            val e = p * p // accelerating suck-in
+            val x = Motion.lerp(da.fromX, tx, e)
+            val y = Motion.lerp(da.fromY, ty, e)
+            val d = Motion.lerp(da.fromDia, td * 0.10f, e)
+            drawGridItem(c, da.item, x, y, d, alpha, cal, jiggle = false)
+        } else {
+            val e = Motion.easeOutCubic(p)
+            val endDia = td * if (da.shrink) 0.45f else 1f
+            val x = Motion.lerp(da.fromX, tx, e)
+            val y = Motion.lerp(da.fromY, ty, e)
+            val d = Motion.lerp(da.fromDia, endDia, e)
+            drawGridItem(c, da.item, x, y, d, alpha, cal, jiggle = false)
+        }
+        if (p >= 1f) {
+            dropAnim = null
+            // A swallowed app lands: the folder gulps. (Folder creation
+            // replaces the target key mid-flight, so its gulp is triggered
+            // by MainActivity once the new folder exists.)
+            if (da.swallow && hasLive) gulpFolder(da.toKey)
+        } else motionAnimating = true
     }
 
     /** Advances the carried-bubble spring one frame (finger trail + pickup pop). */
@@ -2324,7 +2394,7 @@ class WatchView(
             // most-used bubbles render ~2x their collision radius and bury
             // the clock hub at the centre of the tank.
             val growth = if (isPool) 1f + (growthFor(item) - 1f) * 0.35f else growthFor(item)
-            bubbleDia[i] = Metrics.GRID_CENTER_D * u * size * effZoom * scaleMod * growth
+            bubbleDia[i] = Metrics.GRID_CENTER_D * u * size * effZoom * scaleMod * growth * gulpFactor(item.key)
         }
 
         val itemAlpha = alpha * (1f - 0.68f * bVal) * (1f - cVal)
