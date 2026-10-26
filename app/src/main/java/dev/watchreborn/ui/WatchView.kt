@@ -2551,7 +2551,7 @@ class WatchView(
                     val ovAlpha = ((ov - 0.35f) / 0.5f).coerceIn(0f, 1f) * itemAlpha
                     val ovInt = (ovAlpha * 255).toInt()
                     text.textSize = sp(9f)
-                    val rawLbl = "${item.group.title.substringBefore(' ')} · ${item.apps.size}"
+                    val rawLbl = "${item.label.substringBefore(' ')} · ${item.apps.size}"
                     val lbl = TextUtils.ellipsize(rawLbl, text, dia * 1.55f, TextUtils.TruncateAt.END).toString()
                     val lw = text.measureText(lbl)
                     val lRect = RectF(x - lw / 2 - dp(5f), y + dia * 0.46f, x + lw / 2 + dp(5f), y + dia * 0.46f + dp(14f))
@@ -2565,7 +2565,7 @@ class WatchView(
                     if (shiftX != 0f) lRect.offset(shiftX, 0f)
                     fill.color = Color.argb((ovInt * 0.90f).toInt(), 18, 20, 26)
                     c.drawRoundRect(lRect, dp(7f), dp(7f), fill)
-                    val tint = item.group.tint
+                    val tint = item.tint
                     stroke.strokeWidth = dp(1f)
                     stroke.color = withAlpha(tint, (ovInt * 0.7f).toInt())
                     c.drawRoundRect(lRect, dp(7f), dp(7f), stroke)
@@ -3127,7 +3127,7 @@ class WatchView(
         fill.color = Color.argb((aInt * 0.90f).toInt(), 20, 22, 26)
         c.drawCircle(cx, cy, islandR, fill)
         stroke.strokeWidth = dp(2.5f)
-        stroke.color = withAlpha(folder.group.tint, (aInt * 0.85f).toInt())
+        stroke.color = withAlpha(folder.tint, (aInt * 0.85f).toInt())
         c.drawCircle(cx, cy, islandR, stroke)
 
         c.save()
@@ -3156,7 +3156,7 @@ class WatchView(
         c.restore()
 
         val ph = dp(38f)
-        val label = "🌊 ${folder.group.title} (${folder.apps.size})   ✕"
+        val label = "🌊 ${folder.label} (${folder.apps.size})   ✕"
         text.textSize = sp(14.5f)
         val tw = text.measureText(label)
         val pw = tw + dp(32f)
@@ -3164,7 +3164,7 @@ class WatchView(
         fill.color = Color.argb((aInt * 0.92f).toInt(), 38, 40, 44)
         c.drawRoundRect(folderHeaderRect, ph / 2, ph / 2, fill)
         stroke.strokeWidth = dp(1.5f)
-        stroke.color = withAlpha(folder.group.tint, aInt)
+        stroke.color = withAlpha(folder.tint, aInt)
         c.drawRoundRect(folderHeaderRect, ph / 2, ph / 2, stroke)
         text.color = Color.argb(aInt, 255, 255, 255)
         c.drawText(label, w / 2 - tw / 2, folderHeaderRect.centerY() + text.textSize * 0.35f, text)
@@ -3455,7 +3455,7 @@ class WatchView(
             fill.color = Color.argb((alpha * 215).toInt(), 32, 32, 36)
             c.drawRoundRect(centerSearchPillRect, pillH / 2, pillH / 2, fill)
             text.color = when (centred) {
-                is Folder -> withAlpha(centred.group.tint, (alpha * 255).toInt())
+                is Folder -> withAlpha(centred.tint, (alpha * 255).toInt())
                 is WidgetBubble -> withAlpha(centred.kind.tint, (alpha * 255).toInt())
                 else -> Color.argb((alpha * 255).toInt(), 255, 255, 255)
             }
@@ -3795,7 +3795,7 @@ class WatchView(
         }
 
         val ph = dp(40f)
-        val label = "←  ${folder.group.title} (${folder.apps.size})"
+        val label = "←  ${folder.label} (${folder.apps.size})"
         text.textSize = sp(15f)
         val tw = text.measureText(label)
         val pw = tw + dp(36f)
@@ -3803,7 +3803,7 @@ class WatchView(
         fill.color = Color.argb((alpha * 235).toInt(), 44, 44, 46)
         c.drawRoundRect(folderHeaderRect, ph / 2, ph / 2, fill)
         stroke.strokeWidth = dp(1.5f)
-        stroke.color = withAlpha(folder.group.tint, (alpha * 220).toInt())
+        stroke.color = withAlpha(folder.tint, (alpha * 220).toInt())
         c.drawRoundRect(folderHeaderRect, ph / 2, ph / 2, stroke)
         text.color = Color.argb((alpha * 255).toInt(), 255, 255, 255)
         c.drawText(label, w / 2 - tw / 2, folderHeaderRect.centerY() + text.textSize * 0.35f, text)

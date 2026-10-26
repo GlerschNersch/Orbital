@@ -87,6 +87,11 @@ class Folder(
     override val key: String = if (customId != null) "cfolder:$customId" else "folder:${group.name}"
     override val label: String = customName ?: group.title
     val isCustom: Boolean get() = customId != null
+
+    /** Header/platter tint: the category tint; a custom folder borrows its
+     *  first member's category tint (its [group] is only a placeholder). */
+    val tint: Int
+        get() = if (isCustom) (apps.firstOrNull()?.defaultGroup?.tint ?: group.tint) else group.tint
 }
 
 /**
