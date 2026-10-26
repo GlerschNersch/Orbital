@@ -226,13 +226,11 @@ class MainActivity : Activity(), SensorEventListener {
         if (Intent.ACTION_MAIN == intent.action && hasWindowFocus()) view.home()
     }
 
-    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-            if (!view.back() && !isDefaultHomeApp()) finish()
-            return true
-        }
-        return super.onKeyDown(keyCode, event)
-    }
+    // Back is handled solely by the OnBackInvokedCallback registered in
+    // onCreate (minSdk 33 covers it). There used to be a second handler here
+    // (onKeyDown for KEYCODE_BACK) running the same logic — two delivery
+    // paths for one press could pop two layers, and on the second pop a
+    // plain-face state legitimately answers "not consumed" and finishes.
 
     /** Pin scope for repo calls: per-layout when enabled, else the global set. */
     private fun pinScope(): String? =

@@ -663,7 +663,12 @@ class WatchView(
             sheetOpen = clusterSheet.target > 0f,
             editMode = editMode,
             torchOffViaBack = controlIn.target > 0f && controlCenter.state.screenFlashlight,
-            stackOrControlOpen = stackIn.target > 0f || controlIn.target > 0f,
+            // A layer that is visibly open counts even if its target was already
+            // reset mid-animation: Back from the Smart Stack once slipped past
+            // a target-only check, returned "not consumed", and the activity
+            // finished because WatchReborn is not the default home app.
+            stackOrControlOpen = stackIn.target > 0f || controlIn.target > 0f ||
+                stackIn.value > 0.5f || controlIn.value > 0.5f,
             inApps = apps.target == 1f,
             widgetOpen = widgetIn.target == 1f,
             folderOpen = folderIn.target == 1f,
@@ -1047,8 +1052,14 @@ class WatchView(
             if (t < 1f) motionAnimating = true
             val e = Motion.easeOutBack(t)
             val rad = Math.toRadians(offsets[i].toDouble())
-            val tx = placeAnchorX + reach * sin(rad).toFloat()
-            val ty = placeAnchorY + dirY * reach * cos(rad).toFloat()
+            val rawTx = placeAnchorX + reach * sin(rad).toFloat()
+            val rawTy = placeAnchorY + dirY * reach * cos(rad).toFloat()
+            // Keep the whole chip (and its label) inside the view: for a bubble
+            // near a screen edge the arc's outer chips used to bloom half
+            // off-screen. The stored hit circle uses the clamped target too.
+            val chipR = dp(26f)
+            val tx = rawTx.coerceIn(chipR + dp(6f), width - chipR - dp(6f))
+            val ty = rawTy.coerceIn(topInset + chipR + dp(16f), height - bottomInset - chipR - dp(18f))
             val cx = Motion.lerp(placeAnchorX, tx, e)
             val cy = Motion.lerp(placeAnchorY, ty, e)
             val hot = hypot(placeX - tx, placeY - ty) <= dp(42f)
@@ -1232,29 +1243,19 @@ class WatchView(
                     out[0] = 0f; out[1] = 0f
                     return
                 }
-                when {
-                    index <= 6 -> {
-                        val cnt = min(6, (total - 1).coerceAtLeast(1))
-                        val ang = (index - 1) * (2.0 * PI / cnt) - PI / 2.0 + orbitalAngle
-                        val r = pitch * 1.06f
-                        out[0] = (cos(ang) * r).toFloat()
-                        out[1] = (sin(ang) * r).toFloat()
-                    }
-                    index <= 16 -> {
-                        val cnt = min(10, (total - 7).coerceAtLeast(1))
-                        val ang = (index - 7) * (2.0 * PI / cnt) - PI / 2.0 - orbitalAngle * 0.72f
-                        val r = pitch * 1.98f
-                        out[0] = (cos(ang) * r).toFloat()
-                        out[1] = (sin(ang) * r).toFloat()
-                    }
-                    else -> {
-                        val cnt = (total - 17).coerceAtLeast(1)
-                        val ang = (index - 17) * (2.0 * PI / cnt) - PI / 2.0 + orbitalAngle * 0.48f
-                        val r = pitch * 2.88f
-                        out[0] = (cos(ang) * r).toFloat()
-                        out[1] = (sin(ang) * r).toFloat()
-                    }
-                }
+                // Rings of 6, 10, 14, 18, … bubbles (see RingMath) instead of
+                // dumping every overflow app onto one outer ring — at ~180 apps
+                // that ring collapsed into an overlapping caterpillar. Outer
+                // rings sit further out and are reached with the existing pan;
+                // alternate rings counter-rotate with decaying speed, as before.
+                val loc = RingMath.locate(index, 6, 4)
+                val cnt = min(loc.ringSize, (total - loc.startIndex).coerceAtLeast(1))
+                val speed = (if (loc.ring % 2 == 0) 1f else -1f) *
+                    Math.pow(0.72, loc.ring.toDouble()).toFloat()
+                val ang = loc.slot * (2.0 * PI / cnt) - PI / 2.0 + orbitalAngle * speed
+                val r = pitch * (1.06f + loc.ring * 0.92f)
+                out[0] = (cos(ang) * r).toFloat()
+                out[1] = (sin(ang) * r).toFloat()
             }
             ClusterTopology.RIVER -> {
                 // watchOS 10+ Vertical River: alternating rows of 2 and 3 bubbles
@@ -1265,7 +1266,10 @@ class WatchView(
                 val col = if (isTwoRow) rem else rem - 2
                 val cols = if (isTwoRow) 2 else 3
                 out[0] = (col - (cols - 1) / 2f) * (pitch * 1.08f)
-                out[1] = (row - 1) * (pitch * 0.90f)
+                // Start a few rows above center so the opening band fills the
+                // upper screen instead of sitting in the lower half with the
+                // top ~40% empty (the ribbon only grows downward from here).
+                out[1] = (row - 3.2f) * (pitch * 0.90f)
             }
             ClusterTopology.FIBONACCI -> {
                 if (index == 0) {
@@ -1274,7 +1278,9 @@ class WatchView(
                 }
                 val goldenAngle = 2.3999632f // 137.50776 degrees in radians
                 val ang = index * goldenAngle + orbitalAngle * 0.6f
-                val r = pitch * 0.68f * sqrt(index.toFloat())
+                // 0.78 (was 0.68): the first spiral step used to land close
+                // enough that a usage-grown bubble swallowed the center hub.
+                val r = pitch * 0.78f * sqrt(index.toFloat())
                 out[0] = cos(ang) * r
                 out[1] = sin(ang) * r
             }
@@ -1290,11 +1296,24 @@ class WatchView(
                     out[0] = (cos(ang) * r).toFloat()
                     out[1] = (sin(ang) * r).toFloat()
                 } else {
-                    val cnt = (total - 11).coerceAtLeast(1)
-                    val ang = (index - 11) * (2.0 * PI / cnt) - PI / 2.0 - orbitalAngle * 0.65f
-                    val r = pitch * 2.40f
-                    out[0] = (cos(ang) * r).toFloat()
-                    out[1] = (sin(ang) * r).toFloat()
+                    // The outer ring is a carousel: only BEZEL_OUTER_CAP bubbles
+                    // ride it at once, and spinning the bezel scrolls the window
+                    // through the rest of the catalog (clamped at both ends).
+                    // All ~170 overflow apps used to share this one ring and
+                    // overlap into a solid band around the screen.
+                    val outerTotal = (total - 11).coerceAtLeast(1)
+                    val slot = RingMath.carouselSlot(index - 11, outerTotal, BEZEL_OUTER_CAP, orbitalAngle * 0.65f)
+                    if (slot == null) {
+                        // Scrolled out of the window: park far off-screen (the
+                        // fisheye shrinks it to nothing; it takes no hits).
+                        out[0] = pitch * 40f
+                        out[1] = pitch * 40f
+                    } else {
+                        val ang = slot * (2.0 * PI / BEZEL_OUTER_CAP) - PI / 2.0
+                        val r = pitch * 2.40f
+                        out[0] = (cos(ang) * r).toFloat()
+                        out[1] = (sin(ang) * r).toFloat()
+                    }
                 }
             }
             ClusterTopology.DNA_HELIX -> {
@@ -1308,7 +1327,10 @@ class WatchView(
                 val phase = rung * 0.56f + orbitalAngle + strand * PI.toFloat()
                 val amp = pitch * 1.24f
                 out[0] = sin(phase) * amp
-                out[1] = (rung - 2.5f) * (pitch * 0.72f)
+                // Start higher so the opening rungs fill the upper screen too
+                // (the ribbon only grows downward; it used to sit in the
+                // lower two-thirds at rest).
+                out[1] = (rung - 4.5f) * (pitch * 0.72f)
             }
             ClusterTopology.HOURGLASS -> {
                 // ⏳ Chrono Hourglass Vortex: pinched waist at (0,0) expanding into upper & lower cones
@@ -1333,24 +1355,25 @@ class WatchView(
                 out[1] = ySign * tier * (pitch * 0.88f)
             }
             ClusterTopology.MAGNETIC_DOCK -> {
-                // 🧲 Ergonomic One-Handed Thumb Arc Dock radiating upward from bottom-center
-                val pivotY = pitch * 2.15f
+                // 🧲 Ergonomic One-Handed Thumb Arc Dock radiating upward from
+                // bottom-center. The home bubble sits AT the pivot (bottom
+                // center, under the thumb) — it used to float at the arcs'
+                // midpoint where the first arc's top bubble landed on it.
+                val pivotY = pitch * 2.30f
                 if (index == 0) {
                     out[0] = 0f
-                    out[1] = pitch * 0.85f
+                    out[1] = pivotY
                     return
                 }
-                val arcCapacities = intArrayOf(4, 6, 8, 10)
-                var rem = index - 1
-                var aIdx = 0
-                while (aIdx < arcCapacities.size && rem >= arcCapacities[aIdx]) {
-                    rem -= arcCapacities[aIdx]
-                    aIdx++
-                }
-                val cnt = if (aIdx < arcCapacities.size) arcCapacities[aIdx] else max(6, total - 19)
-                val slot = rem.coerceIn(0, (cnt - 1).coerceAtLeast(0))
-                val radius = pitch * (1.28f + aIdx * 0.88f)
-                val span = (0.72f + aIdx * 0.08f).coerceAtMost(1.05f) * PI.toFloat()
+                // Arcs of 4, 6, 8, 10, … bubbles (see RingMath) instead of one
+                // giant fallback arc for every overflow app — that arc rendered
+                // as a solid caterpillar band across the top of the screen.
+                // Higher arcs are reached by dragging the dock up (pan).
+                val loc = RingMath.locate(index, 4, 2)
+                val cnt = min(loc.ringSize, (total - loc.startIndex).coerceAtLeast(1))
+                val slot = loc.slot.coerceIn(0, (cnt - 1).coerceAtLeast(0))
+                val radius = pitch * (1.28f + loc.ring * 0.88f)
+                val span = (0.72f + loc.ring * 0.08f).coerceAtMost(1.05f) * PI.toFloat()
                 val frac = if (cnt <= 1) 0f else (slot.toFloat() / (cnt - 1)) - 0.5f
                 val ang = -PI.toFloat() / 2f + frac * span + orbitalAngle * 0.35f
                 out[0] = cos(ang) * radius
@@ -1944,7 +1967,9 @@ class WatchView(
             }
 
             val px = if (isBezel || isRiver || isHelix || isHourglass || isDock || isPool) 0f else panX.value * (1f - ov)
-            val py = if (isBezel || isDock || isPool) 0f else panY.value * (1f - ov)
+            // The Dock pans vertically (its higher arcs reach up off-screen);
+            // it is the one arc layout whose pan used to be pinned to zero.
+            val py = if (isBezel || isPool) 0f else panY.value * (1f - ov)
             val dx = (worldX + px) / u
             val dy = (worldY + py) / u
             val d = hypot(dx / sx, dy / sy)
@@ -1952,8 +1977,13 @@ class WatchView(
 
             if (isBezel) {
                 // In Chrono Bezel mode, the active item is the one closest to the 12 o'clock launch notch!
-                val notchDist = hypot(worldX, worldY + basePitch * 1.56f)
-                if (notchDist < nearestD) { nearestD = notchDist; nearest = item }
+                // Only the inner ring competes for the notch: outer-carousel items
+                // parked off-screen (or passing the top of their larger ring)
+                // must never steal the highlight from the ring that owns it.
+                if (i in 1..10) {
+                    val notchDist = hypot(worldX, worldY + basePitch * 1.56f)
+                    if (notchDist < nearestD) { nearestD = notchDist; nearest = item }
+                }
             } else if (d < nearestD) {
                 nearestD = d
                 nearest = item
@@ -2006,15 +2036,18 @@ class WatchView(
                 ClusterTopology.ORBITALS -> {
                     val sunX = if (items.isNotEmpty() && bubbleDia[0] > 0f) bubbleX[0] else cx + panX.value * (1f - ov) * effZoom
                     val sunY = if (items.isNotEmpty() && bubbleDia[0] > 0f) bubbleY[0] else cy + panY.value * (1f - ov) * effZoom
-                    val radii = floatArrayOf(basePitch * 1.06f * effZoom, basePitch * 1.98f * effZoom, basePitch * 2.88f * effZoom)
-                    for ((rIdx, rad) in radii.withIndex()) {
+                    // One guide circle per ring the catalog actually fills.
+                    val ringTotal = RingMath.ringCount(items.size, 6, 4)
+                    for (rIdx in 0 until ringTotal) {
+                        val rad = basePitch * (1.06f + rIdx * 0.92f) * effZoom
                         stroke.strokeWidth = dp(if (rIdx == 0) 1.8f else 1.3f)
-                        stroke.color = withAlpha(accent, (aInt * (0.36f - rIdx * 0.07f)).toInt())
+                        stroke.color = withAlpha(accent, (aInt * (0.36f - rIdx * 0.07f).coerceAtLeast(0.08f)).toInt())
                         c.drawCircle(sunX, sunY, rad, stroke)
                         // Astrolabe degree tick marks around each orbital ring
                         stroke.strokeWidth = dp(1.2f)
+                        val tickSpeed = (if (rIdx % 2 == 0) 1f else -1f) * Math.pow(0.72, rIdx.toDouble()).toFloat()
                         for (t in 0 until 24) {
-                            val ang = t * (PI / 12.0) + orbitalAngle * (if (rIdx == 1) -0.72f else 0.5f)
+                            val ang = t * (PI / 12.0) + orbitalAngle * tickSpeed
                             val ca = cos(ang).toFloat()
                             val sa = sin(ang).toFloat()
                             c.drawLine(sunX + ca * (rad - dp(4f)), sunY + sa * (rad - dp(4f)), sunX + ca * (rad + dp(4f)), sunY + sa * (rad + dp(4f)), stroke)
@@ -2101,13 +2134,16 @@ class WatchView(
                     c.drawCircle(cx, cy, waistW * 0.92f, stroke)
                 }
                 ClusterTopology.MAGNETIC_DOCK -> {
-                    // 🧲 Draw concentric thumb-reach arc guides radiating from bottom-center
-                    val pivotY = cy + basePitch * 2.15f * effZoom
-                    for (aIdx in 0..3) {
+                    // 🧲 Draw concentric thumb-reach arc guides radiating from the
+                    // bottom-center pivot; the guides follow the vertical pan so
+                    // they stay under their bubbles.
+                    val pivotY = cy + (basePitch * 2.30f + panY.value * (1f - ov)) * effZoom
+                    val arcTotal = RingMath.ringCount(items.size, 4, 2)
+                    for (aIdx in 0 until arcTotal) {
                         val rArc = basePitch * (1.28f + aIdx * 0.88f) * effZoom
                         arcRect.set(cx - rArc, pivotY - rArc, cx + rArc, pivotY + rArc)
                         stroke.strokeWidth = dp(if (aIdx == 0) 1.8f else 1.2f)
-                        stroke.color = withAlpha(accent, (aInt * (0.34f - aIdx * 0.06f)).toInt())
+                        stroke.color = withAlpha(accent, (aInt * (0.34f - aIdx * 0.06f).coerceAtLeast(0.07f)).toInt())
                         c.drawArc(arcRect, -162f, 144f, false, stroke)
                     }
                 }
@@ -2157,10 +2193,12 @@ class WatchView(
 
             // Draw each bubble + Gravity hero rings + Chrono Bezel top notch highlight + Overview labels
             // For DNA_HELIX, draw back-strand bubbles first so front-strand bubbles overlap cleanly in 3D!
-            val drawOrder = if (isHelix) {
-                items.indices.sortedBy { dnaHelixDepth(it) }
-            } else {
-                items.indices.toList()
+            // For FIBONACCI, the center hub draws last so a grown neighbour
+            // can't bury the clock at the middle of the spiral.
+            val drawOrder = when {
+                isHelix -> items.indices.sortedBy { dnaHelixDepth(it) }
+                clusterTopology == ClusterTopology.FIBONACCI -> items.indices.sortedBy { it == 0 }
+                else -> items.indices.toList()
             }
             for (i in drawOrder) {
                 val dia = bubbleDia[i]
@@ -2201,6 +2239,14 @@ class WatchView(
                     val lbl = TextUtils.ellipsize(rawLbl, text, dia * 1.55f, TextUtils.TruncateAt.END).toString()
                     val lw = text.measureText(lbl)
                     val lRect = RectF(x - lw / 2 - dp(5f), y + dia * 0.46f, x + lw / 2 + dp(5f), y + dia * 0.46f + dp(14f))
+                    // Keep the whole label pill on-screen (edge folders used to
+                    // clip theirs: "opping · 11", "Socia…").
+                    val shiftX = when {
+                        lRect.left < dp(6f) -> dp(6f) - lRect.left
+                        lRect.right > w - dp(6f) -> (w - dp(6f)) - lRect.right
+                        else -> 0f
+                    }
+                    if (shiftX != 0f) lRect.offset(shiftX, 0f)
                     fill.color = Color.argb((ovInt * 0.90f).toInt(), 18, 20, 26)
                     c.drawRoundRect(lRect, dp(7f), dp(7f), fill)
                     val tint = item.group.tint
@@ -2208,7 +2254,7 @@ class WatchView(
                     stroke.color = withAlpha(tint, (ovInt * 0.7f).toInt())
                     c.drawRoundRect(lRect, dp(7f), dp(7f), stroke)
                     text.color = Color.argb(ovInt, 255, 255, 255)
-                    c.drawText(lbl, x - lw / 2, lRect.centerY() + text.textSize * 0.35f, text)
+                    c.drawText(lbl, x + shiftX - lw / 2, lRect.centerY() + text.textSize * 0.35f, text)
                 }
             }
         }
@@ -2292,13 +2338,25 @@ class WatchView(
 
         // Battery / Timer status at bottom of HUD
         val remMs = currentTimerRemainingMs()
+        // When the catalog overflows the outer carousel ring, the HUD names the
+        // visible window so spinning reads as browsing, not losing apps.
+        val totalItems = activeGridItems.size
+        val outerTotal = totalItems - 11
+        val windowText = if (outerTotal > BEZEL_OUTER_CAP) {
+            val scroll = RingMath.carouselScroll(outerTotal, BEZEL_OUTER_CAP, orbitalAngle * 0.65f)
+            val first = 12 + scroll.toInt()
+            val last = min(totalItems, first + BEZEL_OUTER_CAP - 1)
+            "RING $first–$last OF $totalItems"
+        } else {
+            null
+        }
         val sub = if (timerRunning) {
             val remSec = ((remMs + 999L) / 1000L).toInt()
             "⏱ %d:%02d".format(remSec / 60, remSec % 60)
         } else if (info.battery >= 0) {
-            "🔋 ${info.battery}% • SPIN BEZEL"
+            if (windowText != null) "🔋 ${info.battery}% • $windowText" else "🔋 ${info.battery}% • SPIN BEZEL"
         } else {
-            "SPIN BEZEL"
+            windowText ?: "SPIN BEZEL"
         }
         text.textSize = (hudR * 0.135f).coerceAtLeast(sp(8.5f))
         text.color = Color.argb((aInt * 0.85f).toInt(), 190, 205, 195)
@@ -2434,14 +2492,17 @@ class WatchView(
                 text.textSize = sp(10f)
                 val gLabel = "🌌 ${grp.title.substringBefore(' ')} · ${grpApps.size}"
                 val gw = text.measureText(gLabel)
-                val gRect = RectF(gsx - gw / 2 - dp(8f), pillY - dp(11f), gsx + gw / 2 + dp(8f), pillY + dp(11f))
+                // Clamp the pill inside the screen: islands near an edge used
+                // to push their header pill halfway off it.
+                val pillCx = gsx.coerceIn(gw / 2 + dp(16f), w - gw / 2 - dp(16f))
+                val gRect = RectF(pillCx - gw / 2 - dp(8f), pillY - dp(11f), pillCx + gw / 2 + dp(8f), pillY + dp(11f))
                 fill.color = Color.argb((aInt * 0.92f).toInt(), 20, 22, 28)
                 c.drawRoundRect(gRect, dp(11f), dp(11f), fill)
                 stroke.strokeWidth = dp(1.2f)
                 stroke.color = withAlpha(grp.tint, aInt)
                 c.drawRoundRect(gRect, dp(11f), dp(11f), stroke)
                 text.color = Color.argb(aInt, 255, 255, 255)
-                c.drawText(gLabel, gsx - gw / 2, gRect.centerY() + text.textSize * 0.35f, text)
+                c.drawText(gLabel, pillCx - gw / 2, gRect.centerY() + text.textSize * 0.35f, text)
                 nebulaHeaderRects += Triple(gRect, gx, gy)
             }
         }
@@ -2477,6 +2538,44 @@ class WatchView(
         val aInt = (alpha * 255).toInt().coerceIn(0, 255)
         val q = searchQuery.trim()
         val cz = constellationZoom.value
+
+        // Header layout (search bar + letter chips + category chips), computed
+        // up front: the star field is clipped to below the header and the
+        // category chips flow-wrap at their natural widths. They used to be
+        // squeezed into one equal-width row — at ~17 categories each chip was
+        // narrower than its label, so the row rendered as one overlapping
+        // ribbon of gibberish with stars shining through it.
+        val padX = dp(16f)
+        val barH = dp(42f)
+        val chipH = dp(26f)
+        val chipGap = dp(5f)
+        val chipY = top + dp(6f) + barH + dp(7f)
+        val catGroups = dev.watchreborn.apps.AppGroup.entries.filter { g -> alphabetical.any { it.defaultGroup == g } }
+        text.textSize = sp(9.5f)
+        val catChipW = catGroups.map { g ->
+            text.measureText(g.title.substringBefore(' ').substringBefore('&').trim()) + dp(16f)
+        }
+        val catRows = ArrayList<List<Int>>()
+        run {
+            var row = ArrayList<Int>()
+            var rowW = 0f
+            val maxRowW = w - 2 * padX
+            for (i in catGroups.indices) {
+                val cw = catChipW[i]
+                val added = if (row.isEmpty()) cw else rowW + chipGap + cw
+                if (row.isNotEmpty() && added > maxRowW) {
+                    catRows += row
+                    row = ArrayList()
+                    rowW = cw
+                } else {
+                    rowW = added
+                }
+                row += i
+            }
+            if (row.isNotEmpty()) catRows += row
+        }
+        val catY = chipY + chipH + dp(5f)
+        val headerBottom = if (catRows.isEmpty()) chipY + chipH else catY + catRows.size * chipH + (catRows.size - 1) * chipGap
 
         // Build the unraveled star list:
         // - If typing a search query, rank prefix matches first, then substring matches.
@@ -2558,6 +2657,11 @@ class WatchView(
             starDiameters[i] = dia
         }
 
+        // The star field never draws over the header: clip it to below the
+        // last chip row (the header itself gets a solid backdrop later).
+        c.save()
+        c.clipRect(0f, headerBottom + dp(4f), w, h)
+
         // 1. Draw glowing category Constellation Lines linking stars in the same group (or adjacent matches)
         for (i in starCoords.indices) {
             val (curApp, x1, y1) = starCoords[i]
@@ -2599,7 +2703,9 @@ class WatchView(
             c.drawCircle(x, y, dia * 0.54f, stroke)
 
             drawIcon(c, app.icon, x, y, dia, alpha, hasNotification(app), app.key in pinnedItemKeys)
-            hits += Hit(x, y, dia / 2, app)
+            // Stars clipped by the header take no hits, so taps on the header
+            // can only land on the bar or the chips.
+            if (y > headerBottom + dia * 0.25f) hits += Hit(x, y, dia / 2, app)
 
             // Show name pill under the stars closest to the center (or top 9 when filtered)
             if (starCenterDist[i] < 0.42f || (i < 9 && (q.isNotEmpty() || constellationFilter != "ALL" || catFilter != null))) {
@@ -2617,9 +2723,14 @@ class WatchView(
             }
         }
 
+        c.restore()
+
+        // Solid backdrop behind the whole header so nothing shows through the
+        // gaps between chips.
+        fill.color = Color.argb((aInt * 0.97f).toInt(), 10, 11, 14)
+        c.drawRect(0f, 0f, w, headerBottom + dp(6f), fill)
+
         // 3. Top Constellation Search Bar (tap to open keyboard, or tap X to collapse)
-        val barH = dp(42f)
-        val padX = dp(16f)
         searchBarRect.set(padX, top + dp(6f), w - padX, top + dp(6f) + barH)
         fill.color = Color.argb((aInt * 0.94f).toInt(), 32, 34, 40)
         c.drawRoundRect(searchBarRect, barH / 2, barH / 2, fill)
@@ -2645,9 +2756,6 @@ class WatchView(
         // 4. Row 1: 1-Tap Quick Letter-Cluster Filter Chips (no keyboard needed!)
         constellationChipRects.clear()
         val chips = listOf("ALL", "A-D", "E-I", "J-N", "O-S", "T-Z")
-        val chipY = searchBarRect.bottom + dp(7f)
-        val chipH = dp(26f)
-        val chipGap = dp(5f)
         val totalChipW = w - 2 * padX
         val eachW = (totalChipW - chipGap * (chips.size - 1)) / chips.size
         text.textSize = sp(10.5f)
@@ -2663,18 +2771,19 @@ class WatchView(
             constellationChipRects += cr to chip
         }
 
-        // 5. Row 2: 1-Tap Category Constellation Filter Chips (color-coded by category tint!)
+        // 5. Category Constellation Filter Chips (color-coded by category
+        // tint), flow-wrapped at natural label widths over as many rows as
+        // they need — see the header-layout note at the top of this function.
         constellationCategoryChipRects.clear()
-        val catGroups = dev.watchreborn.apps.AppGroup.entries.filter { g -> alphabetical.any { it.defaultGroup == g } }
-        if (catGroups.isNotEmpty()) {
-            val catY = chipY + chipH + dp(5f)
-            val catEachW = (totalChipW - chipGap * (catGroups.size - 1)) / catGroups.size
-            text.textSize = sp(9.5f)
-            for (i in catGroups.indices) {
-                val g = catGroups[i]
+        text.textSize = sp(9.5f)
+        for ((rowIdx, row) in catRows.withIndex()) {
+            var cl = padX
+            val ry = catY + rowIdx * (chipH + chipGap)
+            for (gi in row) {
+                val g = catGroups[gi]
                 val active = q.isEmpty() && catFilter == g
-                val cl = padX + i * (catEachW + chipGap)
-                val cr = RectF(cl, catY, cl + catEachW, catY + chipH)
+                val cw = catChipW[gi]
+                val cr = RectF(cl, ry, cl + cw, ry + chipH)
                 fill.color = if (active) withAlpha(g.tint, aInt) else Color.argb((aInt * 0.86f).toInt(), 30, 32, 38)
                 c.drawRoundRect(cr, chipH / 2, chipH / 2, fill)
                 if (!active) {
@@ -2686,6 +2795,7 @@ class WatchView(
                 val shortName = g.title.substringBefore(' ').substringBefore('&').trim()
                 c.drawText(shortName, cr.centerX() - text.measureText(shortName) / 2, cr.centerY() + text.textSize * 0.35f, text)
                 constellationCategoryChipRects += cr to g
+                cl += cw + chipGap
             }
         }
     }
@@ -3104,15 +3214,23 @@ class WatchView(
         val headerH = dp(19f)
         val optionCount = rows.count { it.first != null }
         val headerCount = rows.size - optionCount
-        var sheetH = dp(68f) + optionCount * (rowH + gap) + headerCount * headerH + dp(52f)
-        if (sheetH > h - dp(36f) && optionCount > 0) {
-            // Short screen (or the extra Clear Pins row): compress rows so the
-            // sheet — including its Done button — always fits.
-            rowH = ((h - dp(36f) - dp(68f) - headerCount * headerH - dp(52f)) / optionCount - gap).coerceAtLeast(dp(24f))
-            sheetH = dp(68f) + optionCount * (rowH + gap) + headerCount * headerH + dp(52f)
+        // Reserve the Clear Pins row's slot even when there are no pins, so
+        // the row height (and therefore every row's position) is identical
+        // whether or not that conditional row is present. It used to change
+        // the compression and shift every row by up to ~40px between opens.
+        val layoutCount = optionCount + if (pinnedItemKeys.isEmpty()) 1 else 0
+        var sheetH = dp(68f) + layoutCount * (rowH + gap) + headerCount * headerH + dp(52f)
+        if (sheetH > h - dp(36f) && layoutCount > 0) {
+            // Short screen: compress rows so the sheet — including its Done
+            // button — always fits.
+            rowH = ((h - dp(36f) - dp(68f) - headerCount * headerH - dp(52f)) / layoutCount - gap).coerceAtLeast(dp(24f))
+            sheetH = dp(68f) + layoutCount * (rowH + gap) + headerCount * headerH + dp(52f)
         }
 
-        val sheetTop = (h - sheetH) / 2f + (1f - t) * dp(36f)
+        // No slide-in offset: the sheet fades in at its final position, so a
+        // row is in the same place on the first frame as the last. (The old
+        // (1-t) rise made rows drift upward while the sheet animated open.)
+        val sheetTop = (h - sheetH) / 2f
         sheetBoundsRect.set(padX, sheetTop, padX + cardW, sheetTop + sheetH)
 
         fill.color = Color.argb(a, 24, 26, 30)
@@ -3214,7 +3332,8 @@ class WatchView(
             rowH = ((h - dp(36f) - dp(68f) - dp(52f)) / all.size - gap).coerceAtLeast(dp(24f))
             sheetH = dp(68f) + all.size * (rowH + gap) + dp(52f)
         }
-        val sheetTop = (h - sheetH) / 2f + (1f - t) * dp(36f)
+        // Same no-slide rule as the options sheet: rows never drift while opening.
+        val sheetTop = (h - sheetH) / 2f
         sheetBoundsRect.set(padX, sheetTop, padX + cardW, sheetTop + sheetH)
 
         fill.color = Color.argb(a, 24, 26, 30)
@@ -4317,7 +4436,12 @@ class WatchView(
                                     performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                                 }
                                 panX.snap(0f)
-                                panY.snap(0f)
+                                // Vertical drag pans the arc field so the higher
+                                // arcs can be pulled down into reach; the range
+                                // scales with how many arcs the catalog fills.
+                                val dockPitch = Metrics.GRID_PITCH * unit
+                                val maxPan = dockPitch * (2.2f + 0.88f * RingMath.ringCount(activeGridItems.size, 4, 2))
+                                panY.snap((panY.value + dy).coerceIn(-dockPitch * 1.2f, maxPan))
                             }
                             ClusterTopology.LIQUID_POOL -> {
                                 ensurePoolCapacity(activeGridItems.size, Metrics.GRID_PITCH * unit)
@@ -4427,8 +4551,15 @@ class WatchView(
             if (d < bestD) { bestD = d; best = i }
         }
         computeTopologyWorldPos(best, items.size, Metrics.GRID_PITCH * w, tmp)
-        panX.target = if (clusterTopology == ClusterTopology.RIVER) 0f else -tmp[0]
-        panY.target = -tmp[1]
+        panX.target = if (clusterTopology == ClusterTopology.RIVER || clusterTopology == ClusterTopology.MAGNETIC_DOCK) 0f else -tmp[0]
+        panY.target = if (clusterTopology == ClusterTopology.MAGNETIC_DOCK) {
+            // Same clamp as the drag handler, so a release can't fling the
+            // dock's pivot off the top or bottom of the screen.
+            val dockPitch = Metrics.GRID_PITCH * w
+            (-tmp[1]).coerceIn(-dockPitch * 1.2f, dockPitch * (2.2f + 0.88f * RingMath.ringCount(items.size, 4, 2)))
+        } else {
+            -tmp[1]
+        }
     }
 
     private fun snapFolderGrid(px: Float, py: Float) {
@@ -4897,6 +5028,8 @@ class WatchView(
         const val CHIP_INFO = 0
         const val CHIP_UNINSTALL = 1
         const val CHIP_UNPIN = 2
+        /** Bubbles riding the Chrono Bezel's outer carousel ring at once. */
+        const val BEZEL_OUTER_CAP = 18
         const val MODE_FACE = 0
         const val MODE_APPS = 1
         const val MODE_STACK = 2

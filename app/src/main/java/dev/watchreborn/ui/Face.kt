@@ -46,6 +46,9 @@ class Face {
     private val pos = FloatArray(2)
     private val tan = FloatArray(2)
 
+    /** Where the top complications (0=Battery, 1=Date, 2=Alarm) were drawn, for taps. */
+    val topRects = Array(3) { RectF() }
+
     /** Where the bottom complications were drawn, for taps (null where there's no app). */
     val favoriteRects = Array(3) { RectF() }
     var favorites: List<App?> = emptyList()
@@ -59,6 +62,7 @@ class Face {
         val small = 0.17f * w
         val rowY = top + 0.16f * w
         val xs = floatArrayOf(0.2f * w, 0.5f * w, 0.8f * w)
+        for (i in 0 until 3) topRects[i].set(xs[i] - small / 2, rowY - small / 2, xs[i] + small / 2, rowY + small / 2)
         ring(c, xs[0], rowY, small, if (info.battery >= 0) info.battery / 100f else 0f, a)
         label(c, xs[0], rowY, small, if (info.battery >= 0) "${info.battery}" else "--", if (info.charging) "⚡" else "%", a)
         disc(c, xs[1], rowY, small, a)
@@ -82,8 +86,16 @@ class Face {
         text.typeface = condensed
         text.textSize = 0.27f * w
         text.textAlign = Paint.Align.LEFT
-        val wHm = text.measureText(hm)
-        val wSs = text.measureText(ss)
+        var wHm = text.measureText(hm)
+        var wSs = text.measureText(ss)
+        // Shrink to fit: with a two-digit hour ("12:59:59") the full-size time
+        // is wider than the screen and the seconds clipped at the right edge.
+        val maxTimeW = 0.92f * w
+        if (wHm + wSs > maxTimeW) {
+            text.textSize *= maxTimeW / (wHm + wSs)
+            wHm = text.measureText(hm)
+            wSs = text.measureText(ss)
+        }
         var x = (w - wHm - wSs) / 2
         text.color = withAlpha(Color.WHITE, a); c.drawText(hm, x, timeY, text)
         x += wHm
@@ -118,17 +130,11 @@ class Face {
         }
     }
 
-    /**
-     * Sixty ticks round the screen's edge, clockwise from the top centre like a dial; those up to
-     * the current second are lit. Each tick points straight in from its side (diagonally on the
-     * corners), so the ring reads evenly however tall the screen is.
-     */
     private fun drawTicks(c: Canvas, w: Float, h: Float, top: Float, bottom: Float, now: Calendar, a: Int) {
         val inset = 0.03f * w
         rect.set(inset, top - 0.05f * w + inset, w - inset, bottom + 0.05f * w - inset)
         val r = 0.16f * w
         edge.reset()
-        // Our own path, so it starts at the top centre and runs clockwise.
         edge.moveTo(rect.centerX(), rect.top)
         edge.lineTo(rect.right - r, rect.top)
         edge.arcTo(RectF(rect.right - 2 * r, rect.top, rect.right, rect.top + 2 * r), -90f, 90f)
@@ -145,7 +151,6 @@ class Face {
         stroke.strokeWidth = 0.008f * w
         for (i in 0 until 60) {
             measure.getPosTan(len * i / 60f, pos, tan)
-            // Inward normal of a clockwise path: the tangent turned right.
             val nx = -tan[1]; val ny = tan[0]
             val l = if (i % 5 == 0) 0.035f * w else 0.018f * w
             stroke.color = withAlpha(if (i <= sec) accent else Color.rgb(60, 66, 60), a)
@@ -153,10 +158,6 @@ class Face {
         }
     }
 
-    /**
-     * A timeline across the face: the next six hours, the current one filled, and the next alarm
-     * marked if it falls in that window (our take on a modular face's wide complication).
-     */
     private fun drawTimeline(c: Canvas, w: Float, y: Float, now: Calendar, info: FaceInfo, a: Int) {
         val left = 0.1f * w
         val right = 0.9f * w
@@ -174,7 +175,6 @@ class Face {
                 c.drawText(fmt.format(t.time), x, y - 0.05f * w, text)
             }
         }
-        // The current hour so far, as a bar.
         val frac = now.get(Calendar.MINUTE) / 60f
         fill.color = withAlpha(Color.rgb(90, 90, 90), a)
         rect.set(left, y - 0.008f * w, right, y + 0.008f * w)
