@@ -1082,9 +1082,9 @@ class WatchView(
         val tShape = v * v * (3f - 2f * v)
         val wobble = Motion.easeOutBack(v)
         val dirY = if (above) -1f else 1f
-        val budD = hit.r * 1.05f
+        val budD = hit.r * 0.42f
         val cx = Motion.lerp(hit.x, pillLeft + pillW / 2, tPos)
-        val cy = Motion.lerp(hit.y + dirY * hit.r * 0.72f, pillTop + pillH / 2, tPos)
+        val cy = Motion.lerp(hit.y + dirY * hit.r * 0.94f, pillTop + pillH / 2, tPos)
         val shapeW = Motion.lerp(budD, pillW, tShape) * wobble
         val shapeH = Motion.lerp(budD, pillH, tShape) * (2f - wobble)
         val radius = min(shapeH / 2, Motion.lerp(budD / 2, dp(14f), tShape))
@@ -1093,23 +1093,40 @@ class WatchView(
         val fade = (aInt * min(1f, v * 3f)).toInt().coerceIn(0, 255)
         fill.color = Color.argb((fade * 0.97f).toInt(), 32, 34, 40)
 
-        // Goo neck while travelling: a tapering bridge from a chord
-        // inside the bubble to the droplet, plus a mid droplet that
-        // rounds the union. It thins away as the pill arrives.
+        // Goo strand while travelling (2.8.2, after World of Goo):
+        // an hourglass bridge from a chord at the bubble's rim to the
+        // droplet — thick at both ends, pinched in the middle, the
+        // pinch deepening with stretch and the waist wobbling slightly
+        // — that thins quadratically at the end so it snaps off rather
+        // than dissolving. Retraction re-forms it as the droplet nears.
         val neckT = 1f - smooth01((v - 0.5f) / 0.4f)
         if (neckT > 0.01f) {
-            val chordY = hit.y + dirY * hit.r * 0.42f
+            val chordY = hit.y + dirY * hit.r * 0.86f
             val edgeY = cy - dirY * shapeH * 0.40f
-            val wB = hit.r * 0.50f * neckT + dp(1f)
-            val wS = shapeH * 0.30f * neckT + dp(1f)
+            val snapW = neckT * neckT
+            val wA = hit.r * 0.34f * snapW + dp(0.8f)
+            val wB = shapeH * 0.30f * snapW + dp(0.8f)
+            // The waist is a fraction of the end widths, narrowing as
+            // the droplet travels (stretch), with a decaying wobble.
+            val pinch = Motion.lerp(0.92f, 0.36f, tPos)
+            val wM = (wA + wB) / 2f * pinch
+            val wob = sin(SystemClock.uptimeMillis() / 95.0).toFloat() * dp(2.2f) * neckT
+            val mx = (hit.x + cx) / 2f + wob
+            val my = (chordY + edgeY) / 2f
+            // Quadratic controls so each side passes through its waist
+            // point (mx -/+ wM, my): C = 2Q - (P0 + P2) / 2.
+            val lx0 = hit.x - wA; val lx1 = cx - wB
+            val rx0 = hit.x + wA; val rx1 = cx + wB
+            val lcx = 2f * (mx - wM) - (lx0 + lx1) / 2f
+            val rcx = 2f * (mx + wM) - (rx0 + rx1) / 2f
+            val ccy = 2f * my - (chordY + edgeY) / 2f
             val neck = Path()
-            neck.moveTo(hit.x - wB, chordY)
-            neck.lineTo(cx - wS, edgeY)
-            neck.lineTo(cx + wS, edgeY)
-            neck.lineTo(hit.x + wB, chordY)
+            neck.moveTo(lx0, chordY)
+            neck.quadTo(lcx, ccy, lx1, edgeY)
+            neck.lineTo(rx1, edgeY)
+            neck.quadTo(rcx, ccy, rx0, chordY)
             neck.close()
             c.drawPath(neck, fill)
-            c.drawCircle((hit.x + cx) / 2, (chordY + edgeY) / 2, min(wB, wS) * 1.05f, fill)
         }
 
         // The pill body itself.

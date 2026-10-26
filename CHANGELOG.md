@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.8.2 — 2026-10-26
+
+Peek morph origin fixed (Matt's catch): the droplet spawned centred at 0.72 of the bubble's radius with a disc a full radius wide, so most of its mass appeared over the bubble's face and the morph read as starting from the centre. It now buds at the rim — a small bump centred at 0.94r, less than half the old size, straddling the bubble's outline — and the goo neck attaches at the surface (0.86r, thinner stem). The droplet swells as it separates, so the first visible change is the bubble's silhouette bulging, not a blob materialising mid-face.
+
+The neck is now a World-of-Goo-style strand (Matt's reference): an hourglass bridge, thick at both attachments and pinched in the middle, the pinch deepening with stretch while the waist wobbles slightly on a decaying spring. It thins quadratically at the end so it snaps off rather than dissolving, and re-forms the same way as the pill retracts home.
+
 ## 2.8.1 — 2026-10-26
 
 The notification peek now morphs organically instead of scaling in: the owning bubble buds a droplet (and squeezes slightly as it pushes it out), the droplet travels to the pill's spot on a tapering goo neck that thins as it arrives, stretches into the pill shape with a soft squash-and-settle overshoot, and only then fades the icon and text in, clipped to the forming shape. Retraction runs the same path in reverse — content fades first, the pill shrinks home into the bubble. The peek spring is lazier (0.5s) so the morph reads; under reduced motion it still simply appears and vanishes.
