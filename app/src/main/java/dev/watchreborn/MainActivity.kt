@@ -46,10 +46,12 @@ import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.View
 import android.view.ViewGroup
 import android.view.Window
 import android.view.WindowInsets
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ScrollView
@@ -83,8 +85,9 @@ class MainActivity : Activity(), SensorEventListener {
     private val audioManager by lazy { getSystemService(AudioManager::class.java) }
     private val sensorManager by lazy { getSystemService(SensorManager::class.java) }
     private val appWidgetManager by lazy { AppWidgetManager.getInstance(this) }
-    private val appWidgetHost by lazy { AppWidgetHost(this, APPWIDGET_HOST_ID) }
-    private var widgetsDialog: Dialog? = null
+    private val appWidgetHost: AppWidgetHost
+        get() = sharedWidgetHost(this)
+    private var rootFrame: FrameLayout? = null
     private val prefs by lazy { getSharedPreferences("watch", Context.MODE_PRIVATE) }
     private var apps: List<App> = emptyList()
     private var battery = -1
@@ -188,6 +191,8 @@ class MainActivity : Activity(), SensorEventListener {
             view.hintsSeen = cur
         }
         view.preferListChanged = { prefs.edit().putBoolean(KEY_LIST, it).apply() }
+        view.onWidgetsPage = { showWidgetsPage() }
+        view.onWidgetsPageClosed = { hideWidgetsPage() }
         view.applyInitialHomeMode()
         view.setOnApplyWindowInsetsListener { v, insets ->
             val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
@@ -196,7 +201,18 @@ class MainActivity : Activity(), SensorEventListener {
             v.invalidate()
             insets
         }
-        setContentView(view)
+        // The Widgets page (1.19.0) is a native overlay above the view,
+        // so the activity content is a frame holding both.
+        val rootFrame = FrameLayout(this)
+        rootFrame.addView(
+            view,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        this.rootFrame = rootFrame
+        setContentView(rootFrame)
         window.setDecorFitsSystemWindows(false)
         onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) {
             handleBack()
@@ -255,6 +271,11 @@ class MainActivity : Activity(), SensorEventListener {
         val now = android.os.SystemClock.uptimeMillis()
         if (now - lastBackHandledMs < 350L) return
         lastBackHandledMs = now
+        // The Widgets page overlay takes Back first (1.19.0).
+        if (widgetsPageVisible()) {
+            hideWidgetsPage()
+            return
+        }
         // If the view didn't consume Back and we are not the default home app,
         // let the user actually leave instead of swallowing the press.
         if (!view.back() && !isDefaultHomeApp()) finish()
@@ -270,7 +291,10 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (Intent.ACTION_MAIN == intent.action && hasWindowFocus()) view.home()
+        if (Intent.ACTION_MAIN == intent.action && hasWindowFocus()) {
+            if (widgetsPageVisible()) hideWidgetsPage()
+            view.home()
+        }
     }
 
     // Back arrives via two paths — the OnBackInvokedCallback registered in
@@ -680,7 +704,7 @@ class MainActivity : Activity(), SensorEventListener {
                 if (apps.isNotEmpty()) pushAppsToView(apps)
             }
             ClusterOption.SYSTEM_WIDGETS -> {
-                openSystemWidgetsPortal()
+                showWidgetsPage()
             }
             ClusterOption.FIXED_NEIGHBORHOODS -> {
                 val next = !view.fixedNeighborhoods
@@ -933,7 +957,7 @@ class MainActivity : Activity(), SensorEventListener {
                         340 -> handleCardAction(CardAction.OPEN_BATTERY)
                         341 -> handleCardAction(CardAction.OPEN_ALARMS)
                         342 -> handleCardAction(CardAction.OPEN_CALENDAR)
-                        345 -> openSystemWidgetsPortal()
+                        345 -> showWidgetsPage()
                         311 -> view.openClusterSheet()
                         312 -> chooseHome()
                     }
@@ -1109,188 +1133,199 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun dpPx(v: Float): Int = (v * resources.displayMetrics.density).toInt()
 
-    private fun openSystemWidgetsPortal() {
-        widgetsDialog?.dismiss()
-        val d = Dialog(this)
-        d.requestWindowFeature(Window.FEATURE_NO_TITLE)
-        d.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+    // ------------------------------------------------------------------
+    // Widgets page (1.19.0): the dock's fourth page. The Smart Stack
+    // surface Matt never opened gave up its slot to a full page of real
+    // Android system widgets, hosted with the same AppWidgetHost
+    // pick/configure flow as the old Cluster Options portal dialog —
+    // which this page replaces. The page is a native overlay above the
+    // view that stops above the dock, so the dock stays live: tapping
+    // any other segment leaves the page (see WatchView's dock taps),
+    // and Back / Home close it too.
+    // ------------------------------------------------------------------
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dpPx(18f), dpPx(20f), dpPx(18f), dpPx(18f))
-            background = GradientDrawable().apply {
-                setColor(Color.rgb(22, 24, 30))
-                cornerRadius = dpPx(26f).toFloat()
-                setStroke(dpPx(1.5f), view.accent)
-            }
+    private var widgetsPage: FrameLayout? = null
+    private var widgetsListCol: LinearLayout? = null
+
+    private fun widgetsPageVisible(): Boolean = widgetsPage?.visibility == View.VISIBLE
+
+    private fun showWidgetsPage() {
+        val page = widgetsPage ?: buildWidgetsPage().also { widgetsPage = it }
+        if (page.parent == null) {
+            rootFrame?.addView(page)
         }
+        populateWidgetsPage()
+        page.visibility = View.VISIBLE
+        view.widgetsPageOpen = true
+        view.toFace()
+    }
 
+    private fun hideWidgetsPage() {
+        widgetsPage?.visibility = View.GONE
+        view.widgetsPageOpen = false
+    }
+
+    private fun buildWidgetsPage(): FrameLayout {
+        val frame = FrameLayout(this).apply {
+            setBackgroundColor(Color.rgb(10, 11, 14))
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ).apply { bottomMargin = dpPx(118f) }
+            visibility = View.GONE
+            // Swallow touches so the surfaces underneath stay inert.
+            isClickable = true
+        }
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpPx(18f), dpPx(46f), dpPx(18f), dpPx(14f))
+        }
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         val title = TextView(this).apply {
-            text = "🧩 Android System Widgets"
-            textSize = 17f
+            text = "🧩 Widgets"
+            textSize = 19f
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
             setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER_HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
-        root.addView(title)
+        val addBtn = TextView(this).apply {
+            text = "＋ Add"
+            textSize = 13.5f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.BLACK)
+            gravity = Gravity.CENTER
+            setPadding(dpPx(16f), dpPx(9f), dpPx(16f), dpPx(9f))
+            background = GradientDrawable().apply {
+                setColor(view.accent)
+                cornerRadius = dpPx(20f).toFloat()
+            }
+            setOnClickListener { launchWidgetPicker() }
+        }
+        titleRow.addView(title)
+        titleRow.addView(addBtn)
+        col.addView(titleRow)
 
         val sub = TextView(this).apply {
-            text = "Host real interactive Android widgets inside Orbital"
+            text = "Real Android widgets, hosted inside Orbital"
             textSize = 11.5f
             setTextColor(Color.rgb(180, 185, 195))
-            gravity = Gravity.CENTER_HORIZONTAL
             setPadding(0, dpPx(4f), 0, dpPx(12f))
         }
-        root.addView(sub)
+        col.addView(sub)
 
         val scroll = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                (resources.displayMetrics.heightPixels * 0.56f).toInt(),
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f,
             )
         }
         val listCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
+        widgetsListCol = listCol
         scroll.addView(listCol)
-        root.addView(scroll)
+        col.addView(scroll)
+        frame.addView(col)
+        return frame
+    }
 
-        fun populateWidgets() {
-            listCol.removeAllViews()
-            val ids = savedWidgetIds().toMutableList()
-            val validIds = ArrayList<Int>()
-            for (id in ids) {
-                val info = appWidgetManager.getAppWidgetInfo(id)
-                if (info == null) {
+    private fun populateWidgetsPage() {
+        val listCol = widgetsListCol ?: return
+        listCol.removeAllViews()
+        val ids = savedWidgetIds().toMutableList()
+        val validIds = ArrayList<Int>()
+        for (id in ids) {
+            val info = appWidgetManager.getAppWidgetInfo(id)
+            if (info == null) {
+                runCatching { appWidgetHost.deleteAppWidgetId(id) }
+                continue
+            }
+            validIds += id
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dpPx(12f), dpPx(10f), dpPx(12f), dpPx(12f))
+                background = GradientDrawable().apply {
+                    setColor(Color.rgb(34, 36, 44))
+                    cornerRadius = dpPx(18f).toFloat()
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply { bottomMargin = dpPx(10f) }
+            }
+            val hdr = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val lbl = TextView(this).apply {
+                text = info.loadLabel(packageManager) ?: "App Widget"
+                textSize = 12.5f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(view.accent)
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            val rem = TextView(this).apply {
+                text = "✕ Remove"
+                textSize = 11f
+                setTextColor(Color.rgb(255, 100, 100))
+                setPadding(dpPx(8f), dpPx(4f), dpPx(8f), dpPx(4f))
+                setOnClickListener {
                     runCatching { appWidgetHost.deleteAppWidgetId(id) }
-                    continue
+                    saveWidgetIds(savedWidgetIds().filter { it != id })
+                    populateWidgetsPage()
                 }
-                validIds += id
-                val card = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(dpPx(12f), dpPx(10f), dpPx(12f), dpPx(12f))
-                    background = GradientDrawable().apply {
-                        setColor(Color.rgb(34, 36, 44))
-                        cornerRadius = dpPx(18f).toFloat()
-                    }
-                    layoutParams = LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ).apply { bottomMargin = dpPx(10f) }
+            }
+            hdr.addView(lbl)
+            hdr.addView(rem)
+            card.addView(hdr)
+            runCatching {
+                val hv = appWidgetHost.createView(this, id, info)
+                hv.setAppWidget(id, info)
+                val minH = info.minHeight.coerceAtLeast(dpPx(110f))
+                card.addView(
+                    hv,
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, minH).apply {
+                        topMargin = dpPx(6f)
+                    },
+                )
+                // Report our size like a launcher does (1.19.1). Some
+                // providers — the DeskClock digital clock is one — only
+                // (re)push their content in response to the options
+                // callback; without it their card stayed blank here
+                // while simpler widgets rendered fine.
+                val dm = resources.displayMetrics
+                val wDp = ((dm.widthPixels / dm.density) - 60f).toInt().coerceAtLeast(40)
+                val hDp = (minH / dm.density).toInt().coerceAtLeast(40)
+                val opts = android.os.Bundle().apply {
+                    putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, wDp)
+                    putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, wDp)
+                    putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, hDp)
+                    putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, hDp)
                 }
-
-                val hdr = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                }
-                val lbl = TextView(this).apply {
-                    text = info.loadLabel(packageManager) ?: "App Widget"
-                    textSize = 12.5f
-                    typeface = Typeface.DEFAULT_BOLD
-                    setTextColor(view.accent)
-                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                }
-                val rem = TextView(this).apply {
-                    text = "✕ Remove"
+                runCatching { appWidgetManager.updateAppWidgetOptions(id, opts) }
+            }.onFailure {
+                val err = TextView(this).apply {
+                    text = "Widget preview unavailable"
                     textSize = 11f
-                    setTextColor(Color.rgb(255, 100, 100))
-                    setPadding(dpPx(8f), dpPx(4f), dpPx(8f), dpPx(4f))
-                    setOnClickListener {
-                        runCatching { appWidgetHost.deleteAppWidgetId(id) }
-                        saveWidgetIds(savedWidgetIds().filter { it != id })
-                        populateWidgets()
-                    }
+                    setTextColor(Color.GRAY)
                 }
-                hdr.addView(lbl)
-                hdr.addView(rem)
-                card.addView(hdr)
-
-                runCatching {
-                    val hv = appWidgetHost.createView(applicationContext, id, info)
-                    hv.setAppWidget(id, info)
-                    val minH = info.minHeight.coerceAtLeast(dpPx(110f))
-                    card.addView(
-                        hv,
-                        LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, minH).apply {
-                            topMargin = dpPx(6f)
-                        },
-                    )
-                }.onFailure {
-                    val err = TextView(this).apply {
-                        text = "Widget preview unavailable"
-                        textSize = 11f
-                        setTextColor(Color.GRAY)
-                    }
-                    card.addView(err)
-                }
-                listCol.addView(card)
+                card.addView(err)
             }
-            if (validIds.size != ids.size) saveWidgetIds(validIds)
-
-            if (validIds.isEmpty()) {
-                val empty = TextView(this).apply {
-                    text = "No Android system widgets added yet.\n\nTap '+ Add Android Widget' below to pick any Clock, Weather, Calendar, Music, or third-party widget installed on your phone!"
-                    textSize = 12.5f
-                    setTextColor(Color.rgb(200, 205, 215))
-                    gravity = Gravity.CENTER
-                    setPadding(dpPx(16f), dpPx(36f), dpPx(16f), dpPx(36f))
-                }
-                listCol.addView(empty)
-            }
+            listCol.addView(card)
         }
-
-        populateWidgets()
-
-        val btnRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(0, dpPx(12f), 0, 0)
+        if (validIds.size != ids.size) saveWidgetIds(validIds)
+        if (validIds.isEmpty()) {
+            val empty = TextView(this).apply {
+                text = "No widgets here yet.\n\nTap '＋ Add' above to put any Clock, Weather, Calendar, Music, or third-party widget on this page."
+                textSize = 12.5f
+                setTextColor(Color.rgb(200, 205, 215))
+                gravity = Gravity.CENTER
+                setPadding(dpPx(16f), dpPx(36f), dpPx(16f), dpPx(36f))
+            }
+            listCol.addView(empty)
         }
-
-        val addBtn = TextView(this).apply {
-            text = "＋ Add Android Widget"
-            textSize = 13.5f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.BLACK)
-            gravity = Gravity.CENTER
-            setPadding(dpPx(18f), dpPx(10f), dpPx(18f), dpPx(10f))
-            background = GradientDrawable().apply {
-                setColor(view.accent)
-                cornerRadius = dpPx(20f).toFloat()
-            }
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dpPx(8f)
-            }
-            setOnClickListener {
-                launchWidgetPicker()
-            }
-        }
-
-        val closeBtn = TextView(this).apply {
-            text = "Done"
-            textSize = 13.5f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            setPadding(dpPx(18f), dpPx(10f), dpPx(18f), dpPx(10f))
-            background = GradientDrawable().apply {
-                setColor(Color.rgb(52, 54, 62))
-                cornerRadius = dpPx(20f).toFloat()
-            }
-            setOnClickListener { d.dismiss() }
-        }
-
-        btnRow.addView(addBtn)
-        btnRow.addView(closeBtn)
-        root.addView(btnRow)
-
-        d.setContentView(root)
-        d.window?.setLayout(
-            (resources.displayMetrics.widthPixels * 0.92f).toInt(),
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-        )
-        widgetsDialog = d
-        d.show()
     }
 
     @Suppress("DEPRECATION")
@@ -1337,12 +1372,29 @@ class MainActivity : Activity(), SensorEventListener {
     private fun finishAddWidget(widgetId: Int) {
         val updated = (savedWidgetIds() + widgetId).distinct()
         saveWidgetIds(updated)
-        openSystemWidgetsPortal()
+        showWidgetsPage()
     }
 
     private companion object {
         const val TAG = "WatchReborn"
         const val APPWIDGET_HOST_ID = 2048
+
+        // One AppWidgetHost for the whole process (1.19.1). The host
+        // used to be a per-activity lazy, so a second MainActivity
+        // instance (recreate, stacked HOME intent) built a second host
+        // object: the service then delivered widget views to whichever
+        // host had listened last, while the Widgets page registered
+        // its views with another — and widgets rendered blank. A
+        // single shared host keeps allocation, binding, callbacks and
+        // hosted views on the one object.
+        @Volatile
+        private var sharedHost: AppWidgetHost? = null
+
+        fun sharedWidgetHost(context: Context): AppWidgetHost =
+            sharedHost ?: synchronized(this) {
+                sharedHost ?: AppWidgetHost(context.applicationContext, APPWIDGET_HOST_ID)
+                    .also { sharedHost = it }
+            }
         const val REQ_PICK_APPWIDGET = 401
         const val REQ_CREATE_APPWIDGET = 402
         const val KEY_ACCENT = "accent"

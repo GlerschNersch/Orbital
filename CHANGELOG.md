@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.19.1 — 2026-10-26
+
+- Fix some widgets rendering blank on the new Widgets page (the
+  DeskClock digital clock, while simpler widgets rendered fine):
+  the page now reports each widget's size to its provider the way
+  launchers do, and the widget host is one shared instance for the
+  whole app instead of one per activity.
+
+## 1.19.0 — 2026-10-26
+
+- **The Stack page is now a Widgets page** — the Smart Stack's dock
+  slot now opens a full page of real Android system widgets (Clock,
+  Weather, Calendar, Music, any third-party widget). Add widgets
+  with the ＋ Add button, remove them from their card header, and
+  leave with the dock, Back, or Home. This replaces the old
+  widgets dialog behind Cluster Options; that menu entry now opens
+  the page too. Your saved widgets carry over.
+
 ## 1.18.0 — 2026-10-26
 
 - **The cluster centre now follows what you actually use lately** —

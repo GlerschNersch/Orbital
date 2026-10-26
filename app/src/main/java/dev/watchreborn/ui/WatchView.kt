@@ -293,6 +293,14 @@ class WatchView(
     /** One-time coach hints: ids already seen (persisted by the activity). */
     var hintsSeen: Set<String> = emptySet()
     var onHintSeen: (String) -> Unit = {}
+
+    // Widgets page (1.19.0): a native overlay owned by MainActivity that
+    // replaces the Smart Stack as the dock's fourth page. The view only
+    // tracks that it is open (dock highlight + dock taps stay live under
+    // the overlay); MainActivity shows and hides the overlay itself.
+    var onWidgetsPage: () -> Unit = {}
+    var onWidgetsPageClosed: () -> Unit = {}
+    var widgetsPageOpen: Boolean = false
     private val coachHintRect = RectF()
     private var coachHintId: String? = null
 
@@ -4395,11 +4403,12 @@ class WatchView(
 
     /**
      * Bottom navigation dock (1.6.0): one floating bar, four segments —
-     * Face / Cluster / List / Stack — replacing the single List/Grid pill.
-     * Tapping Cluster while already in the cluster recentres the field.
-     * Restyled 1.12.0 as a light bar with a purple pill highlight on the
-     * active segment (inactive segments are icon-only), and it now also
-     * shows on the Face.
+     * Face / Cluster / List / Widgets — replacing the single List/Grid pill.
+     * (The fourth segment was the Smart Stack until 1.19.0, when Matt
+     * repurposed its slot as a Widgets page.) Tapping Cluster while
+     * already in the cluster recentres the field. Restyled 1.12.0 as a
+     * light bar with a purple pill highlight on the active segment
+     * (inactive segments are icon-only), and it now also shows on the Face.
      */
     private fun drawDock(c: Canvas, w: Float, bottom: Float, alpha: Float) {
         if (alpha <= 0.01f) {
@@ -4422,12 +4431,13 @@ class WatchView(
         fill.color = Color.argb((alpha * 246).toInt(), 248, 248, 252)
         c.drawRoundRect(pill, dp(24f), dp(24f), fill)
         val activeSeg = when {
+            widgetsPageOpen -> DOCK_STACK
             apps.target < 0.5f -> DOCK_FACE
             list.target >= 0.5f -> DOCK_LIST
             grid.target >= 0.5f -> DOCK_CLUSTER
             else -> DOCK_FACE
         }
-        val labels = arrayOf("Face", "Cluster", "List", "Stack")
+        val labels = arrayOf("Face", "Cluster", "List", "Widgets")
         for (i in 0 until 4) {
             val seg = RectF(pill.left + i * segW, py, pill.left + (i + 1) * segW, py + ph)
             dockSegs[i].set(seg)
@@ -4485,17 +4495,18 @@ class WatchView(
                 }
             }
             DOCK_STACK -> {
-                val side = s * 0.54f
-                for (k in 2 downTo 0) {
-                    val ox = cx - side / 2 + k * s * 0.17f
-                    val oy = cy - side / 2 - k * s * 0.17f + s * 0.17f
-                    val rr = RectF(ox, oy, ox + side, oy + side)
-                    if (k == 0) {
-                        fill.color = withAlpha(color, 70)
-                        c.drawRoundRect(rr, dp(3f), dp(3f), fill)
-                        fill.color = color
-                    }
-                    c.drawRoundRect(rr, dp(3f), dp(3f), stroke)
+                // Widgets glyph (1.19.0): a 2x2 grid of rounded tiles,
+                // the first one filled — the classic widget-grid mark.
+                val cell = s * 0.36f
+                val gap = s * 0.10f
+                val x0 = cx - cell - gap / 2f
+                val y0 = cy - cell - gap / 2f
+                for (r in 0..1) for (col in 0..1) {
+                    val left = x0 + col * (cell + gap)
+                    val top = y0 + r * (cell + gap)
+                    val rr = RectF(left, top, left + cell, top + cell)
+                    if (r == 0 && col == 0) c.drawRoundRect(rr, dp(3f), dp(3f), fill)
+                    else c.drawRoundRect(rr, dp(3f), dp(3f), stroke)
                 }
             }
         }
@@ -5617,7 +5628,7 @@ class WatchView(
                     }
                     DOCK_STACK -> {
                         if (folderIn.target == 1f) closeFolder()
-                        openStack()
+                        onWidgetsPage()
                     }
                 }
                 performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
@@ -5834,6 +5845,14 @@ class WatchView(
         if (!pill.isEmpty && pill.contains(x, y)) {
             val seg = dockSegs.indexOfFirst { it.contains(x, y) }
             performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+            if (widgetsPageOpen) {
+                // The Widgets page overlay is up (1.19.0) and the dock
+                // stays live beneath it: tapping Widgets again stays,
+                // Face just closes the page, the rest close and navigate.
+                if (seg == DOCK_STACK) return
+                onWidgetsPageClosed()
+                if (seg == DOCK_FACE) return
+            }
             when (seg) {
                 DOCK_FACE -> Unit // already here
                 DOCK_CLUSTER -> if (honeycombHome) openFullHoneycomb() else { openApps(); grid.target = 1f }
@@ -5842,7 +5861,7 @@ class WatchView(
                     list.target = 1f
                     preferListChanged(true)
                 }
-                DOCK_STACK -> openStack()
+                DOCK_STACK -> onWidgetsPage()
             }
             return
         }
