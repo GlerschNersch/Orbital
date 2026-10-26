@@ -47,6 +47,7 @@ import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.Window
@@ -1280,6 +1281,7 @@ class MainActivity : Activity(), SensorEventListener {
                 setPadding(dpPx(8f), dpPx(4f), dpPx(8f), dpPx(4f))
                 setOnClickListener {
                     runCatching { appWidgetHost.deleteAppWidgetId(id) }
+                    prefs.edit().remove("appwidget_h_$id").apply()
                     saveWidgetIds(savedWidgetIds().filter { it != id })
                     populateWidgetsPage()
                 }
@@ -1287,31 +1289,20 @@ class MainActivity : Activity(), SensorEventListener {
             hdr.addView(lbl)
             hdr.addView(rem)
             card.addView(hdr)
+            val heightDp = widgetHeightDp(id, info)
             runCatching {
                 val hv = appWidgetHost.createView(this, id, info)
                 hv.setAppWidget(id, info)
-                val minH = info.minHeight.coerceAtLeast(dpPx(150f))
                 card.addView(
                     hv,
-                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, minH).apply {
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, dpPx(heightDp.toFloat()),
+                    ).apply {
                         topMargin = dpPx(6f)
                     },
                 )
-                // Report our size like a launcher does (1.19.1). Some
-                // providers — the DeskClock digital clock is one — only
-                // (re)push their content in response to the options
-                // callback; without it their card stayed blank here
-                // while simpler widgets rendered fine.
-                val dm = resources.displayMetrics
-                val wDp = ((dm.widthPixels / dm.density) - 60f).toInt().coerceAtLeast(40)
-                val hDp = (minH / dm.density).toInt().coerceAtLeast(40)
-                val opts = android.os.Bundle().apply {
-                    putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, wDp)
-                    putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, wDp)
-                    putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, hDp)
-                    putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, hDp)
-                }
-                runCatching { appWidgetManager.updateAppWidgetOptions(id, opts) }
+                sendWidgetSize(id, heightDp)
+                card.addView(buildResizeHandle(id, hv))
             }.onFailure {
                 val err = TextView(this).apply {
                     text = "Widget preview unavailable"
@@ -1333,6 +1324,83 @@ class MainActivity : Activity(), SensorEventListener {
             }
             listCol.addView(empty)
         }
+    }
+
+    /** A widget's card height in dp: the height Matt dragged it to
+     *  (1.21.0), else the provider's minimum with a 150dp floor so
+     *  content isn't cropped. (AppWidgetProviderInfo sizes are dp.) */
+    private fun widgetHeightDp(id: Int, info: AppWidgetProviderInfo): Int {
+        val saved = prefs.getInt("appwidget_h_$id", 0)
+        return if (saved > 0) saved else info.minHeight.coerceAtLeast(150)
+    }
+
+    /** Report our size like a launcher does (1.19.1). Some providers —
+     *  the DeskClock digital clock is one — only (re)push their content
+     *  in response to the options callback; without it their card
+     *  stayed blank here while simpler widgets rendered fine. */
+    private fun sendWidgetSize(id: Int, heightDp: Int) {
+        val dm = resources.displayMetrics
+        val wDp = ((dm.widthPixels / dm.density) - 60f).toInt().coerceAtLeast(40)
+        val opts = android.os.Bundle().apply {
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, wDp)
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, wDp)
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, heightDp)
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, heightDp)
+        }
+        runCatching { appWidgetManager.updateAppWidgetOptions(id, opts) }
+    }
+
+    /** Bottom-edge drag handle (1.21.0, Matt's pick): a slim grip at
+     *  the foot of each widget card. Dragging it resizes the card live;
+     *  on release the height is remembered per widget and reported to
+     *  the provider so it re-lays itself out at the new size. */
+    private fun buildResizeHandle(id: Int, hv: View): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dpPx(24f),
+            )
+        }
+        val grip = View(this).apply {
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(110, 115, 125))
+                cornerRadius = dpPx(3f).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(dpPx(44f), dpPx(5f))
+        }
+        row.addView(grip)
+        var startY = 0f
+        var startH = 0
+        row.setOnTouchListener { v, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startY = ev.rawY
+                    startH = if (hv.height > 0) hv.height else hv.layoutParams.height
+                    v.parent?.requestDisallowInterceptTouchEvent(true)
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val newH = (startH + (ev.rawY - startY).toInt())
+                        .coerceIn(dpPx(110f), dpPx(560f))
+                    val lp = hv.layoutParams
+                    if (lp.height != newH) {
+                        lp.height = newH
+                        hv.layoutParams = lp
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    val hDp = (hv.height / resources.displayMetrics.density)
+                        .toInt().coerceAtLeast(1)
+                    prefs.edit().putInt("appwidget_h_$id", hDp).apply()
+                    sendWidgetSize(id, hDp)
+                    true
+                }
+                else -> true
+            }
+        }
+        return row
     }
 
     // ------------------------------------------------------------------

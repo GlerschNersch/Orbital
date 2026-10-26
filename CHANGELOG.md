@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.21.0 — 2026-10-26
+
+- **Drag to resize widgets.** Every widget card on the Widgets
+  page now has a grip on its bottom edge — drag it up or down to
+  resize the card. The size is remembered per widget, and the
+  widget is told its new size so it re-lays itself out (a schedule
+  shows more events, a clock gets bigger).
+
 ## 1.20.0 — 2026-10-26
 
 - **Widget picker with previews.** The ＋ Add button now opens
