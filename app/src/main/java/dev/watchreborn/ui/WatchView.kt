@@ -152,11 +152,29 @@ class WatchView(
             }
         }
         // The Cluster sheet's rows (1.8.0), from the rect/label lists the
-        // sheet draw builds. The topology picker opens over the sheet and
-        // stays unmapped, as do the widget pod and Control Center: expose
-        // nothing there rather than nodes for visually covered controls.
+        // sheet draw builds. The topology picker opens over the sheet: its
+        // rows come from topologyRowRects, plus the Back pill (1.9.1).
         if (clusterSheet.target > 0f) {
-            if (topologyPickerOpen) return emptyList()
+            if (topologyPickerOpen) {
+                val out = ArrayList<WatchAccessibilityProvider.Node>()
+                for ((rect, topo) in topologyRowRects) {
+                    if (rect.isEmpty) continue
+                    val label = topo.fullTitle + if (topo == clusterTopology) ", current layout" else ""
+                    out += WatchAccessibilityProvider.Node(
+                        "topo:" + topo.name, label,
+                        Rect(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt()),
+                        rect.centerX(), rect.centerY(),
+                    )
+                }
+                if (!pickerBackRect.isEmpty) {
+                    out += WatchAccessibilityProvider.Node(
+                        "topo:back", "Back",
+                        Rect(pickerBackRect.left.toInt(), pickerBackRect.top.toInt(), pickerBackRect.right.toInt(), pickerBackRect.bottom.toInt()),
+                        pickerBackRect.centerX(), pickerBackRect.centerY(),
+                    )
+                }
+                return out
+            }
             return sheetRowLabels.mapIndexed { i, (rect, label) ->
                 WatchAccessibilityProvider.Node(
                     "sheet:$i", label,
@@ -165,7 +183,43 @@ class WatchView(
                 )
             }
         }
-        if (widgetIn.target > 0f || controlIn.value > 0.5f) return emptyList()
+        // Control Center tiles (1.9.1): the same action rects the touch
+        // handler uses, deduped per action (last rect wins, as in tap()).
+        if (controlIn.value > 0.5f) {
+            val byAction = LinkedHashMap<ControlAction, RectF>()
+            for ((rect, act) in controlCenter.actionRects) {
+                if (!rect.isEmpty) byAction[act] = rect
+            }
+            return byAction.map { (act, rect) ->
+                WatchAccessibilityProvider.Node(
+                    "control:" + act.name, controlCenter.spokenLabel(act),
+                    Rect(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt()),
+                    rect.centerX(), rect.centerY(),
+                )
+            }
+        }
+        // Widget pod buttons (1.9.1): labels captured by the pod draw, plus
+        // the header pill that closes the pod.
+        if (widgetIn.target > 0f) {
+            val out = ArrayList<WatchAccessibilityProvider.Node>()
+            if (!folderHeaderRect.isEmpty) {
+                out += WatchAccessibilityProvider.Node(
+                    "pod:close", "Close",
+                    Rect(folderHeaderRect.left.toInt(), folderHeaderRect.top.toInt(), folderHeaderRect.right.toInt(), folderHeaderRect.bottom.toInt()),
+                    folderHeaderRect.centerX(), folderHeaderRect.centerY(),
+                )
+            }
+            for ((i, pair) in widgetActionLabels.withIndex()) {
+                val (rect, label) = pair
+                if (rect.isEmpty || label.isBlank()) continue
+                out += WatchAccessibilityProvider.Node(
+                    "pod:$i", label,
+                    Rect(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt()),
+                    rect.centerX(), rect.centerY(),
+                )
+            }
+            return out
+        }
         if (stackIn.value > 0.5f) {
             val out = ArrayList<WatchAccessibilityProvider.Node>()
             for ((rect, card) in stack.cardRects) {
@@ -643,6 +697,7 @@ class WatchView(
      *  expands the set-and-forget rows. Session state, not a pref. */
     private var sheetExpanded = false
     private val widgetActionRects = ArrayList<Pair<RectF, String>>()
+    private val widgetActionLabels = ArrayList<Pair<RectF, String>>()
 
     /** Alphabet scrubber state in List View. */
     private var scrubbingLetter: Char? = null
@@ -3394,6 +3449,25 @@ class WatchView(
         drawFolderHeaderButtons(c, folder, aInt)
     }
 
+    /** TalkBack label for a widget-pod button: the drawn label minus its
+     *  leading emoji, with spoken forms for the glyph-only buttons. */
+    private fun podSpokenLabel(actionId: String, drawn: String): String {
+        when (actionId) {
+            "MEDIA_PREV" -> return "Previous track"
+            "MEDIA_NEXT" -> return "Next track"
+        }
+        val presetSec = actionId.removePrefix("TIMER_").toIntOrNull()
+        if (actionId.startsWith("TIMER_") && presetSec != null) {
+            val mins = presetSec / 60
+            return if (mins == 1) "1 minute timer preset" else "$mins minutes timer preset"
+        }
+        val cleaned = drawn.filter { it.isLetterOrDigit() || it == ' ' || it == '-' }
+            .replace(Regex(" +"), " ").trim()
+        return cleaned.ifEmpty {
+            actionId.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }
+        }
+    }
+
     /** #5: Draws an interactive Blooming Widget Pod at the center of the parted honeycomb! */
     private fun drawBloomedWidgetPod(
         c: Canvas,
@@ -3413,6 +3487,7 @@ class WatchView(
         val tint = widget.kind.tint
 
         widgetActionRects.clear()
+        widgetActionLabels.clear()
 
         // Outer glass pod platter + glowing perimeter ring
         fill.color = Color.argb((aInt * 0.94f).toInt(), 18, 20, 26)
@@ -3440,6 +3515,7 @@ class WatchView(
             val ell = TextUtils.ellipsize(label, text, bw - dp(12f), TextUtils.TruncateAt.END).toString()
             c.drawText(ell, r.centerX() - text.measureText(ell) / 2, r.centerY() + text.textSize * 0.35f, text)
             widgetActionRects += r to actionId
+            widgetActionLabels += r to podSpokenLabel(actionId, label)
         }
 
         when (widget.kind) {

@@ -51,6 +51,20 @@ class ControlCenter {
     val actionRects = ArrayList<Pair<RectF, ControlAction>>()
     val volumeBarRect = RectF()
 
+    /** TalkBack label for a control, spoken with its live state. */
+    fun spokenLabel(action: ControlAction): String = when (action) {
+        ControlAction.WIFI -> "Wi-Fi, " + if (state.wifiOn) "on" else "off"
+        ControlAction.BLUETOOTH -> "Bluetooth, " + if (state.bluetoothOn) "on" else "off"
+        ControlAction.TORCH -> "Flashlight, " + if (state.torchOn || state.screenFlashlight) "on" else "off"
+        ControlAction.RINGER -> "Sound, " + when (state.ringerMode) { 0 -> "silent"; 1 -> "vibrate"; else -> "ring" }
+        ControlAction.NOTIFICATIONS -> if (state.notifCount > 0) "Notifications, ${state.notifCount} active" else "Open notifications shade"
+        ControlAction.LOCK -> "Lock screen"
+        ControlAction.FOLDERS -> "Folders, " + if (state.autoFolders) "automatic" else "off"
+        ControlAction.VOLUME_DOWN -> "Volume down"
+        ControlAction.VOLUME_UP -> "Volume up"
+        ControlAction.SET_HOME -> "Set as default launcher"
+    }
+
     fun draw(c: Canvas, w: Float, h: Float, top: Float, bottom: Float, now: Calendar, battery: Int, charging: Boolean, t: Float) {
         if (t <= 0.001f) return
         val a = (t * 255).toInt().coerceIn(0, 255)

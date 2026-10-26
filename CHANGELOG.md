@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.9.1 — 2026-10-25
+
+- **TalkBack coverage is complete** — the three surfaces that still had
+  no accessibility nodes now expose them, all activating through the
+  real tap handler: the topology picker (each design, the current one
+  announced, plus Back), the widget pod's buttons (spoken labels
+  captured from the pod's own draw — "Play", "Previous track", "1
+  minute timer preset", … — plus the Close header), and the Control
+  Center's tiles (Wi-Fi, Bluetooth, Flashlight, Sound, Folders,
+  Notifications, volume and more, each spoken with its live state).
+
 ## 1.9.0 — 2026-10-25
 
 - **The Cluster Options sheet is half the size** — it had grown to 17

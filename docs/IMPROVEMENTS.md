@@ -160,6 +160,19 @@ The whole 0.2.1 ideas backlog, built:
   the time string's ink spans 91.5% of the width against the 92% budget;
   the shrink-to-fit holds and nothing clips.
 
+## Done in 1.9.1 (2026-10-25, night)
+
+- **TalkBack coverage completed** — the topology picker (rows + Back,
+  current layout announced), the widget pod (button nodes from labels
+  captured in the pod draw via podSpokenLabel — emoji stripped, spoken
+  forms for glyph-only buttons and timer presets; plus the Close
+  header), and the Control Center (nodes from controlCenter.actionRects
+  deduped per action, labels from a new ControlCenter.spokenLabel with
+  live state). All activate through the real tap handler. Emulator
+  check: TalkBack enabled with Control Center open — app stable, no
+  crash; uiautomator still doesn't serialize virtual children on this
+  image, so the service-level focus pass remains a real-device item.
+
 ## Done in 1.9.0 (2026-10-25, night — Matt's "the cluster options are getting big")
 
 - **Cluster Options sheet simplified** — Matt flagged the sheet had grown

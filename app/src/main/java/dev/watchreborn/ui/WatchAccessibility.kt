@@ -26,8 +26,9 @@ import android.view.accessibility.AccessibilityNodeProvider
  * folder, widget pod, card action) rather than a parallel implementation.
  *
  * The Context Card rows and Cluster sheet rows are covered too (1.8.0),
- * from the same rect lists their draws build. Not covered yet: the topology
- * picker, widget pod and Control Center keep only the host node.
+ * from the same rect lists their draws build. The topology picker, widget
+ * pod buttons and Control Center tiles followed in 1.9.1, from their own
+ * rect lists — every interactive surface now exposes nodes.
  */
 class WatchAccessibilityProvider(
     private val host: View,
