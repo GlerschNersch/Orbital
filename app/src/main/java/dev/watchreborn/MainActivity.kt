@@ -160,10 +160,7 @@ class MainActivity : Activity(), SensorEventListener {
         view.accent = prefs.getInt(KEY_ACCENT, ACCENTS[0].second)
         view.autoFolders = prefs.getBoolean(KEY_FOLDERS, true)
         view.bloomFolders = prefs.getBoolean(KEY_BLOOM, true)
-        view.quickSnipe = prefs.getBoolean(KEY_QUICK_SNIPE, false)
-        view.liveWidgets = prefs.getBoolean(KEY_LIVE_WIDGETS, true)
         view.fixedNeighborhoods = prefs.getBoolean(KEY_FIXED_NEIGHBORHOODS, true)
-        view.bubblePhysics = prefs.getBoolean(KEY_BUBBLE_PHYSICS, true)
         view.perLayoutPins = prefs.getBoolean(KEY_PER_LAYOUT_PINS, false)
         view.usageGrowth = prefs.getBoolean(KEY_USAGE_GROWTH, true)
         val savedTopo = prefs.getString(KEY_CLUSTER_TOPOLOGY, ClusterTopology.HONEYCOMB.name)
@@ -554,7 +551,7 @@ class MainActivity : Activity(), SensorEventListener {
         val px = iconPx
         val fixedNeighborhoods = view.fixedNeighborhoods
         val coreClockHub = true
-        val liveWidgets = view.liveWidgets
+        val liveWidgets = false // 2.5.0: Live Grid Widgets setting removed — frozen at Matt's value (off); builders keep the parameter so it can return later
         loader.execute {
             val scope = pinScope()
             val rawUse = repo.byUse(list)
@@ -653,11 +650,6 @@ class MainActivity : Activity(), SensorEventListener {
                 // Handled inside WatchView: the sheet row opens the topology picker
                 // and selections persist via handleTopologySelected.
             }
-            ClusterOption.BUBBLE_PHYSICS -> {
-                val next = !view.bubblePhysics
-                prefs.edit().putBoolean(KEY_BUBBLE_PHYSICS, next).apply()
-                view.bubblePhysics = next
-            }
             ClusterOption.UNHIDE_FOLDERS -> {
                 repo.clearHiddenGroups()
                 if (apps.isNotEmpty()) pushAppsToView(apps)
@@ -679,31 +671,14 @@ class MainActivity : Activity(), SensorEventListener {
                 prefs.edit().putBoolean(KEY_BLOOM, next).apply()
                 view.bloomFolders = next
             }
-            ClusterOption.QUICK_SNIPE -> {
-                val next = !view.quickSnipe
-                prefs.edit().putBoolean(KEY_QUICK_SNIPE, next).apply()
-                view.quickSnipe = next
-            }
             ClusterOption.CONSTELLATION_SEARCH -> {
                 view.startConstellationSearch()
-            }
-            ClusterOption.LIVE_WIDGETS -> {
-                val next = !view.liveWidgets
-                prefs.edit().putBoolean(KEY_LIVE_WIDGETS, next).apply()
-                view.liveWidgets = next
-                if (apps.isNotEmpty()) pushAppsToView(apps)
-            }
-            ClusterOption.SYSTEM_WIDGETS -> {
-                showWidgetsPage()
             }
             ClusterOption.FIXED_NEIGHBORHOODS -> {
                 val next = !view.fixedNeighborhoods
                 prefs.edit().putBoolean(KEY_FIXED_NEIGHBORHOODS, next).apply()
                 view.fixedNeighborhoods = next
                 if (apps.isNotEmpty()) pushAppsToView(apps)
-            }
-            ClusterOption.AUTO_FOLDERS -> {
-                handleControlAction(ControlAction.FOLDERS, null)
             }
             ClusterOption.SET_DEFAULT_HOME -> {
                 chooseHome()
@@ -1663,11 +1638,8 @@ class MainActivity : Activity(), SensorEventListener {
         const val KEY_ACCENT = "accent"
         const val KEY_FOLDERS = "auto_folders"
         const val KEY_BLOOM = "bloom_folders"
-        const val KEY_QUICK_SNIPE = "quick_snipe_opt"
-        const val KEY_LIVE_WIDGETS = "live_widgets"
         const val KEY_FIXED_NEIGHBORHOODS = "fixed_neighborhoods"
         const val KEY_CLUSTER_TOPOLOGY = "cluster_topology"
-        const val KEY_BUBBLE_PHYSICS = "bubble_physics"
         const val KEY_PER_LAYOUT_PINS = "per_layout_pins"
         const val KEY_USAGE_GROWTH = "usage_growth"
         const val KEY_HINTS_SEEN = "hints_seen"

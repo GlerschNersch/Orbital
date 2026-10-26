@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.5.0 — 2026-10-26
+
+Settings declutter — five entries removed, behaviour frozen at
+the values in effect when they were removed:
+
+- **Bubble Physics** — gone; the physics (jello, wake waves,
+  spin momentum, tilt, pool gravity) is simply always on.
+- **Category Clustering** — gone from Settings. It still
+  lives as a toggle in the Control Center.
+- **Mini-Icon Tap** — gone. (It let a tap on one of a folder
+  bubble's outer mini-icons launch that app directly instead
+  of opening the folder.) It was off, so taps open the folder.
+- **Live Grid Widgets** — gone, to revisit later. It was off,
+  so no live pods are placed on the grid; the grid builders
+  still take the flag, so the setting can return as-is.
+- **Android System Widgets** (View / add) — gone from
+  Settings; the Widgets page does the same job. The Clock &
+  Status pod's App Widgets button still opens that page.
+
 ## 2.4.0 — 2026-10-26
 
 - **Settings is a page now, not a pop-up.** It opens as an

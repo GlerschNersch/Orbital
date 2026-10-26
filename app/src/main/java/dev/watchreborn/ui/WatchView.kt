@@ -64,16 +64,11 @@ enum class ClusterTopology(val shortTitle: String, val fullTitle: String, val su
 
 enum class ClusterOption {
     CLUSTER_TOPOLOGY,
-    BUBBLE_PHYSICS,
     PER_LAYOUT_PINS,
     USAGE_GROWTH,
     BLOOM_MODE,
-    QUICK_SNIPE,
     CONSTELLATION_SEARCH,
-    LIVE_WIDGETS,
-    SYSTEM_WIDGETS,
     FIXED_NEIGHBORHOODS,
-    AUTO_FOLDERS,
     SET_DEFAULT_HOME,
     CLEAR_PINS,
     UNHIDE_FOLDERS,
@@ -545,14 +540,6 @@ class WatchView(
     var bloomFolders: Boolean = true
         set(v) { field = v; invalidate() }
 
-    /** #3: True = Tapping the 6 outer mini-icons inside a centered folder launches that app directly; False = any tap opens folder. */
-    var quickSnipe: Boolean = false
-        set(v) { field = v; invalidate() }
-
-    /** #5: True = Places live Media, Control Cluster, and Vitals/Rings bubbles directly on the Honeycomb Grid. */
-    var liveWidgets: Boolean = true
-        set(v) { field = v; invalidate() }
-
     /** #6: True = Fixed Compass Neighborhoods layout; False = Dynamic Usage Spiral layout. */
     var fixedNeighborhoods: Boolean = true
         set(v) { field = v; invalidate() }
@@ -570,10 +557,6 @@ class WatchView(
             }
             invalidate()
         }
-
-    /** True = Elastic Jello / Wake Wave / Rotary Spin Momentum / Tilt Parallax / Billiards Physics enabled. */
-    var bubblePhysics: Boolean = true
-        set(v) { field = v; invalidate() }
 
     /** Rotary angle (radians) & angular momentum (rad/s) for Orbitals, Chrono Bezel, Spiral, and Double Helix. */
     private var orbitalAngle: Float = 0f
@@ -1753,7 +1736,7 @@ class WatchView(
     fun setDeviceTilt(nx: Float, ny: Float) {
         targetTiltX = nx.coerceIn(-1f, 1f)
         targetTiltY = ny.coerceIn(-1f, 1f)
-        if (apps.value > 0f && bubblePhysics && (clusterTopology == ClusterTopology.LIQUID_POOL || hypot(targetTiltX - tiltX, targetTiltY - tiltY) > 0.025f)) {
+        if (apps.value > 0f && (clusterTopology == ClusterTopology.LIQUID_POOL || hypot(targetTiltX - tiltX, targetTiltY - tiltY) > 0.025f)) {
             invalidate()
         }
     }
@@ -1867,7 +1850,7 @@ class WatchView(
             clusterTopology == ClusterTopology.CHRONO_BEZEL ||
             clusterTopology == ClusterTopology.FIBONACCI ||
             clusterTopology == ClusterTopology.DNA_HELIX
-        if (!dragging && isRotary && bubblePhysics) {
+        if (!dragging && isRotary) {
             if (abs(orbitalVelocity) > 0.02f) {
                 val oldTick = (orbitalAngle / 0.30f).roundToInt()
                 orbitalAngle += orbitalVelocity * dt
@@ -1893,8 +1876,6 @@ class WatchView(
                     }
                 }
             }
-        } else if (!bubblePhysics) {
-            orbitalVelocity = 0f
         }
 
         // 4. Elastic Jello / Wake Wave spring-damper simulation per bubble
@@ -1909,7 +1890,7 @@ class WatchView(
         lastPanXForWake = panX.value
         lastPanYForWake = panY.value
 
-        if (bubblePhysics) {
+        run { // Bubble physics is always on since 2.5.0 (setting removed)
             val stiffness = 175f
             val damping = 15.5f
             val maxWake = pitch * 0.42f
@@ -1938,10 +1919,6 @@ class WatchView(
                     wakeDispX[i] = 0f; wakeDispY[i] = 0f; wakeVelX[i] = 0f; wakeVelY[i] = 0f
                 }
             }
-        } else {
-            for (i in 0 until count) {
-                wakeDispX[i] = 0f; wakeDispY[i] = 0f; wakeVelX[i] = 0f; wakeVelY[i] = 0f
-            }
         }
 
         // 5. Zero-G Billiards Pool (`LIQUID_POOL`) multi-body physics & elastic collisions
@@ -1950,7 +1927,7 @@ class WatchView(
             val tankR = PoolMath.tankRadius(pitch)
             val bubbleR = PoolMath.bubbleRadius(count, pitch)
             val minDist = bubbleR * 2.02f
-            val gravScale = if (bubblePhysics) u * 1.45f else 0f
+            val gravScale = u * 1.45f
 
             // Anchor bubble 0 (Core Clock Hub) gently near (0,0) as a central buoy, while all other bubbles float & collide!
             for (i in 0 until count) {
@@ -2313,7 +2290,7 @@ class WatchView(
             }
 
             // Apply Jello / Wake Wave spring displacement & tilt parallax when physics is enabled
-            if (bubblePhysics && !isPool && i in wakeDispX.indices) {
+            if (!isPool && i in wakeDispX.indices) {
                 worldX += wakeDispX[i] * (1f - 0.5f * ov)
                 worldY += wakeDispY[i] * (1f - 0.5f * ov)
                 val ringDist = if (i in gridHexes.indices) {
@@ -3644,19 +3621,14 @@ class WatchView(
             if (sheetExpanded) {
                 add(Triple(ClusterOption.FIXED_NEIGHBORHOODS, "Grid Layout", if (fixedNeighborhoods) "Fixed Compass Neighborhoods" else "Dynamic Usage Spiral"))
             }
-            add(Triple(null, "BEHAVIOR", ""))
-            add(Triple(ClusterOption.BUBBLE_PHYSICS, "Bubble Physics", if (bubblePhysics) "Jello, waves & billiards" else "Off — bubbles sit still"))
             if (sheetExpanded) {
+                add(Triple(null, "BEHAVIOR", ""))
                 add(Triple(ClusterOption.BLOOM_MODE, "Folder Open Style", if (bloomFolders) "Bloom in place" else "Full-screen folder"))
-                add(Triple(ClusterOption.AUTO_FOLDERS, "Category Clustering", if (autoFolders) "Apps grouped by category" else "All apps loose"))
                 add(Triple(ClusterOption.PER_LAYOUT_PINS, "Per-Layout Pins", if (perLayoutPins) "Separate pins per layout" else "One pin set everywhere"))
                 add(Triple(ClusterOption.USAGE_GROWTH, "Usage Growth", if (usageGrowth) "Bubbles grow with use" else "Uniform bubble sizes"))
-                add(Triple(ClusterOption.QUICK_SNIPE, "Mini-Icon Tap", if (quickSnipe) "Outer 6 icons launch" else "Tap opens the folder"))
-                add(Triple(ClusterOption.LIVE_WIDGETS, "Live Grid Widgets", if (liveWidgets) "Media, timer, calendar, vitals" else "Apps & folders only"))
             }
             if (sheetExpanded) {
                 add(Triple(null, "ACTIONS", ""))
-                add(Triple(ClusterOption.SYSTEM_WIDGETS, "Android System Widgets", "View / add app widgets"))
                 add(Triple(ClusterOption.SET_DEFAULT_HOME, "Default Phone Launcher", "Set Orbital as Home app"))
                 if (pinnedItemKeys.isNotEmpty()) {
                     add(Triple(ClusterOption.CLEAR_PINS, "Pinned Hex Slots (${pinnedItemKeys.size})", "Tap to unpin all bubbles"))
@@ -3727,13 +3699,9 @@ class WatchView(
             // so the two kinds of row no longer look identical.
             val toggleOn: Boolean? = when (opt) {
                 ClusterOption.FIXED_NEIGHBORHOODS -> fixedNeighborhoods
-                ClusterOption.BUBBLE_PHYSICS -> bubblePhysics
                 ClusterOption.PER_LAYOUT_PINS -> perLayoutPins
                 ClusterOption.USAGE_GROWTH -> usageGrowth
                 ClusterOption.BLOOM_MODE -> bloomFolders
-                ClusterOption.QUICK_SNIPE -> quickSnipe
-                ClusterOption.LIVE_WIDGETS -> liveWidgets
-                ClusterOption.AUTO_FOLDERS -> autoFolders
                 else -> null
             }
             if (toggleOn != null) {
@@ -5315,20 +5283,7 @@ class WatchView(
             when (item) {
                 is App -> onLaunch(item, RectF(hit.x - hit.r, hit.y - hit.r, hit.x + hit.r, hit.y + hit.r))
                 is WidgetBubble -> openWidgetPod(item)
-                is Folder -> {
-                    val dia = hit.r * 2f
-                    val isCenteredFolder = hypot(hit.x - width / 2f, hit.y - height / 2f) <= unit * 0.22f &&
-                        dia >= unit * Metrics.GRID_CENTER_D * 0.90f
-                    if (quickSnipe && isCenteredFolder && item.apps.size > 1) {
-                        val sniped = findSnipedMiniIcon(item, hit.x, hit.y, dia, x, y)
-                        if (sniped != null) {
-                            performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                            onLaunch(sniped.first, sniped.second)
-                            return
-                        }
-                    }
-                    openFolder(item)
-                }
+                is Folder -> openFolder(item)
             }
             return
         }
@@ -5341,7 +5296,7 @@ class WatchView(
             "CLOCK_CONTROLS" -> openControlCenter()
             "SYS_WIDGETS" -> {
                 closeWidgetPod()
-                onClusterOptionChanged(ClusterOption.SYSTEM_WIDGETS)
+                onWidgetsPage()
             }
             "MEDIA_PREV" -> onCardAction(CardAction.MEDIA_PREV)
             "MEDIA_PLAY" -> onCardAction(CardAction.MEDIA_PLAY_PAUSE)
@@ -5383,38 +5338,6 @@ class WatchView(
         timerEndUptimeMs = SystemClock.uptimeMillis() + timerRemainingMs
         timerRunning = true
         invalidate()
-    }
-
-    /**
-     * #3: Checks if a tap at ([tx], [ty]) inside a closed [folder] bubble centered at ([cx], [cy])
-     * with diameter [dia] targeted one of the 6 outer mini-icons rather than the center open hub.
-     */
-    private fun findSnipedMiniIcon(folder: Folder, cx: Float, cy: Float, dia: Float, tx: Float, ty: Float): Pair<App, RectF>? {
-        val centerDist = hypot(tx - cx, ty - cy)
-        if (centerDist <= dia * 0.20f) return null
-        val orbit = dia * 0.265f
-        val miniR = dia * 0.115f
-        var bestApp: App? = null
-        var bestDist = Float.MAX_VALUE
-        var bestX = cx
-        var bestY = cy
-        val count = minOf(7, folder.apps.size)
-        for (i in 1 until count) {
-            val ang = Math.toRadians((i - 1) * 60.0 - 90.0)
-            val mx = cx + (cos(ang) * orbit).toFloat()
-            val my = cy + (sin(ang) * orbit).toFloat()
-            val d = hypot(tx - mx, ty - my)
-            if (d < bestDist) {
-                bestDist = d
-                bestApp = folder.apps[i]
-                bestX = mx
-                bestY = my
-            }
-        }
-        if (bestApp != null && bestDist <= miniR && bestDist < centerDist) {
-            return bestApp to RectF(bestX - miniR, bestY - miniR, bestX + miniR, bestY + miniR)
-        }
-        return null
     }
 
 
