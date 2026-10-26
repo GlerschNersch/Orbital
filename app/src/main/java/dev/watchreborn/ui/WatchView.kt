@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.media.AudioManager
@@ -112,6 +113,87 @@ class WatchView(
     init {
         isFocusable = true
         isFocusableInTouchMode = true
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
+        accessibilityDelegate = object : View.AccessibilityDelegate() {
+            override fun getAccessibilityNodeProvider(host: View) = a11yProvider()
+        }
+    }
+
+    // --- Accessibility (TalkBack) -------------------------------------------
+    // The whole UI is one canvas View; WatchAccessibilityProvider exposes the
+    // interactive elements as virtual views built from the same hit data the
+    // touch handler uses. Created lazily: the system asks for the provider
+    // only once the view is attached and accessibility is on.
+    private var a11y: WatchAccessibilityProvider? = null
+
+    override fun getAccessibilityNodeProvider(): WatchAccessibilityProvider = a11yProvider()
+
+    private fun a11yProvider(): WatchAccessibilityProvider =
+        a11y ?: WatchAccessibilityProvider(this, ::a11yNodes, ::a11yActivate).also { a11y = it }
+
+    private fun a11yNodes(): List<WatchAccessibilityProvider.Node> {
+        // Overlays whose own controls have no node mapping yet (Cluster sheet,
+        // topology picker, widget pod, Control Center): expose nothing rather
+        // than nodes for the visually covered bubbles underneath.
+        if (clusterSheet.target > 0f || widgetIn.target > 0f || controlIn.value > 0.5f) return emptyList()
+        if (stackIn.value > 0.5f) {
+            val out = ArrayList<WatchAccessibilityProvider.Node>()
+            for ((rect, card) in stack.cardRects) {
+                if (rect.isEmpty) continue
+                val label = listOf(card.title, card.big, card.detail)
+                    .filter { it.isNotBlank() }.joinToString(", ")
+                out += WatchAccessibilityProvider.Node(
+                    "stack:" + card.id, label,
+                    Rect(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt()),
+                    rect.centerX(), rect.centerY(),
+                )
+            }
+            return out
+        }
+        if (apps.target < 0.5f) {
+            val out = ArrayList<WatchAccessibilityProvider.Node>()
+            for ((i, r) in face.favoriteRects.withIndex()) {
+                val app = face.favorites.getOrNull(i) ?: continue
+                if (r.isEmpty) continue
+                out += WatchAccessibilityProvider.Node(
+                    "face:" + app.key, app.label,
+                    Rect(r.left.toInt(), r.top.toInt(), r.right.toInt(), r.bottom.toInt()),
+                    r.centerX(), r.centerY(),
+                )
+            }
+            return out
+        }
+        // Grid / list / search / folder / overview bubbles from the touch hit
+        // list; keep the last-drawn entry per item, like hitEntryAt does.
+        val byKey = LinkedHashMap<String, Hit>()
+        for (h in hits) byKey[h.item.key] = h
+        return byKey.values.map { h ->
+            val label = when (val item = h.item) {
+                is Folder -> item.label + " folder"
+                else -> item.label
+            }
+            WatchAccessibilityProvider.Node(
+                h.item.key, label,
+                Rect((h.x - h.r).toInt(), (h.y - h.r).toInt(), (h.x + h.r).toInt(), (h.y + h.r).toInt()),
+                h.x, h.y,
+            )
+        }
+    }
+
+    private fun a11yActivate(node: WatchAccessibilityProvider.Node) {
+        tap(node.centerX, node.centerY)
+    }
+
+    override fun onHoverEvent(event: MotionEvent): Boolean {
+        a11y?.takeIf { it.touchExplorationEnabled }?.let { provider ->
+            when (event.action) {
+                MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE ->
+                    provider.onHover(event.x, event.y, exit = false)
+                MotionEvent.ACTION_HOVER_EXIT ->
+                    provider.onHover(event.x, event.y, exit = true)
+            }
+        }
+        return super.onHoverEvent(event)
     }
 
     val face = Face()
@@ -1835,6 +1917,7 @@ class WatchView(
                 postInvalidateDelayed(1000L - System.currentTimeMillis() % 1000L)
             }
         }
+        a11y?.contentChanged()
     }
 
     /** The cluster: most used app in the middle, the next six round it, the rest blurred behind. */
