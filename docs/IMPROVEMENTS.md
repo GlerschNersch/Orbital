@@ -141,6 +141,25 @@ The whole 0.2.1 ideas backlog, built:
   of the member card + drag-out is still pending: the emulator doesn't register
   injected long-presses, so these two wait for the phone.
 
+## Done in 1.8.0 (2026-10-25, late evening)
+
+- **Pulse loop gated on visibility** — the ~75ms redraw cycle behind the
+  notification pulse ring + icon jiggle now runs only while a badged bubble
+  was actually drawn on screen this frame (`frameBadgeVisible`, set in
+  drawIcon). Unread notifications on off-screen bubbles fall back to the 1s
+  tick instead of keeping the whole scene redrawing.
+- **TalkBack: Context Card + Cluster sheet rows** — both now expose nodes
+  through the existing provider: card rows use the drawn cardRows rects and
+  cardLabel text; sheet rows use a parallel label list captured in the draw
+  (toggles speak their state, e.g. "Bubble Physics, on"). Activation goes
+  through the real tap handler, as with the grid nodes. Still unmapped:
+  topology picker, widget pod, Control Center. Service-level check pending
+  a real device pass (the emulator's injected swipes don't drive TalkBack
+  focus either).
+- **Face two-digit hour — closed** — measured on the emulator at 10:43:
+  the time string's ink spans 91.5% of the width against the 92% budget;
+  the shrink-to-fit holds and nothing clips.
+
 ## Next
 
 Nothing queued — pick from Later below.
