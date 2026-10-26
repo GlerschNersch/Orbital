@@ -151,6 +151,7 @@ class MainActivity : Activity(), SensorEventListener {
             onReorderFolderMember = ::reorderFolderMember,
             onQuickInfo = ::quickAppInfo,
             onQuickUninstall = ::quickUninstall,
+            onTopoViewSaved = ::handleTopoViewSaved,
         )
         view.accent = prefs.getInt(KEY_ACCENT, ACCENTS[0].second)
         view.preferList = prefs.getBoolean(KEY_LIST, false)
@@ -166,6 +167,18 @@ class MainActivity : Activity(), SensorEventListener {
         val savedTopo = prefs.getString(KEY_CLUSTER_TOPOLOGY, ClusterTopology.HONEYCOMB.name)
         view.clusterTopology = runCatching { ClusterTopology.valueOf(savedTopo ?: ClusterTopology.HONEYCOMB.name) }
             .getOrDefault(ClusterTopology.HONEYCOMB)
+        // Per-design pan/zoom memory, persisted (1.11.1): reseed the view.
+        ClusterTopology.entries.forEach { t ->
+            val kx = "topoview:${t.name}:x"
+            if (prefs.contains(kx)) {
+                view.seedTopoViewMemory(
+                    t,
+                    prefs.getFloat(kx, 0f),
+                    prefs.getFloat("topoview:${t.name}:y", 0f),
+                    prefs.getFloat("topoview:${t.name}:z", 1f),
+                )
+            }
+        }
         view.pinnedCardIds = prefs.getStringSet(KEY_PINNED_CARDS, emptySet()).orEmpty()
         view.hintsSeen = prefs.getStringSet(KEY_HINTS_SEEN, emptySet()).orEmpty()
         view.onHintSeen = { id ->
@@ -600,6 +613,15 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun handleTopologySelected(topo: ClusterTopology) {
         prefs.edit().putString(KEY_CLUSTER_TOPOLOGY, topo.name).apply()
+    }
+
+    /** Persists one design's pan/zoom as it's left (see 1.11.0/1.11.1). */
+    private fun handleTopoViewSaved(topo: ClusterTopology, x: Float, y: Float, zoom: Float) {
+        prefs.edit()
+            .putFloat("topoview:${topo.name}:x", x)
+            .putFloat("topoview:${topo.name}:y", y)
+            .putFloat("topoview:${topo.name}:z", zoom)
+            .apply()
     }
 
     private fun handleClusterOptionChanged(opt: ClusterOption) {

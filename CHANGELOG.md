@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.11.1 — 2026-10-25
+
+- **Per-design pan/zoom memory now survives restarts** — each design's
+  saved spot is written to preferences as you leave it and reseeded
+  when the app starts, so the 1.11.0 memory isn't lost when the
+  launcher process restarts.
+
 ## 1.11.0 — 2026-10-25
 
 - **Each cluster design remembers where you left it** — switching

@@ -160,6 +160,16 @@ The whole 0.2.1 ideas backlog, built:
   the time string's ink spans 91.5% of the width against the 92% budget;
   the shrink-to-fit holds and nothing clips.
 
+## Done in 1.11.1 (2026-10-25, night)
+
+- **Topo view memory persisted** — selectTopology reports the outgoing
+  design's pan/zoom through a new onTopoViewSaved callback;
+  MainActivity writes `topoview:<NAME>:x/y/z` floats to watch prefs
+  and reseeds the view's map at startup (applying the current design's
+  state immediately). Verified on the emulator: prefs captured
+  HONEYCOMB x=-370.4 on switch-away; after force-stop + relaunch,
+  switching back restored the pan from prefs.
+
 ## Done in 1.11.0 (2026-10-25, night)
 
 - **Per-topology pan/zoom memory (session)** — selectTopology now saves

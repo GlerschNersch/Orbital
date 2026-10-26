@@ -115,6 +115,7 @@ class WatchView(
     private val onReorderFolderMember: (Folder, Int, Int) -> Unit,
     private val onQuickInfo: (App) -> Unit,
     private val onQuickUninstall: (App) -> Unit,
+    private val onTopoViewSaved: (ClusterTopology, Float, Float, Float) -> Unit = { _, _, _, _ -> },
 ) : View(context) {
 
     init {
@@ -661,9 +662,9 @@ class WatchView(
     private val panY = Spring(0f, 0.35f)
 
     /** Per-layout view memory (1.11.0): where you left each design's
-     *  pan/zoom, restored when you come back to it. Session-level — the
-     *  map lives in the view, so it survives design-hopping but not an
-     *  app restart. */
+     *  pan/zoom, restored when you come back to it. The map lives in the
+     *  view; MainActivity persists each save via onTopoViewSaved and
+     *  reseeds it at startup (1.11.1), so it survives restarts too. */
     private data class TopoViewState(val panX: Float, val panY: Float, val zoom: Float)
     private val topoViewMemory = HashMap<ClusterTopology, TopoViewState>()
     private val folderPanX = Spring(0f, 0.35f)
@@ -1729,7 +1730,9 @@ class WatchView(
         // design's remembered spot, or centre it on a first visit (each
         // design's world has different extents, so carrying one pan/zoom
         // across designs landed you in empty space).
-        topoViewMemory[clusterTopology] = TopoViewState(panX.target, panY.target, userZoom.target)
+        val outState = TopoViewState(panX.target, panY.target, userZoom.target)
+        topoViewMemory[clusterTopology] = outState
+        onTopoViewSaved(clusterTopology, outState.panX, outState.panY, outState.zoom)
         clusterTopology = topo
         overview.target = 0f
         val remembered = topoViewMemory[topo]
@@ -1746,6 +1749,17 @@ class WatchView(
         onTopologySelected(topo)
         performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
         invalidate()
+    }
+
+    /** Seeds one design's remembered pan/zoom from the persisted copy
+     *  (1.11.1); if it's the design already showing, apply it now. */
+    fun seedTopoViewMemory(topo: ClusterTopology, x: Float, y: Float, zoom: Float) {
+        topoViewMemory[topo] = TopoViewState(x, y, zoom)
+        if (topo == clusterTopology) {
+            panX.snap(x)
+            panY.snap(y)
+            userZoom.snap(zoom)
+        }
     }
 
     /**
