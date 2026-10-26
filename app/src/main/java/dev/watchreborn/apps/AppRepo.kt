@@ -619,9 +619,12 @@ class AppRepo(private val context: Context) {
     fun markOpened(key: String) {
         val now = System.currentTimeMillis()
         val count = prefs.getInt("n:$key", 0)
-        // The frecency score (s:) is stored as its value at the moment of
-        // this launch (t:), so score() only ever has to age it forward.
-        val next = score(key, now) + 1f
+        // recordLaunch owns the aging: it decays the stored score (or seeds
+        // from the legacy count when no s: key exists yet) and adds 1 for
+        // this launch, so score() only ever has to age the result forward.
+        val last = prefs.getLong("t:$key", 0L)
+        val stored = if (prefs.contains("s:$key")) prefs.getFloat("s:$key", 0f) else null
+        val next = Frecency.recordLaunch(stored, count, last, now)
         prefs.edit().putInt("n:$key", count + 1).putLong("t:$key", now).putFloat("s:$key", next).apply()
     }
 

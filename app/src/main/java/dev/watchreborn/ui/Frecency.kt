@@ -16,6 +16,7 @@ import kotlin.math.pow
  * Replaces the legacy score (all-time count divided by weeks since the
  * last launch), under which a once-heavy app outranked a current daily
  * driver for months. [seedFromLegacy] converts those old counts.
+ * [recordLaunch] combines the aging and the +1 increment in one call.
  */
 object Frecency {
 
@@ -44,5 +45,24 @@ object Frecency {
     fun seedFromLegacy(count: Int, lastMs: Long, nowMs: Long): Float {
         if (count <= 0) return 0f
         return decay(minOf(count.toFloat(), SEED_CAP), lastMs, nowMs)
+    }
+
+    /**
+     * The score to store when an app launches at [nowMs].
+     *
+     * When [stored] is non-null the s: key already exists, so the stored
+     * score is authoritative — even a value of 0 means "this app has been
+     * tracked and its score decayed to zero," and falling back to the
+     * legacy [legacyCount] would resurrect a stale all-time count that
+     * should no longer influence the centre. Only when [stored] is null
+     * (pre-1.18.0 data with no s: key yet) do we seed from [legacyCount].
+     *
+     * After aging or seeding, 1 is added for the launch that is happening
+     * right now, and the result is returned for the caller to persist.
+     */
+    fun recordLaunch(stored: Float?, legacyCount: Int, lastMs: Long, nowMs: Long): Float {
+        val aged = if (stored != null) decay(stored, lastMs, nowMs)
+                   else seedFromLegacy(legacyCount, lastMs, nowMs)
+        return aged + 1f
     }
 }
