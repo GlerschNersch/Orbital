@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.4.0 — 2026-10-25
+
+- **Zero-G Billiards actually looks like a pool now** — the tank was sized
+  for ~20 bubbles but a real catalog has ~187, so it ran ~9× over capacity:
+  collisions shoved bubbles through the wall every frame (the wall clamp
+  ran before the collision passes, never after), the seeds started on hex
+  positions far outside the tank, and no wall was ever drawn — the result
+  was a full-screen overlapping jumble. Now (new pure `PoolMath`):
+  bubbles are sized to fit the catalog into the tank by area packing,
+  seeds start inside the tank, a final containment pass after collisions
+  makes the wall real, the rendered size matches the physics size, and
+  the tank itself is drawn — a softly filled disc with an accent rim at
+  exactly the wall radius. Small catalogs keep the big natural bubbles.
+
 ## 1.3.0 — 2026-10-25
 
 - **Notification jiggle** — a bubble with a pending notification now wobbles

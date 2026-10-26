@@ -1660,11 +1660,24 @@ class WatchView(
             poolPosY = FloatArray(count)
             poolVelX = FloatArray(count)
             poolVelY = FloatArray(count)
+            var maxSeedR = 0f
             for (i in 0 until count) {
                 if (i in gridHexes.indices) {
                     pointyCenter(gridHexes[i], pitch * 0.88f, anchorTmp)
                     poolPosX[i] = anchorTmp[0]
                     poolPosY[i] = anchorTmp[1]
+                    val r = hypot(anchorTmp[0], anchorTmp[1])
+                    if (r > maxSeedR) maxSeedR = r
+                }
+            }
+            // The hex seeds reach ~3x the tank radius at real catalog sizes;
+            // scale them inside the tank so the sim starts contained instead
+            // of slamming every outer bubble onto the rim (PoolMath, 1.4.0).
+            val ss = PoolMath.seedScale(maxSeedR, count, pitch)
+            if (ss < 1f) {
+                for (i in 0 until count) {
+                    poolPosX[i] *= ss
+                    poolPosY[i] *= ss
                 }
             }
             poolInitialized = true
@@ -1783,8 +1796,8 @@ class WatchView(
         // 5. Zero-G Billiards Pool (`LIQUID_POOL`) multi-body physics & elastic collisions
         if (clusterTopology == ClusterTopology.LIQUID_POOL) {
             ensurePoolCapacity(count, pitch)
-            val tankR = pitch * 2.55f
-            val bubbleR = pitch * 0.45f
+            val tankR = PoolMath.tankRadius(pitch)
+            val bubbleR = PoolMath.bubbleRadius(count, pitch)
             val minDist = bubbleR * 2.02f
             val gravScale = if (bubblePhysics) u * 1.45f else 0f
 
@@ -1867,6 +1880,21 @@ class WatchView(
                             }
                         }
                     }
+                }
+            }
+
+            // Final containment pass (1.4.0): the collision relaxation runs
+            // AFTER the integration wall clamp, so at high density it used to
+            // end every frame with bubbles pushed outside the wall — the tank
+            // never actually contained anything. Re-clamp now that collisions
+            // have settled, so the wall is real.
+            for (i in 1 until count) {
+                if (i == grabbedPoolIndex && dragging) continue
+                val distFromCenter = hypot(poolPosX[i], poolPosY[i])
+                val maxCenterDist = tankR - bubbleR
+                if (distFromCenter > maxCenterDist && distFromCenter > 1e-3f) {
+                    poolPosX[i] = poolPosX[i] / distFromCenter * maxCenterDist
+                    poolPosY[i] = poolPosY[i] / distFromCenter * maxCenterDist
                 }
             }
 
@@ -2204,7 +2232,12 @@ class WatchView(
                     Fisheye.size(d * 0.85f) * depthScale
                 }
                 isPool -> {
-                    (if (i == 0) 1.08f else 0.84f) * Fisheye.size(d * 0.65f)
+                    // Rendered diameter tracks the fitted physics radius
+                    // (PoolMath) so what you see is what collides: at a full
+                    // catalog the bubbles shrink to fit the tank (1.4.0).
+                    val fitK = 2f * PoolMath.bubbleRadius(items.size, Metrics.GRID_PITCH * u) /
+                        (Metrics.GRID_CENTER_D * u)
+                    (if (i == 0) 1.08f else 1f) * fitK * Fisheye.size(d * 0.65f)
                 }
                 isDock -> {
                     (if (i == 0) 1.14f else 0.88f) * Fisheye.size(d * 0.72f)
@@ -2395,6 +2428,22 @@ class WatchView(
             // For DNA_HELIX, draw back-strand bubbles first so front-strand bubbles overlap cleanly in 3D!
             // For FIBONACCI, the center hub draws last so a grown neighbour
             // can't bury the clock at the middle of the spiral.
+            // Zero-G Billiards: draw the tank itself (1.4.0) — a softly
+            // filled disc with an accent rim at exactly the physics wall
+            // radius, so the containment reads as a tank instead of the
+            // bubbles scattering across the whole screen.
+            if (isPool) {
+                val tankScreenR = PoolMath.tankRadius(Metrics.GRID_PITCH * u) * effZoom
+                fill.color = withAlpha(accent, (aInt * 0.05f).toInt())
+                c.drawCircle(cx, cy, tankScreenR, fill)
+                stroke.strokeWidth = dp(2.2f)
+                stroke.color = withAlpha(accent, (aInt * 0.55f).toInt())
+                c.drawCircle(cx, cy, tankScreenR, stroke)
+                stroke.strokeWidth = dp(1f)
+                stroke.color = withAlpha(accent, (aInt * 0.20f).toInt())
+                c.drawCircle(cx, cy, tankScreenR * 0.965f, stroke)
+            }
+
             val drawOrder = when {
                 isHelix -> items.indices.sortedBy { dnaHelixDepth(it) }
                 clusterTopology == ClusterTopology.FIBONACCI -> items.indices.sortedBy { it == 0 }
