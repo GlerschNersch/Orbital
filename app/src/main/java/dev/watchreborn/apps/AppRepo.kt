@@ -234,6 +234,21 @@ class AppRepo(private val context: Context) {
         e.apply()
     }
 
+    /** One-time 2.9.0 migration: the Core Clock hub no longer occupies
+     *  slot 0 of the built grids, so every saved pin shifts down one
+     *  slot to keep pointing at the same visual position. */
+    fun shiftPinsDownAfterHubRemoval() {
+        val e = prefs.edit()
+        var changed = false
+        for ((k, v) in prefs.all) {
+            if ((k.startsWith("pin:") || k.startsWith("pin@")) && v is Int) {
+                e.putInt(k, (v - 1).coerceAtLeast(0))
+                changed = true
+            }
+        }
+        if (changed) e.apply()
+    }
+
     /** Custom member order for a folder (app keys), set by drag-arranging in Folder view. */
     fun folderOrder(group: AppGroup): List<String> =
         prefs.getString("forder:${group.name}", null)?.split(",")?.filter { it.isNotEmpty() } ?: emptyList()

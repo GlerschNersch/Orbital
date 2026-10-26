@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.9.0 — 2026-10-26
+
+The clock leaves the centre (Matt's call): slot 0 of the cluster now belongs to the most-used app. The grid builders already order by recency-weighted use, so with the Core Clock hub no longer placed, the top app takes the centre — biggest bubble on the surface, fully live (tap to launch, badge dot, notification peek, jiggle, long-press) — and the centre changes hands as your usage does. The top pill names the centre app instead of "Clock & Status" and still opens search. The clock widget stays in the catalog for the Widgets page; the Clock app remains in the grid as a normal app; the time stays in the status bar. Saved pins were stored against grids that included the clock at slot 0, so a one-time migration shifts every pin down one slot to keep each pinned app in its exact visual spot.
+
 ## 2.8.2 — 2026-10-26
 
 Peek morph origin fixed (Matt's catch): the droplet spawned centred at 0.72 of the bubble's radius with a disc a full radius wide, so most of its mass appeared over the bubble's face and the morph read as starting from the centre. It now buds at the rim — a small bump centred at 0.94r, less than half the old size, straddling the bubble's outline — and the goo neck attaches at the surface (0.86r, thinner stem). The droplet swells as it separates, so the first visible change is the bubble's silhouette bulging, not a blob materialising mid-face.

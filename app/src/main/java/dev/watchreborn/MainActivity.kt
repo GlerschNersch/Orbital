@@ -576,9 +576,19 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun pushAppsToView(list: List<App>) {
+        // 2.9.0 one-time: pins were stored against grids that had the
+        // clock at slot 0; shift them down one so they keep their spots.
+        val wprefs = getSharedPreferences("watch", Context.MODE_PRIVATE)
+        if (!wprefs.getBoolean("hub_centre_v290", false)) {
+            repo.shiftPinsDownAfterHubRemoval()
+            wprefs.edit().putBoolean("hub_centre_v290", true).apply()
+        }
         val px = iconPx
         val fixedNeighborhoods = view.fixedNeighborhoods
-        val coreClockHub = true
+        // 2.9.0: the centre slot belongs to the most-used app now — the
+        // Core Clock hub is no longer placed in the grids (the builders
+        // keep the parameter; the clock stays in the widget catalog).
+        val coreClockHub = false
         val liveWidgets = false // 2.5.0: Live Grid Widgets setting removed — frozen at Matt's value (off); builders keep the parameter so it can return later
         loader.execute {
             val scope = pinScope()
