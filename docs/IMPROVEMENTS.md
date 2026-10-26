@@ -160,6 +160,18 @@ The whole 0.2.1 ideas backlog, built:
   the time string's ink spans 91.5% of the width against the 92% budget;
   the shrink-to-fit holds and nothing clips.
 
+## Done in 1.16.0 (2026-10-26)
+
+- **Renamed to Orbital (Matt's pick)** — app_name string, the
+  accessibility toast, the widget-permission blurb, the Cluster
+  sheet's "Set Orbital as Home app" subtitle, README title, and the
+  GitHub repo (WatchReborn → Orbital; gh updated the remote).
+  Verified in the built APK: application-label 'Orbital'. The
+  package stays dev.watchreborn, so installs, prefs and the
+  Notification Access grant carry over untouched. A full package
+  migration remains available if Matt ever wants it (fresh install
+  + prefs carry-over + re-granting notification access).
+
 ## Done in 1.15.0 (2026-10-26)
 
 - **Dock touch test → snappier switch** — Matt felt lag switching
