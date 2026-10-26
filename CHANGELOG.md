@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.3.5 — 2026-10-25
+
+- **UX-test fix pass** — everything the full UX test pass flagged:
+  - **Ring layouts no longer saturate**: Orbitals spreads the catalog over
+    rings of 6, 10, 14, 18, … bubbles (pan to explore) instead of cramming
+    ~160 apps onto one outer ring; the Chrono Bezel's outer ring is now a
+    carousel — 18 bubbles ride it and spinning the bezel scrolls through
+    the rest (the HUD readout shows the visible window); the Thumb Arc
+    Dock's arcs grow 4, 6, 8, 10, … the same way. Ring math in pure,
+    unit-tested `RingMath`.
+  - **Dock anchored like a dock**: the home bubble sits at the bottom-center
+    pivot under your thumb (the first arc's top bubble used to land on it),
+    and vertical drags pan the arc field so higher arcs come into reach.
+  - **Quick-menu chips stay on screen**: bloom targets clamp into the view,
+    so a bubble near an edge no longer pushes its outer chip halfway off it.
+  - **Constellation header fixed**: category chips flow-wrap at their real
+    widths (they were squeezed into one equal-width row and rendered as
+    overlapping gibberish), the header gets a solid backdrop, and the star
+    field is clipped below it — stars can no longer shine or be tapped
+    through the chips.
+  - **Face time fits**: a two-digit hour ("12:59:59") shrinks the time to
+    fit instead of clipping the seconds at the right edge.
+  - **Sheet rows stay put**: the options sheet and topology picker fade in
+    at their final position (no slide-up drift), and the sheet's height math
+    always reserves the Clear Pins row, so rows sit in the same place on
+    every open.
+  - **Back from the Smart Stack hardened**: Back now treats a visibly-open
+    Stack/Control Center as open even mid-animation, and the duplicate
+    key-event Back handler is gone (Back travels the one
+    OnBackInvokedCallback path).
+  - Polish: River and Double Helix start higher on screen; the Fibonacci
+    spiral breathes a little wider and its center hub draws on top; Nebula
+    island pills and overview folder labels clamp inside the screen edges.
+
 ## 0.3.4 — 2026-10-25
 
 - **Quick menu morphs out of the bubble**: the bottom buttons are gone.

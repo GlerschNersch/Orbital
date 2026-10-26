@@ -3,26 +3,27 @@
 Living list. The navigation cleanup of 2026-10-25 (commits `c5ad977`, `f8b7158`, `c201aca`,
 `a334f54`) is the baseline; items move between sections as they land.
 
-## UX test findings (2026-10-25, full pass at 181 grid items)
+## UX test findings (2026-10-25, full pass at 181 grid items) — ALL FIXED in 0.3.5
 
-- **Ring layouts saturate**: Orbitals, Chrono Bezel and Thumb Arc Dock pack the overflow
-  onto rings/arcs until bubbles overlap into unreadable "caterpillars". Positional layouts
-  (Honeycomb, Gravity, River, Fibonacci, Hourglass, Helix) scale fine. Ideas: cap ring
-  membership + overflow into the grid, shrink ring bubbles with ring index, or fade
-  outer-ring bubbles until spun into focus.
-- **Quick-menu chips clip at screen edges**: for a bubble near the left/right edge, the
-  bloom arc pushes the outer chip halfway off-screen. Clamp chip targets into the view
-  (or mirror the arc) — small fix in drawQuickChips.
-- **Constellation category ribbon overlaps**: the AI/Work/News/… tag pills in the
-  Unraveled header draw on top of each other; labels collide.
-- **Magnetic Dock floats**: in focus view the dock arcs sit mid-screen with the clock
-  core half-buried and the bottom third empty; the dock should anchor low.
-- **Face time slightly overflows**: the seconds digits clip at the right screen edge.
-- **Sheet row positions shift ~40px between opens** (row compression adapting), which
-  makes muscle-memory taps occasionally land on a neighbouring row.
-- Observed once, needs repro: Back from the Smart Stack exited the app instead of
-  returning to the face (WatchReborn is not the default home app, so an unconsumed
-  Back finishes the activity — check the STACK layer is always consumed).
+- **Ring layouts saturate** → FIXED: Orbitals/Dock rings generalise via pure
+  `RingMath` (capacities grow ring by ring, pan to explore); the Bezel's outer
+  ring is a spin-through carousel window (18 at a time, HUD shows the window).
+- **Quick-menu chips clip at screen edges** → FIXED: chip targets (and their hit
+  circles) clamp into the view in drawQuickChips.
+- **Constellation category ribbon overlaps** → FIXED: chips flow-wrap at natural
+  widths, header has a solid backdrop, star field clips below the header and
+  clipped stars take no hits.
+- **Magnetic Dock floats / core buried** → FIXED: home bubble sits at the
+  bottom-center pivot; arcs no longer land on it; vertical drag pans the field.
+- **Face time slightly overflows** → FIXED: shrink-to-fit for two-digit hours.
+- **Sheet row positions shift ~40px between opens** → FIXED: no slide-in offset
+  (rows are at final positions from frame one) and the height math always
+  reserves the conditional Clear Pins row.
+- Back from the Smart Stack exited the app once, never reproduced → HARDENED:
+  Back treats a visibly-open stack/control as open even mid-animation, and the
+  duplicate onKeyDown Back handler was removed (single callback path).
+- Also in 0.3.5: River/Helix start higher, Fibonacci spiral widened + center
+  hub on top, Nebula pills and overview labels clamp to the screen edges.
 - Verified working in the same pass: all 11 layouts apply + persist; all 9 sheet
   toggles flip + persist both ways; App Search typing/filter; Edit Layout enter/exit;
   drag-place + Undo; List view + A–Z scrub; Control pod + flashlight; Smart Stack;
@@ -59,6 +60,14 @@ Living list. The navigation cleanup of 2026-10-25 (commits `c5ad977`, `f8b7158`,
 - **Instrumented smoke test** — `SmokeTest` launches MainActivity, opens the sheet and
   asserts layered Back closes it, twice. Runs green on-device.
 - **Release hygiene** — versionName `0.2.0` / versionCode 2, with `CHANGELOG.md` started.
+
+## Done in 0.3.5 (2026-10-25, ninth pass)
+
+- **UX fix pass** — every finding from the full UX test pass above: ring-layout
+  saturation (RingMath + Bezel carousel), chip edge-clipping, constellation
+  header wrap/backdrop/clip, Dock anchoring + pan, Face time shrink-to-fit,
+  sheet/picker row stability, Back-from-Stack hardening, plus River/Helix
+  anchoring, Fibonacci spacing/z-order, and label edge clamps.
 
 ## Done in 0.3.4 (2026-10-25, eighth pass)
 
