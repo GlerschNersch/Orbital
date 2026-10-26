@@ -28,6 +28,7 @@ import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import dev.watchreborn.NowPlaying
 import dev.watchreborn.NowPlayingListener
+import dev.watchreborn.NotifPeek
 import dev.watchreborn.apps.App
 import dev.watchreborn.apps.Folder
 import dev.watchreborn.apps.GridItem
@@ -549,6 +550,19 @@ class WatchView(
     private val undoRect = RectF()
     private val undoBtnRect = RectF()
 
+    // Notification peek (2.8.0): when a fresh notification lands, the
+    // owning bubble sprouts a speech pill with its content, holds it
+    // for a few seconds, then retracts to the plain dot.
+    private var peekItemKey: String? = null
+    private var peekApp: App? = null
+    private var peekTitle = ""
+    private var peekText = ""
+    private var peekPkg: String? = null
+    private var handledPeekSeq = 0L
+    private val peekIn = Spring(0f, 0.22f)
+    private var peekUntilMs = 0L
+    private val peekRect = RectF()
+
     fun showPlaceUndo(label: String, onUndo: () -> Unit) {
         undoLabel = label
         undoAction = onUndo
@@ -988,6 +1002,119 @@ class WatchView(
     }
 
     /** The one coach hint to show right now, if any: gesture-only features advertise themselves once. */
+    /** Notification peek lifecycle (2.8.0): notice a fresh arrival, hold
+     *  it, retract on expiry or when the notification goes away. */
+    private fun updatePeek() {
+        val latest = NowPlayingListener.latestPeek
+        if (latest != null && latest.seq != handledPeekSeq) {
+            handledPeekSeq = latest.seq
+            val fresh = System.currentTimeMillis() - latest.postTime < 20_000L
+            if (fresh && clusterSheet.target == 0f && controlIn.target == 0f && !cardMenuOpen) startPeek(latest)
+        }
+        if (peekItemKey == null) return
+        if (peekPkg != null && peekPkg !in NowPlayingListener.activePackages) peekIn.target = 0f
+        if (peekIn.target == 1f && SystemClock.uptimeMillis() > peekUntilMs) peekIn.target = 0f
+        if (peekIn.target == 0f && peekIn.settled) {
+            peekItemKey = null
+            peekApp = null
+            peekPkg = null
+            peekRect.setEmpty()
+        }
+    }
+
+    private fun startPeek(peek: NotifPeek) {
+        var anchor: GridItem? = null
+        var member: App? = null
+        for (item in activeGridItems) {
+            when (item) {
+                is App -> if (item.component.packageName == peek.pkg) { anchor = item; member = item }
+                is Folder -> item.apps.firstOrNull { it.component.packageName == peek.pkg }?.let { anchor = item; member = it }
+                else -> {}
+            }
+            if (anchor != null) break
+        }
+        val m = member ?: return
+        peekItemKey = anchor?.key
+        peekApp = m
+        peekPkg = peek.pkg
+        peekTitle = peek.title.ifEmpty { m.label }
+        peekText = peek.text
+        peekIn.snap(0f)
+        peekIn.target = 1f
+        peekUntilMs = SystemClock.uptimeMillis() + 4200L
+        invalidate()
+    }
+
+    /** The notification speech pill (2.8.0): grows out of the owning
+     *  bubble (canvas scaled about the tail tip), holds, retracts. */
+    private fun drawPeek(c: Canvas, alpha: Float) {
+        val key = peekItemKey ?: return
+        if (clusterSheet.value > 0.001f || controlIn.value > 0.001f) { peekRect.setEmpty(); return }
+        val g = peekIn.value
+        if (g <= 0.01f) { peekRect.setEmpty(); return }
+        val hit = hits.lastOrNull { it.item.key == key } ?: run { peekRect.setEmpty(); return }
+        val app = peekApp ?: return
+        val aInt = (alpha * 255).toInt().coerceIn(0, 255)
+
+        val padX = dp(11f); val padY = dp(8f); val iconD = dp(20f); val gapX = dp(8f)
+        val maxTextW = min(width * 0.60f, dp(225f))
+        text.textSize = sp(12.5f); text.isFakeBoldText = true
+        val titleW = min(text.measureText(peekTitle), maxTextW)
+        text.isFakeBoldText = false
+        text.textSize = sp(12f)
+        val textW = if (peekText.isEmpty()) 0f else min(text.measureText(peekText), maxTextW)
+        val bodyW = max(titleW, textW)
+        val pillW = padX * 2 + iconD + gapX + bodyW
+        val lineH = sp(15f)
+        val pillH = padY * 2 + if (peekText.isEmpty()) max(iconD, lineH) else lineH * 2 + dp(1f)
+
+        // Above the bubble, flipping below it near the top of the screen.
+        val above = hit.y - hit.r - dp(10f) - pillH > topInset + dp(10f)
+        val pillTop = if (above) hit.y - hit.r - dp(10f) - pillH else hit.y + hit.r + dp(10f)
+        val pillLeft = (hit.x - pillW / 2).coerceIn(dp(10f), max(dp(10f), width - pillW - dp(10f)))
+        peekRect.set(pillLeft, pillTop, pillLeft + pillW, pillTop + pillH)
+
+        // The tail tip touches the bubble's edge; the pill scales about it.
+        val tipX = hit.x.coerceIn(pillLeft + dp(16f), pillLeft + pillW - dp(16f))
+        val tipY = if (above) pillTop + pillH + dp(9f) else pillTop - dp(9f)
+        val baseY = if (above) pillTop + pillH else pillTop
+
+        c.save()
+        c.translate(tipX, tipY)
+        c.scale(g, g)
+        c.translate(-tipX, -tipY)
+        val fade = (aInt * g).toInt().coerceIn(0, 255)
+        fill.color = Color.argb((fade * 0.97f).toInt(), 32, 34, 40)
+        val tail = Path()
+        tail.moveTo(tipX - dp(7f), baseY)
+        tail.lineTo(tipX + dp(7f), baseY)
+        tail.lineTo(tipX, tipY)
+        tail.close()
+        c.drawPath(tail, fill)
+        c.drawRoundRect(peekRect, dp(14f), dp(14f), fill)
+        val iconTop = pillTop + (pillH - iconD) / 2
+        rect.set(pillLeft + padX, iconTop, pillLeft + padX + iconD, iconTop + iconD)
+        bitmapPaint.alpha = fade
+        c.drawBitmap(app.icon, null, rect, bitmapPaint)
+        val tx = pillLeft + padX + iconD + gapX
+        text.textAlign = Paint.Align.LEFT
+        text.color = Color.argb(fade, 255, 255, 255)
+        text.textSize = sp(12.5f); text.isFakeBoldText = true
+        val titleShown = TextUtils.ellipsize(peekTitle, text, maxTextW, TextUtils.TruncateAt.END).toString()
+        if (peekText.isEmpty()) {
+            c.drawText(titleShown, tx, pillTop + pillH / 2 + text.textSize * 0.35f, text)
+        } else {
+            c.drawText(titleShown, tx, pillTop + padY + lineH * 0.82f, text)
+            text.isFakeBoldText = false
+            text.color = Color.argb(fade, 196, 198, 206)
+            text.textSize = sp(12f)
+            val textShown = TextUtils.ellipsize(peekText, text, maxTextW, TextUtils.TruncateAt.END).toString()
+            c.drawText(textShown, tx, pillTop + padY + lineH * 1.82f, text)
+        }
+        text.isFakeBoldText = false
+        c.restore()
+    }
+
     /** Transient "placed — Undo" bar shown after a drag-to-place mutation. */
     private fun drawUndoBar(c: Canvas, w: Float, bottom: Float, alpha: Float) {
         if (!undoActive || apps.target == 0f) {
@@ -2212,10 +2339,11 @@ class WatchView(
         motionAnimating = false
         frameBadgeVisible = false
 
-        val springs = arrayOf(apps, grid, overview, userZoom, constellationZoom, folderIn, widgetIn, clusterSheet, constellationIn, controlIn, panX, panY, folderPanX, folderPanY, constellationPanX, constellationPanY, cardMenu)
+        val springs = arrayOf(apps, grid, overview, userZoom, constellationZoom, folderIn, widgetIn, clusterSheet, constellationIn, controlIn, panX, panY, folderPanX, folderPanY, constellationPanX, constellationPanY, cardMenu, peekIn)
         if (reducedMotion) for (s in springs) s.snap(s.target) // 2.7.0 (audit #1)
         for (s in springs) s.step(dt)
         val physicsAnimating = stepPhysics(dt)
+        updatePeek()
 
         val w = width.toFloat()
         val h = height.toFloat()
@@ -2243,6 +2371,7 @@ class WatchView(
             if (clusterSheet.value > 0.001f) drawClusterSheet(c, w, h, top, bottom, clusterSheet.value)
             if (clusterSheet.value > 0.001f) drawDock(c, w, bottom, a) // 2.6.0: the dock stays on the Settings page
             if (clusterSheet.value > 0.001f && undoActive) drawUndoBar(c, w, bottom, a) // 2.7.0: the Clear Pins undo must be visible on the page, not under it
+            drawPeek(c, a)
             if (cardItem != null) drawCardMenu(c, w, h, cal, cardMenu.value)
         }
 
@@ -2252,14 +2381,14 @@ class WatchView(
             controlCenter.draw(c, w, h, top, bottom, cal, info.battery, info.charging, controlIn.value)
         }
 
-        val animating = springs.any { !it.settled } || dragging || physicsAnimating || motionAnimating
+        val animating = springs.any { !it.settled } || dragging || physicsAnimating || motionAnimating || (peekItemKey != null && !peekIn.settled)
         if (animating) postInvalidateOnAnimation()
         else {
             lastFrame = 0L
             // The fast pulse loop only earns its battery while a badged
             // bubble is actually on screen (1.8.0); an unread notification
             // on an off-screen bubble falls through to the 1s tick.
-            val hasPulseOrTimer = a > 0f && (timerRunning || frameBadgeVisible || editMode)
+            val hasPulseOrTimer = a > 0f && (timerRunning || frameBadgeVisible || editMode || peekItemKey != null)
             if (hasPulseOrTimer) {
                 postInvalidateDelayed(75L)
             } else {
@@ -5287,6 +5416,17 @@ class WatchView(
             performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
             action?.invoke() ?: invalidate()
             return
+        }
+
+        // Notification peek pill: tapping it opens the app that posted.
+        if (peekItemKey != null && peekIn.value > 0.4f && !peekRect.isEmpty && peekRect.contains(x, y)) {
+            val app = peekApp
+            peekIn.target = 0f
+            if (app != null) {
+                performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                onLaunch(app, RectF(peekRect))
+                return
+            }
         }
 
         // Edit mode: the Done pill exits.

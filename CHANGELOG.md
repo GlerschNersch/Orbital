@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.8.0 — 2026-10-26
+
+Notification peek: when a fresh notification arrives, the owning bubble sprouts a speech pill — the app's icon, the notification's title and first line of text — grows it out of its own edge on a spring, holds it for ~4 seconds, then retracts to the plain badge dot. Tapping the pill opens the posting app (a folder's pill opens the member app that posted). The pill flips below the bubble near the top of the screen, dismisses early if the notification clears, and under reduced motion it simply appears and vanishes. The listener now tracks the newest readable notification (group summaries skipped while real children exist); only arrivals fresher than 20 seconds morph, so returning home never replays stale notifications.
+
 ## 2.7.0 — 2026-10-26
 
 The UX-audit release: every finding from the ui-ux-pro-max guideline audit (ux-audit-2026-10-26.md) fixed.

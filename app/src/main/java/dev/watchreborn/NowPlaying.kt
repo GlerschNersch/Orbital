@@ -12,6 +12,9 @@ import android.os.Looper
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 
+/** The newest readable notification for a package (2.8.0: the peek). */
+data class NotifPeek(val pkg: String, val title: String, val text: String, val postTime: Long, val seq: Long)
+
 /**
  * Notification listener that enables MediaSession access for the Smart Stack's Now Playing card
  * and tracks which packages currently have active notifications for honeycomb/list notification dots.
@@ -26,6 +29,7 @@ class NowPlayingListener : NotificationListenerService() {
         instance = null
         activePackages = emptySet()
         activeSnippets = emptyMap()
+        latestPeek = null
         onBadgesChanged?.invoke()
     }
 
@@ -53,9 +57,27 @@ class NowPlayingListener : NotificationListenerService() {
                 snippets[pkg] = combined
             }
         }
+        // 2.8.0: the newest readable notification per package, so the
+        // launcher can sprout a peek pill from the owning bubble. Group
+        // summaries are skipped while any real child exists.
+        val usable = sbns.filter { (it.notification.flags and android.app.Notification.FLAG_GROUP_SUMMARY) == 0 }.ifEmpty { sbns }
+        val newest = usable.mapNotNull { sbn ->
+            val pkg = sbn.packageName ?: return@mapNotNull null
+            val ex = sbn.notification?.extras ?: return@mapNotNull null
+            val t = ex.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
+            val b = ex.getCharSequence(android.app.Notification.EXTRA_TEXT)?.toString()?.trim().orEmpty()
+            if (t.isEmpty() && b.isEmpty()) null else NotifPeek(pkg, t, b, sbn.postTime, 0L)
+        }.maxByOrNull { it.postTime }
         if (pkgs != activePackages || snippets != activeSnippets) {
             activePackages = pkgs
             activeSnippets = snippets
+            if (newest == null) {
+                latestPeek = null
+            } else if (latestPeek?.pkg != newest.pkg || latestPeek?.postTime != newest.postTime ||
+                latestPeek?.title != newest.title || latestPeek?.text != newest.text
+            ) {
+                latestPeek = newest.copy(seq = ++peekSeqCounter)
+            }
             onBadgesChanged?.invoke()
         }
     }
@@ -67,6 +89,12 @@ class NowPlayingListener : NotificationListenerService() {
             private set
         @Volatile var activeSnippets: Map<String, String> = emptyMap()
             private set
+        /** The single newest notification across packages (2.8.0 peek
+         *  source); [NotifPeek.seq] increments only when its identity
+         *  changes, so observers can spot genuine arrivals. */
+        @Volatile var latestPeek: NotifPeek? = null
+            private set
+        private var peekSeqCounter = 0L
         @Volatile var onBadgesChanged: (() -> Unit)? = null
     }
 }
