@@ -160,6 +160,21 @@ The whole 0.2.1 ideas backlog, built:
   the time string's ink spans 91.5% of the width against the 92% budget;
   the shrink-to-fit holds and nothing clips.
 
+## Done in 1.8.1 (2026-10-25, late evening)
+
+- **Bloom-mode folder members fixed** — live-testing 1.8.0 on the phone
+  (in Bloom mode) showed a long-press on a folder member did nothing:
+  drawBloomedIsland registered member hits without slot indices, so the
+  long-press never began a place session and the 1.7.0 member card /
+  drag-out / reorder were unreachable outside the full-screen Folder
+  view. Bloom members now carry their member index, the bloom draws the
+  carried member with origin placeholder + hover ring like the full
+  view, and in-folder drop targeting only considers that folder's
+  members. This also covers the "Bloom-mode member arranging" backlog
+  item below. Verified: unit tests 52/52, emulator smoke (grid + Photos
+  bloom render); the gesture itself needs a real finger or the phone —
+  emulator input injection can't long-press.
+
 ## Next
 
 Nothing queued — pick from Later below.

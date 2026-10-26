@@ -1246,13 +1246,15 @@ class WatchView(
             PlaceSlots.DropAction.MENU ->
                 if (!inFolder && !editMode) {
                     cardFolder = null
-                    val origin = hits.firstOrNull { it.slotIndex == from }
+                    val origin = hits.firstOrNull { it.slotIndex == from && it.item.key == item.key }
+                        ?: hits.firstOrNull { it.slotIndex == from }
                     openCardMenu(item, from, origin?.x ?: dropX, origin?.y ?: dropY, origin?.r ?: dp(31f))
                 } else if (inFolder && folder != null && folder.isCustom && item is App) {
                     // Inside a custom folder the card takes over too, with a
                     // "Remove from …" row (the classic menu buried it).
                     cardFolder = folder
-                    val origin = hits.firstOrNull { it.slotIndex == from }
+                    val origin = hits.firstOrNull { it.slotIndex == from && it.item.key == item.key }
+                        ?: hits.firstOrNull { it.slotIndex == from }
                     openCardMenu(item, from, origin?.x ?: dropX, origin?.y ?: dropY, origin?.r ?: dp(31f))
                 } else onLongPressItem(item, from)
             PlaceSlots.DropAction.PIN -> {
@@ -3335,10 +3337,39 @@ class WatchView(
             val app = folder.apps[i]
             drawIcon(c, app.icon, x, y, dia, alpha * bVal, hasNotification(app), app.key in pinnedItemKeys)
             if (hypot(x - cx, y - cy) <= islandR) {
-                hits += Hit(x, y, dia / 2, app)
+                hits += Hit(x, y, dia / 2, app, i)
             }
         }
         c.restore()
+
+        // Carried member while drag-arranging / dragging out of the bloom:
+        // the same overlay the full Folder view draws. The bloom used to
+        // skip it (and registered member hits without slot indices), so a
+        // long-press on a bloom member never picked it up and the member
+        // Context Card / drag-out were unreachable in Bloom mode.
+        if (placeInFolder && placeItem != null && placeFolder?.key == folder.key) {
+            val carriedItem = placeItem!!
+            val origin = hits.firstOrNull { it.slotIndex == placeFromSlot && it.item.key == carriedItem.key }
+            if (origin != null) {
+                fill.color = Color.argb((alpha * 150).toInt(), 0, 0, 0)
+                c.drawCircle(origin.x, origin.y, origin.r, fill)
+                stroke.strokeWidth = dp(1.5f)
+                stroke.color = withAlpha(accent, (alpha * 160).toInt())
+                c.drawCircle(origin.x, origin.y, origin.r, stroke)
+            }
+            val hoverHit = hits.firstOrNull { it.slotIndex == placeHoverSlot && it.item.key != carriedItem.key }
+            if (hoverHit != null && placeHoverSlot != placeFromSlot) {
+                stroke.strokeWidth = dp(3f)
+                stroke.color = withAlpha(accent, (alpha * 255).toInt())
+                c.drawCircle(hoverHit.x, hoverHit.y, hoverHit.r + dp(3f), stroke)
+            }
+            val carriedApp = carriedItem as? App
+            if (carriedApp != null) {
+                advancePlaceSpring()
+                val cd = (origin?.r ?: dp(31f)) * 2f * placeScale
+                drawIcon(c, carriedApp.icon, placeDrawX, placeDrawY, cd, alpha * bVal, hasNotification(carriedApp), carriedApp.key in pinnedItemKeys, jiggle = false)
+            }
+        }
 
         val ph = dp(38f)
         val label = "🌊 ${folder.label} (${folder.apps.size})   ✕"
@@ -4868,7 +4899,9 @@ class WatchView(
                 if (placeItem != null) {
                     placeX = e.x; placeY = e.y
                     if (hypot(e.x - downX, e.y - downY) > slop) placeMoved = true
-                    val centers = hits.filter { it.slotIndex >= 0 }.map { Triple(it.x, it.y, it.slotIndex) }
+                    val centers = hits.filter { it.slotIndex >= 0 }
+                        .filter { !placeInFolder || placeFolder?.apps?.any { a -> a.key == it.item.key } == true }
+                        .map { Triple(it.x, it.y, it.slotIndex) }
                     val newHover = PlaceSlots.nearestSlot(e.x, e.y, centers, dp(90f))
                     if (newHover != placeHoverSlot) {
                         placeHoverSlot = newHover

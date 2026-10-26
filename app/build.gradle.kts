@@ -12,8 +12,8 @@ android {
         // OnBackInvokedCallback and the Android 13 themed-icon APIs.
         minSdk = 33
         targetSdk = 36
-        versionCode = 19
-        versionName = "1.8.0"
+        versionCode = 20
+        versionName = "1.8.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.8.1 — 2026-10-25
+
+- **Fix: folder members in Bloom mode can be long-pressed again** — the
+  bloom registered its member bubbles without slot indices, so a
+  long-press on a member inside a bloomed folder never picked it up:
+  the member Context Card ("Remove from …"), drag-to-rearrange and
+  drag-out-to-remove only worked in the full-screen Folder view. Bloom
+  members now carry their member index like the full view, the bloom
+  draws the carried member (with origin placeholder and hover ring)
+  while dragging, and drop targeting inside a folder only considers
+  that folder's members. Found by live-testing 1.8.0 on a phone in
+  Bloom mode; the full-screen view was unaffected.
+
 ## 1.8.0 — 2026-10-25
 
 - **Battery: the pulse loop only runs when it can be seen** — the ~75ms
