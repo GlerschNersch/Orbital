@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.7.0 — 2026-10-25
+
+- **Dock polish** — the four dock icons are now drawn in one line style
+  (clock, hex cluster, list, stacked cards) instead of mixed font glyphs
+  and an emoji; cleaner active-segment highlight and spacing.
+- **Folder actions where you'd look for them** — an open folder's header
+  now carries its own buttons: ✎ Rename and 🗑 Delete on custom folders,
+  and Hide on automatic category folders (members spill loose; restore
+  from the Cluster sheet's "Hidden Folders" row, or Undo). Deleting the
+  folder you're standing in closes it cleanly.
+- **Getting apps out of folders** — long-pressing a member inside a
+  custom folder now opens its card with "Remove from …" as a first-class
+  row, and dragging a member to the "✕ Remove from folder" zone at the
+  top un-files it.
+
 ## 1.6.0 — 2026-10-25
 
 - **Bottom navigation dock** — the lone List/Grid pill becomes a compact

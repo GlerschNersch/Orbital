@@ -145,6 +145,8 @@ class MainActivity : Activity(), SensorEventListener {
             onCreateFolder = ::createFolder,
             onRenameFolder = ::renameFolder,
             onDeleteFolder = ::deleteFolder,
+            onRemoveFromFolder = ::removeFromFolder,
+            onHideFolder = ::hideFolder,
             onUnpinItem = ::unpinItem,
             onReorderFolderMember = ::reorderFolderMember,
             onQuickInfo = ::quickAppInfo,
@@ -324,6 +326,26 @@ class MainActivity : Activity(), SensorEventListener {
         }, 300L)
     }
 
+    /** Takes [app] out of custom [folder] (menu, member card, drag-out). */
+    private fun removeFromFolder(folder: Folder, app: App) {
+        val fid = folder.customId ?: return
+        repo.removeFromCustomFolder(fid, app.key)
+        pushAppsToView(apps)
+        view.closeFolder()
+        Toast.makeText(this, "${app.label} removed from ${folder.label}", Toast.LENGTH_SHORT).show()
+    }
+
+    /** Hides an automatic category folder; members stay loose (1.7.0). */
+    private fun hideFolder(folder: Folder) {
+        repo.setGroupHidden(folder.group, true)
+        pushAppsToView(apps)
+        view.closeFolder()
+        view.showPlaceUndo("\uD83D\uDC41 ${folder.label} folder hidden") {
+            repo.setGroupHidden(folder.group, false)
+            pushAppsToView(apps)
+        }
+    }
+
     /** Rename prompt for a custom folder (menu + Context Card share this). */
     private fun renameFolder(item: Folder) {
         val id = item.customId ?: return
@@ -342,6 +364,7 @@ class MainActivity : Activity(), SensorEventListener {
             .setMessage("The folder goes away; its ${item.apps.size} apps stay on the grid.")
             .setPositiveButton("Delete") { _, _ ->
                 repo.deleteCustomFolder(id)
+                if (view.openCustomFolder?.customId == id) view.closeFolder()
                 pushAppsToView(apps)
                 Toast.makeText(this, "Folder deleted", Toast.LENGTH_SHORT).show()
             }
@@ -515,6 +538,7 @@ class MainActivity : Activity(), SensorEventListener {
                 factors[f.key] = dev.watchreborn.ui.UsageScale.factor(hottest, maxScore)
             }
             view.post {
+                view.hiddenFolderCount = repo.hiddenGroups().size
                 view.pinnedItemKeys = pinnedKeys
                 val myUser = Process.myUserHandle()
                 view.uninstallableKeys = list.asSequence()
@@ -588,6 +612,11 @@ class MainActivity : Activity(), SensorEventListener {
                 val next = !view.bubblePhysics
                 prefs.edit().putBoolean(KEY_BUBBLE_PHYSICS, next).apply()
                 view.bubblePhysics = next
+            }
+            ClusterOption.UNHIDE_FOLDERS -> {
+                repo.clearHiddenGroups()
+                if (apps.isNotEmpty()) pushAppsToView(apps)
+                Toast.makeText(this, "Hidden folders restored", Toast.LENGTH_SHORT).show()
             }
             ClusterOption.PER_LAYOUT_PINS -> {
                 val next = !view.perLayoutPins
@@ -980,13 +1009,7 @@ class MainActivity : Activity(), SensorEventListener {
                         }
                         316 -> {
                             val f = view.openCustomFolder
-                            val fid = f?.customId
-                            if (f != null && fid != null) {
-                                repo.removeFromCustomFolder(fid, item.key)
-                                pushAppsToView(apps)
-                                view.back()
-                                Toast.makeText(this, "${item.label} removed from ${f.label}", Toast.LENGTH_SHORT).show()
-                            }
+                            if (f != null) removeFromFolder(f, item)
                         }
                         311 -> view.openClusterSheet()
                         313 -> view.enterEditMode()

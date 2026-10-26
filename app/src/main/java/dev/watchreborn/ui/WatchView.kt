@@ -78,6 +78,7 @@ enum class ClusterOption {
     AUTO_FOLDERS,
     SET_DEFAULT_HOME,
     CLEAR_PINS,
+    UNHIDE_FOLDERS,
     CLOSE_SHEET,
 }
 
@@ -107,6 +108,8 @@ class WatchView(
     private val onCreateFolder: (App, App) -> Unit,
     private val onRenameFolder: (Folder) -> Unit,
     private val onDeleteFolder: (Folder) -> Unit,
+    private val onRemoveFromFolder: (Folder, App) -> Unit,
+    private val onHideFolder: (Folder) -> Unit,
     private val onUnpinItem: (GridItem) -> Unit,
     private val onReorderFolderMember: (Folder, Int, Int) -> Unit,
     private val onQuickInfo: (App) -> Unit,
@@ -239,6 +242,12 @@ class WatchView(
     private var placeInFolder: Boolean = false
     private var placeFolder: Folder? = null
     private val releasePinRect = RectF()
+    /** "Remove from folder" drop zone shown while dragging a folder member. */
+    private val folderRemoveZone = RectF()
+    /** Header action buttons of the open folder (rebuilt by the header draws). */
+    private val folderRenameRect = RectF()
+    private val folderDeleteRect = RectF()
+    private val folderHideRect = RectF()
 
     // --- Context Card (1.2.0 prototype): replaces the 1.1.0 Center Stage,
     // which Matt found too full-screen. Modelled on the iOS Haptic Touch
@@ -248,6 +257,8 @@ class WatchView(
     // blooms while holding; rows are tapped as a normal second tap.
     private val cardMenu = Spring(0f, 0.28f)
     private var cardItem: GridItem? = null
+    /** The custom folder whose member the card was opened for, if any. */
+    private var cardFolder: Folder? = null
     private var cardSlot: Int = -1
     private var cardOpenedMs: Long = 0L
 
@@ -275,6 +286,7 @@ class WatchView(
     }
 
     private fun closeCardMenu() {
+        cardFolder = null
         cardMenu.target = 0f
         invalidate()
     }
@@ -464,6 +476,9 @@ class WatchView(
             rebuildGridHexes()
             invalidate()
         }
+
+    /** Category folders currently hidden via the folder header (sheet count). */
+    var hiddenFolderCount: Int = 0
 
     /** #1: True = Honeycomb Grid is the primary home screen with a live Clock & Status Core Bubble at (0, 0). */
     var honeycombHome: Boolean = true
@@ -1189,12 +1204,26 @@ class WatchView(
             onUnpinItem(item)
             return
         }
+        // Dragging a custom-folder member onto the remove zone un-files it.
+        if (moved && inFolder && folder != null && folder.isCustom && item is App &&
+            !folderRemoveZone.isEmpty && folderRemoveZone.contains(dropX, dropY)) {
+            performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+            onRemoveFromFolder(folder, item)
+            return
+        }
         when (PlaceSlots.resolveDrop(moved, from, hover)) {
             // Released without a drag in the full grid: the Context Card
             // takes over from the classic menu. Inside a folder or Edit
             // Layout the classic menu still opens (arranging flows keep it).
             PlaceSlots.DropAction.MENU ->
                 if (!inFolder && !editMode) {
+                    cardFolder = null
+                    val origin = hits.firstOrNull { it.slotIndex == from }
+                    openCardMenu(item, from, origin?.x ?: dropX, origin?.y ?: dropY, origin?.r ?: dp(31f))
+                } else if (inFolder && folder != null && folder.isCustom && item is App) {
+                    // Inside a custom folder the card takes over too, with a
+                    // "Remove from …" row (the classic menu buried it).
+                    cardFolder = folder
                     val origin = hits.firstOrNull { it.slotIndex == from }
                     openCardMenu(item, from, origin?.x ?: dropX, origin?.y ?: dropY, origin?.r ?: dp(31f))
                 } else onLongPressItem(item, from)
@@ -1239,6 +1268,11 @@ class WatchView(
     /** The rows the Context Card offers for [item], in iOS order: primary
      * actions first, Edit Home Screen near the end, Remove App last. */
     private fun cardKindsFor(item: GridItem): List<Int> {
+        // A member of a custom folder gets its own short card: launch, info,
+        // the classic menu, and the way out of the folder.
+        if (cardFolder != null && item is App) {
+            return listOf(CARD_LAUNCH, CARD_INFO, CARD_MORE, CARD_REMOVE_FROM_FOLDER)
+        }
         val kinds = ArrayList<Int>()
         if (item.key in pinnedItemKeys) kinds += CARD_UNPIN else if (cardSlot >= 0) kinds += CARD_PIN
         when (item) {
@@ -1266,6 +1300,8 @@ class WatchView(
         CARD_UNINSTALL -> "Remove App"
         CARD_RENAME -> "Rename Folder"
         CARD_DELETE_FOLDER -> "Delete Folder"
+        CARD_LAUNCH -> "Open App"
+        CARD_REMOVE_FROM_FOLDER -> "Remove from ${cardFolder?.label ?: "Folder"}"
         else -> ""
     }
 
@@ -1280,6 +1316,8 @@ class WatchView(
         CARD_UNINSTALL -> "\u2296"
         CARD_RENAME -> "\u270E"
         CARD_DELETE_FOLDER -> "\uD83D\uDDD1"
+        CARD_LAUNCH -> "\u25B6"
+        CARD_REMOVE_FROM_FOLDER -> "\u21A9"
         else -> ""
     }
 
@@ -1300,6 +1338,14 @@ class WatchView(
             CARD_EDIT -> enterEditMode()
             CARD_RENAME -> if (item is Folder) onRenameFolder(item)
             CARD_DELETE_FOLDER -> if (item is Folder) onDeleteFolder(item)
+            CARD_LAUNCH -> if (item is App) onLaunch(
+                item,
+                RectF(cardOriginX - cardOriginR, cardOriginY - cardOriginR, cardOriginX + cardOriginR, cardOriginY + cardOriginR),
+            )
+            CARD_REMOVE_FROM_FOLDER -> {
+                val f = cardFolder
+                if (f != null && item is App) onRemoveFromFolder(f, item)
+            }
         }
     }
 
@@ -1471,6 +1517,25 @@ class WatchView(
             c.drawText(s, releasePinRect.centerX() - text.measureText(s) / 2, releasePinRect.centerY() + text.textSize * 0.35f, text)
         } else {
             releasePinRect.setEmpty()
+        }
+        // Remove zone while carrying a custom-folder member: drop here to
+        // take the app back out of its folder.
+        if (placeMoved && placeInFolder && placeFolder?.isCustom == true && item is App) {
+            val zw = dp(210f)
+            val zh = dp(40f)
+            folderRemoveZone.set(width / 2f - zw / 2, topInset + dp(64f), width / 2f + zw / 2, topInset + dp(64f) + zh)
+            val hot = folderRemoveZone.contains(placeX, placeY)
+            fill.color = if (hot) Color.argb((alpha * 240).toInt(), 120, 34, 40) else Color.argb((alpha * 210).toInt(), 44, 40, 44)
+            c.drawRoundRect(folderRemoveZone, zh / 2, zh / 2, fill)
+            stroke.strokeWidth = dp(1.2f)
+            stroke.color = Color.argb((alpha * 220).toInt(), 255, 110, 110)
+            c.drawRoundRect(folderRemoveZone, zh / 2, zh / 2, stroke)
+            text.textSize = sp(12.5f)
+            val s2 = "✕ Remove from folder"
+            text.color = Color.argb((alpha * 255).toInt(), 255, 190, 190)
+            c.drawText(s2, folderRemoveZone.centerX() - text.measureText(s2) / 2, folderRemoveZone.centerY() + text.textSize * 0.35f, text)
+        } else {
+            folderRemoveZone.setEmpty()
         }
         // No menu while carrying (the Context Card replaced the bloom): a hold is
         // purely a pickup for drag-to-place now.
@@ -2089,7 +2154,10 @@ class WatchView(
         invalidate()
     }
 
-    private fun closeFolder() {
+    fun closeFolder() {
+        folderRenameRect.setEmpty()
+        folderDeleteRect.setEmpty()
+        folderHideRect.setEmpty()
         folderIn.target = 0f
         folderPanX.target = 0f
         folderPanY.target = 0f
@@ -3244,7 +3312,8 @@ class WatchView(
         val label = "🌊 ${folder.label} (${folder.apps.size})   ✕"
         text.textSize = sp(14.5f)
         val tw = text.measureText(label)
-        val pw = tw + dp(32f)
+        val btnSpace = folderHeaderBtnSpace(folder)
+        val pw = tw + dp(32f) + btnSpace
         folderHeaderRect.set(w / 2 - pw / 2, top + dp(8f), w / 2 + pw / 2, top + dp(8f) + ph)
         fill.color = Color.argb((aInt * 0.92f).toInt(), 38, 40, 44)
         c.drawRoundRect(folderHeaderRect, ph / 2, ph / 2, fill)
@@ -3252,7 +3321,9 @@ class WatchView(
         stroke.color = withAlpha(folder.tint, aInt)
         c.drawRoundRect(folderHeaderRect, ph / 2, ph / 2, stroke)
         text.color = Color.argb(aInt, 255, 255, 255)
-        c.drawText(label, w / 2 - tw / 2, folderHeaderRect.centerY() + text.textSize * 0.35f, text)
+        val labelCx = (folderHeaderRect.left + folderHeaderRect.right - btnSpace) / 2
+        c.drawText(label, labelCx - tw / 2, folderHeaderRect.centerY() + text.textSize * 0.35f, text)
+        drawFolderHeaderButtons(c, folder, aInt)
     }
 
     /** #5: Draws an interactive Blooming Widget Pod at the center of the parted honeycomb! */
@@ -3610,6 +3681,9 @@ class WatchView(
             if (pinnedItemKeys.isNotEmpty()) {
                 add(Triple(ClusterOption.CLEAR_PINS, "Pinned Hex Slots (${pinnedItemKeys.size})", "📌 Tap to unpin all bubbles"))
             }
+            if (hiddenFolderCount > 0) {
+                add(Triple(ClusterOption.UNHIDE_FOLDERS, "Hidden Folders ($hiddenFolderCount)", "👁 Tap to bring them back"))
+            }
         }
 
         val headerH = dp(19f)
@@ -3825,6 +3899,50 @@ class WatchView(
     }
 
     /** Classic full-screen Folder View (used when [bloomFolders] is false). */
+    /** Extra pill width the open folder's header buttons need. */
+    private fun folderHeaderBtnSpace(folder: Folder): Float =
+        if (folder.isCustom) dp(78f) else dp(58f)
+
+    /**
+     * Header action buttons for the open folder, drawn inside its pill:
+     * Rename + Delete for custom folders, Hide for automatic category
+     * folders. Rects are recorded for tap(); the rest of the pill closes.
+     */
+    private fun drawFolderHeaderButtons(c: Canvas, folder: Folder, aInt: Int) {
+        val cy = folderHeaderRect.centerY()
+        if (folder.isCustom) {
+            val r = dp(15f)
+            val delCx = folderHeaderRect.right - dp(24f)
+            val renCx = delCx - dp(38f)
+            folderDeleteRect.set(delCx - r, cy - r, delCx + r, cy + r)
+            folderRenameRect.set(renCx - r, cy - r, renCx + r, cy + r)
+            folderHideRect.setEmpty()
+            fill.color = Color.argb((aInt * 0.16f).toInt(), 255, 255, 255)
+            c.drawCircle(renCx, cy, r, fill)
+            c.drawCircle(delCx, cy, r, fill)
+            text.textAlign = Paint.Align.CENTER
+            text.textSize = sp(13f)
+            text.color = Color.argb(aInt, 255, 255, 255)
+            c.drawText("✎", renCx, cy + text.textSize * 0.36f, text)
+            text.textSize = sp(12f)
+            c.drawText("🗑", delCx, cy + text.textSize * 0.36f, text)
+            text.textAlign = Paint.Align.LEFT
+        } else {
+            folderRenameRect.setEmpty()
+            folderDeleteRect.setEmpty()
+            val bw = dp(48f)
+            val bh = dp(26f)
+            folderHideRect.set(folderHeaderRect.right - dp(8f) - bw, cy - bh / 2, folderHeaderRect.right - dp(8f), cy + bh / 2)
+            fill.color = Color.argb((aInt * 0.16f).toInt(), 255, 255, 255)
+            c.drawRoundRect(folderHideRect, bh / 2, bh / 2, fill)
+            text.textAlign = Paint.Align.CENTER
+            text.textSize = sp(11f)
+            text.color = Color.argb(aInt, 255, 255, 255)
+            c.drawText("Hide", folderHideRect.centerX(), cy + text.textSize * 0.36f, text)
+            text.textAlign = Paint.Align.LEFT
+        }
+    }
+
     private fun drawFolderView(c: Canvas, w: Float, h: Float, top: Float, alpha: Float) {
         val folder = activeFolder ?: return
         val u = unit
@@ -3883,7 +4001,8 @@ class WatchView(
         val label = "←  ${folder.label} (${folder.apps.size})"
         text.textSize = sp(15f)
         val tw = text.measureText(label)
-        val pw = tw + dp(36f)
+        val btnSpace = folderHeaderBtnSpace(folder)
+        val pw = tw + dp(36f) + btnSpace
         folderHeaderRect.set(w / 2 - pw / 2, top + dp(8f), w / 2 + pw / 2, top + dp(8f) + ph)
         fill.color = Color.argb((alpha * 235).toInt(), 44, 44, 46)
         c.drawRoundRect(folderHeaderRect, ph / 2, ph / 2, fill)
@@ -3891,7 +4010,9 @@ class WatchView(
         stroke.color = withAlpha(folder.tint, (alpha * 220).toInt())
         c.drawRoundRect(folderHeaderRect, ph / 2, ph / 2, stroke)
         text.color = Color.argb((alpha * 255).toInt(), 255, 255, 255)
-        c.drawText(label, w / 2 - tw / 2, folderHeaderRect.centerY() + text.textSize * 0.35f, text)
+        val labelCx = (folderHeaderRect.left + folderHeaderRect.right - btnSpace) / 2
+        c.drawText(label, labelCx - tw / 2, folderHeaderRect.centerY() + text.textSize * 0.35f, text)
+        drawFolderHeaderButtons(c, folder, (alpha * 255).toInt().coerceIn(0, 255))
     }
 
     private fun drawCrownTrack(c: Canvas, w: Float, h: Float, top: Float, bottom: Float, alpha: Float) {
@@ -4066,28 +4187,73 @@ class WatchView(
             grid.target >= 0.5f -> DOCK_CLUSTER
             else -> DOCK_FACE
         }
-        val glyphs = arrayOf("\u2302", "\u25A6", "\u2630", "\uD83D\uDDC2")
         val labels = arrayOf("Face", "Cluster", "List", "Stack")
         for (i in 0 until 4) {
             val seg = RectF(pill.left + i * segW, py, pill.left + (i + 1) * segW, py + ph)
             dockSegs[i].set(seg)
             val active = i == activeSeg
             if (active) {
-                fill.color = withAlpha(accent, (alpha * 46).toInt())
-                val hl = RectF(seg.left + dp(5f), seg.top + dp(5f), seg.right - dp(5f), seg.bottom - dp(5f))
-                c.drawRoundRect(hl, dp(19f), dp(19f), fill)
+                fill.color = withAlpha(accent, (alpha * 40).toInt())
+                val hl = RectF(seg.left + dp(6f), seg.top + dp(6f), seg.right - dp(6f), seg.bottom - dp(6f))
+                c.drawRoundRect(hl, dp(16f), dp(16f), fill)
             }
-            text.textAlign = Paint.Align.CENTER
-            text.textSize = sp(15f)
-            text.color = if (active) withAlpha(accent, (alpha * 255).toInt())
+            val iconColor = if (active) withAlpha(accent, (alpha * 255).toInt())
                 else Color.argb((alpha * 205).toInt(), 235, 235, 240)
-            c.drawText(glyphs[i], seg.centerX(), py + dp(25f), text)
+            drawDockIcon(c, i, seg.centerX(), py + dp(19f), dp(17f), iconColor)
+            text.textAlign = Paint.Align.CENTER
             text.textSize = sp(9f)
             text.color = if (active) withAlpha(accent, (alpha * 255).toInt())
                 else Color.argb((alpha * 165).toInt(), 195, 195, 200)
-            c.drawText(labels[i], seg.centerX(), py + ph - dp(7f), text)
+            c.drawText(labels[i], seg.centerX(), py + ph - dp(6f), text)
             text.textAlign = Paint.Align.LEFT
         }
+    }
+
+    /** One dock icon, drawn rather than a font glyph so all four segments
+     *  share one line style (1.7.0 polish — the glyph set looked ragged). */
+    private fun drawDockIcon(c: Canvas, kind: Int, cx: Float, cy: Float, s: Float, color: Int) {
+        stroke.color = color
+        stroke.strokeWidth = dp(1.7f)
+        stroke.strokeCap = Paint.Cap.ROUND
+        fill.color = color
+        when (kind) {
+            DOCK_FACE -> {
+                c.drawCircle(cx, cy, s * 0.48f, stroke)
+                c.drawLine(cx, cy, cx, cy - s * 0.28f, stroke)
+                c.drawLine(cx, cy, cx + s * 0.22f, cy + s * 0.12f, stroke)
+            }
+            DOCK_CLUSTER -> {
+                val ring = s * 0.31f
+                val dot = s * 0.13f
+                c.drawCircle(cx, cy, dot, fill)
+                for (k in 0 until 6) {
+                    val a = Math.toRadians(k * 60.0 - 90.0)
+                    c.drawCircle(cx + (cos(a) * ring).toFloat(), cy + (sin(a) * ring).toFloat(), dot, fill)
+                }
+            }
+            DOCK_LIST -> {
+                for (row in -1..1) {
+                    val y = cy + row * s * 0.32f
+                    c.drawLine(cx - s * 0.24f, y, cx + s * 0.46f, y, stroke)
+                    c.drawCircle(cx - s * 0.40f, y, s * 0.075f, fill)
+                }
+            }
+            DOCK_STACK -> {
+                val side = s * 0.54f
+                for (k in 2 downTo 0) {
+                    val ox = cx - side / 2 + k * s * 0.17f
+                    val oy = cy - side / 2 - k * s * 0.17f + s * 0.17f
+                    val rr = RectF(ox, oy, ox + side, oy + side)
+                    if (k == 0) {
+                        fill.color = withAlpha(color, 70)
+                        c.drawRoundRect(rr, dp(3f), dp(3f), fill)
+                        fill.color = color
+                    }
+                    c.drawRoundRect(rr, dp(3f), dp(3f), stroke)
+                }
+            }
+        }
+        stroke.strokeCap = Paint.Cap.BUTT
     }
 
     private fun hasNotification(item: GridItem): Boolean {
@@ -5284,6 +5450,22 @@ class WatchView(
                 return
             }
             if (folderIn.target >= 0.5f) {
+                val af = activeFolder
+                if (af != null && !folderRenameRect.isEmpty && folderRenameRect.contains(x, y)) {
+                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    onRenameFolder(af)
+                    return
+                }
+                if (af != null && !folderDeleteRect.isEmpty && folderDeleteRect.contains(x, y)) {
+                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    onDeleteFolder(af)
+                    return
+                }
+                if (af != null && !folderHideRect.isEmpty && folderHideRect.contains(x, y)) {
+                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    onHideFolder(af)
+                    return
+                }
                 if (!folderHeaderRect.isEmpty && folderHeaderRect.contains(x, y)) {
                     closeFolder()
                     return
@@ -5517,6 +5699,8 @@ class WatchView(
         const val CARD_EDIT = 6
         const val CARD_RENAME = 7
         const val CARD_DELETE_FOLDER = 8
+        const val CARD_LAUNCH = 9
+        const val CARD_REMOVE_FROM_FOLDER = 10
         const val DOCK_FACE = 0
         const val DOCK_CLUSTER = 1
         const val DOCK_LIST = 2

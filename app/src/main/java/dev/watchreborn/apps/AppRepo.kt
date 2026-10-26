@@ -144,6 +144,20 @@ class AppRepo(private val context: Context) {
     }
 
     /** Effective group for [app], respecting any user override. */
+    /** Category folders the user hid from the folder header (1.7.0). */
+    fun hiddenGroups(): Set<String> =
+        prefs.getString("hidden_groups", null)?.split(',')?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
+
+    fun setGroupHidden(group: AppGroup, hidden: Boolean) {
+        val cur = hiddenGroups().toMutableSet()
+        if (hidden) cur += group.name else cur -= group.name
+        prefs.edit().putString("hidden_groups", cur.joinToString(",")).apply()
+    }
+
+    fun clearHiddenGroups() {
+        prefs.edit().remove("hidden_groups").apply()
+    }
+
     fun groupOf(app: App): AppGroup {
         val over = prefs.getString("group:${app.key}", null) ?: return app.defaultGroup
         return runCatching { AppGroup.valueOf(over) }.getOrDefault(app.defaultGroup)
@@ -363,9 +377,10 @@ class AppRepo(private val context: Context) {
         val loose = ArrayList<App>()
         val now = System.currentTimeMillis()
 
+        val hidden = hiddenGroups()
         for (g in AppGroup.entries) {
             val members = byGroup[g].orEmpty()
-            if (g == AppGroup.OTHER || members.size < 2) {
+            if (g == AppGroup.OTHER || members.size < 2 || g.name in hidden) {
                 for (m in members) if (m.key !in primaryKeys) loose += m
             } else {
                 // Sort members inside each folder: a saved drag-arranged order wins;
