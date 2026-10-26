@@ -209,8 +209,10 @@ Sizes: S = an hour-ish, M = an afternoon, L = a bigger project.
 
 ## Later (bigger bets)
 
-- **Accessibility pass** — the whole UI is one custom `View`; TalkBack needs a virtual
-  view hierarchy (`ExploreByTouchHelper`) exposing bubbles, pills and sheet rows.
+- **Accessibility pass (remaining)** — DONE in 1.0.0 for bubbles, the face dock and
+  Stack cards (framework `AccessibilityNodeProvider`, see `WatchAccessibility.kt`).
+  Still to map: Cluster sheet rows, topology picker rows, widget pod actions and
+  Control Center toggles, which draw in their own rect systems.
 - **State-machine consolidation** — NavBack models Back priority; the next step is a
   single `NavState` reducer owning all layer transitions, retiring ad-hoc spring pokes.
 - **Per-layout settings memory** — remember zoom/pan per topology instead of resetting on

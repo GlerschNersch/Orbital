@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.0.0 — 2026-10-25
+
+First production release.
+
+- **Release build, properly signed** — the release variant now builds clean
+  and signs with the real release keystore (`CN=Reborn Launchers`); verified
+  installed and running on-device (grid, watch face, Smart Stack).
+- **Everything is committed** — the previously uncommitted WIP (interactive
+  Smart Stack cards with transport controls, Now Playing listener service,
+  Turn Off accessibility service, Control Center, app classifier + test) is
+  in git, so a clean checkout reproduces the app exactly.
+- **TalkBack support (first pass)** — the single canvas View now exposes a
+  virtual accessibility hierarchy (framework `AccessibilityNodeProvider`,
+  no new dependencies): every grid/list/search/folder/overview bubble with
+  its name and tap bounds, the watch face's favourite-app dock, and Smart
+  Stack cards. Activating a node runs the same tap path as a finger, and
+  explore-by-touch moves accessibility focus. Verified against the
+  framework: the host advertises its virtual children and accessibility
+  clients can fetch them all. Still host-only (not yet node-mapped): the
+  Cluster sheet, topology picker, widget pod and Control Center.
+- Version scheme moves to 1.0.0 (versionCode 10); 40 unit tests green.
+
 ## 0.3.5 — 2026-10-25
 
 - **UX-test fix pass** — everything the full UX test pass flagged:
