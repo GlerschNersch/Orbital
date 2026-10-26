@@ -7,6 +7,12 @@ every face, icon shape and drawing is our own. No Apple code, artwork or fonts a
 
 Sibling of XMB, PS4, X360, Switch, C64U, VCS and TSF Reborn.
 
+## Download
+
+Grab the latest signed APK from the [Releases page](https://github.com/GlerschNersch/WatchReborn/releases/latest) — open the `.apk` on your phone and allow installs from your browser or file manager when Android asks. Requires Android 13 or newer.
+
+After installing, open **WatchReborn** from your app drawer. To make it your launcher, go to **Settings → Apps → Default apps → Home app** and pick WatchReborn. Notification access (Settings → Notifications → Notification access) is optional — it only powers the notification dots, pulse rings and the Now Playing stack card.
+
 ## Using it
 
 - **The face** shows battery, date and next alarm along the top, a large time with the seconds
