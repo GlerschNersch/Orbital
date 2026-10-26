@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.11.2 — 2026-10-26
+
+- **Cluster Options slimmed again** — the front page is now just
+  Cluster Topology, Bubble Physics and Edit Layout (plus More
+  Options). Grid Layout, Folder Open Style and Category Clustering
+  moved behind More Options with the other set-and-forget settings,
+  and the App Search row is gone — the pill at the top of the cluster
+  already opens search.
+- **Bigger menu text** — option rows in the Cluster Options sheet and
+  the Cluster Layout picker are taller with larger labels and values,
+  so the menus are easier to read at a glance.
+
 ## 1.11.1 — 2026-10-25
 
 - **Per-design pan/zoom memory now survives restarts** — each design's

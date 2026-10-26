@@ -3853,33 +3853,34 @@ class WatchView(
 
         val padX = dp(18f)
         val cardW = w - 2 * padX
-        var rowH = dp(38f)
+        var rowH = dp(50f)
         val gap = dp(4f)
         // Sectioned rows: a null option marks a section header (not tappable).
-        // Simplified in 1.9.0: the sheet opens compact — the handful of
-        // options that actually get changed, plus Search / Edit Layout —
-        // and "More Options" expands the set-and-forget rows in place.
-        // Hidden Folders stays visible while collapsed when folders are
-        // hidden: it's an active state, not a setting.
+        // Simplified in 1.9.0, slimmed again in 1.11.2 (Matt's call): the
+        // front page is just Topology, Bubble Physics and Edit Layout —
+        // everything set-and-forget lives behind "More Options". The old
+        // App Search row is gone entirely: the pill at the top of the
+        // cluster already opens search. Hidden Folders stays visible
+        // while collapsed when folders are hidden: it's an active state,
+        // not a setting.
         val rows = buildList<Triple<ClusterOption?, String, String>> {
             add(Triple(null, "LAYOUT", ""))
             add(Triple(ClusterOption.CLUSTER_TOPOLOGY, "Cluster Topology", "${clusterTopology.fullTitle} • Tap for all ${ClusterTopology.entries.size} designs"))
-            add(Triple(ClusterOption.FIXED_NEIGHBORHOODS, "Grid Layout", if (fixedNeighborhoods) "Fixed Compass Neighborhoods" else "Dynamic Usage Spiral"))
             if (sheetExpanded) {
+                add(Triple(ClusterOption.FIXED_NEIGHBORHOODS, "Grid Layout", if (fixedNeighborhoods) "Fixed Compass Neighborhoods" else "Dynamic Usage Spiral"))
                 add(Triple(ClusterOption.HONEYCOMB_HOME, "Home Screen", if (honeycombHome) "Honeycomb Core Hub" else "Watch Face First"))
             }
             add(Triple(null, "BEHAVIOR", ""))
             add(Triple(ClusterOption.BUBBLE_PHYSICS, "Bubble Physics", if (bubblePhysics) "Jello, waves & billiards" else "Off — bubbles sit still"))
-            add(Triple(ClusterOption.BLOOM_MODE, "Folder Open Style", if (bloomFolders) "Bloom in place" else "Full-screen folder"))
-            add(Triple(ClusterOption.AUTO_FOLDERS, "Category Clustering", if (autoFolders) "Apps grouped by category" else "All apps loose"))
             if (sheetExpanded) {
+                add(Triple(ClusterOption.BLOOM_MODE, "Folder Open Style", if (bloomFolders) "Bloom in place" else "Full-screen folder"))
+                add(Triple(ClusterOption.AUTO_FOLDERS, "Category Clustering", if (autoFolders) "Apps grouped by category" else "All apps loose"))
                 add(Triple(ClusterOption.PER_LAYOUT_PINS, "Per-Layout Pins", if (perLayoutPins) "Separate pins per layout" else "One pin set everywhere"))
                 add(Triple(ClusterOption.USAGE_GROWTH, "Usage Growth", if (usageGrowth) "Bubbles grow with use" else "Uniform bubble sizes"))
                 add(Triple(ClusterOption.QUICK_SNIPE, "Mini-Icon Tap", if (quickSnipe) "Outer 6 icons launch" else "Tap opens the folder"))
                 add(Triple(ClusterOption.LIVE_WIDGETS, "Live Grid Widgets", if (liveWidgets) "Media, timer, calendar, vitals" else "Apps & folders only"))
             }
             add(Triple(null, "ACTIONS", ""))
-            add(Triple(ClusterOption.CONSTELLATION_SEARCH, "App Search", "Search all apps"))
             add(Triple(ClusterOption.EDIT_LAYOUT, "Edit Layout", "Drag bubbles to place them"))
             if (sheetExpanded) {
                 add(Triple(ClusterOption.SYSTEM_WIDGETS, "Android System Widgets", "View / add app widgets"))
@@ -3894,7 +3895,7 @@ class WatchView(
             add(Triple(ClusterOption.MORE_OPTIONS, if (sheetExpanded) "Show Fewer" else "More Options", if (sheetExpanded) "Collapse to the essentials" else "All the other settings"))
         }
 
-        val headerH = dp(19f)
+        val headerH = dp(22f)
         val optionCount = rows.count { it.first != null }
         val headerCount = rows.size - optionCount
         // Reserve the Clear Pins row's slot even when there are no pins, so
@@ -3902,12 +3903,12 @@ class WatchView(
         // whether or not that conditional row is present. It used to change
         // the compression and shift every row by up to ~40px between opens.
         val layoutCount = optionCount + if (sheetExpanded && pinnedItemKeys.isEmpty()) 1 else 0
-        var sheetH = dp(68f) + layoutCount * (rowH + gap) + headerCount * headerH + dp(52f)
+        var sheetH = dp(74f) + layoutCount * (rowH + gap) + headerCount * headerH + dp(52f)
         if (sheetH > h - dp(36f) && layoutCount > 0) {
             // Short screen: compress rows so the sheet — including its Done
             // button — always fits.
-            rowH = ((h - dp(36f) - dp(68f) - headerCount * headerH - dp(52f)) / layoutCount - gap).coerceAtLeast(dp(24f))
-            sheetH = dp(68f) + layoutCount * (rowH + gap) + headerCount * headerH + dp(52f)
+            rowH = ((h - dp(36f) - dp(74f) - headerCount * headerH - dp(52f)) / layoutCount - gap).coerceAtLeast(dp(34f))
+            sheetH = dp(74f) + layoutCount * (rowH + gap) + headerCount * headerH + dp(52f)
         }
 
         // No slide-in offset: the sheet fades in at its final position, so a
@@ -3922,22 +3923,22 @@ class WatchView(
         stroke.color = withAlpha(accent, (a * 0.6f).toInt())
         c.drawRoundRect(sheetBoundsRect, dp(24f), dp(24f), stroke)
 
-        text.textSize = sp(16.5f)
+        text.textSize = sp(18.5f)
         text.color = Color.argb(a, 255, 255, 255)
         val title = "Cluster Options"
-        c.drawText(title, w / 2 - text.measureText(title) / 2, sheetTop + dp(30f), text)
+        c.drawText(title, w / 2 - text.measureText(title) / 2, sheetTop + dp(32f), text)
 
-        text.textSize = sp(11f)
+        text.textSize = sp(12.5f)
         text.color = Color.argb((a * 0.7f).toInt(), 188, 190, 198)
         val hint = if (sheetExpanded) "Layout • Behavior • Actions" else "Essentials up front — More Options has the rest"
-        c.drawText(hint, w / 2 - text.measureText(hint) / 2, sheetTop + dp(49f), text)
+        c.drawText(hint, w / 2 - text.measureText(hint) / 2, sheetTop + dp(55f), text)
 
-        var ry = sheetTop + dp(62f)
+        var ry = sheetTop + dp(68f)
         for ((opt, label, valueText) in rows) {
             if (opt == null) {
-                text.textSize = sp(10.5f)
+                text.textSize = sp(12f)
                 text.color = Color.argb((a * 0.65f).toInt(), 168, 170, 178)
-                c.drawText(label, padX + dp(16f), ry + dp(13f), text)
+                c.drawText(label, padX + dp(16f), ry + dp(15f), text)
                 ry += headerH
                 continue
             }
@@ -3945,13 +3946,15 @@ class WatchView(
             fill.color = Color.argb(a, 40, 42, 48)
             c.drawRoundRect(r, dp(14f), dp(14f), fill)
 
-            text.textSize = sp(10.5f)
+            // Baselines scale with the row height so the bigger text
+            // (1.11.2) still fits when a short screen compresses rows.
+            text.textSize = sp(12.5f)
             text.color = Color.argb((a * 0.75f).toInt(), 178, 180, 188)
-            c.drawText(label, r.left + dp(14f), r.top + dp(16f), text)
+            c.drawText(label, r.left + dp(14f), r.top + rowH * 0.40f, text)
 
-            text.textSize = sp(13f)
+            text.textSize = sp(15.5f)
             text.color = withAlpha(accent, a)
-            c.drawText(valueText, r.left + dp(14f), r.top + dp(34f), text)
+            c.drawText(valueText, r.left + dp(14f), r.top + rowH * 0.86f, text)
 
             // Right-side affordance: an ON/OFF chip for toggles, a chevron for actions,
             // so the two kinds of row no longer look identical.
@@ -3968,17 +3971,17 @@ class WatchView(
                 else -> null
             }
             if (toggleOn != null) {
-                val chipW = dp(38f)
-                val chipH = dp(17f)
+                val chipW = dp(44f)
+                val chipH = dp(20f)
                 val chip = RectF(r.right - dp(12f) - chipW, r.centerY() - chipH / 2, r.right - dp(12f), r.centerY() + chipH / 2)
                 fill.color = if (toggleOn) withAlpha(accent, a) else Color.argb(a, 84, 84, 90)
                 c.drawRoundRect(chip, chipH / 2, chipH / 2, fill)
-                text.textSize = sp(9f)
+                text.textSize = sp(10.5f)
                 text.color = if (toggleOn) Color.argb(a, 0, 0, 0) else Color.argb(a, 235, 235, 240)
                 val s = if (toggleOn) "ON" else "OFF"
                 c.drawText(s, chip.centerX() - text.measureText(s) / 2, chip.centerY() + text.textSize * 0.35f, text)
             } else {
-                text.textSize = sp(17f)
+                text.textSize = sp(20f)
                 text.color = Color.argb((a * 0.6f).toInt(), 200, 202, 208)
                 c.drawText("›", r.right - dp(22f), r.centerY() + text.textSize * 0.35f, text)
             }
@@ -3993,12 +3996,12 @@ class WatchView(
             ry += rowH + gap
         }
 
-        val doneW = dp(130f)
-        val doneH = dp(38f)
+        val doneW = dp(140f)
+        val doneH = dp(42f)
         val doneRect = RectF(w / 2 - doneW / 2, ry + dp(4f), w / 2 + doneW / 2, ry + dp(4f) + doneH)
         fill.color = withAlpha(accent, a)
         c.drawRoundRect(doneRect, doneH / 2, doneH / 2, fill)
-        text.textSize = sp(14f)
+        text.textSize = sp(15.5f)
         text.color = Color.argb(a, 0, 0, 0)
         val doneStr = "Done"
         c.drawText(doneStr, w / 2 - text.measureText(doneStr) / 2, doneRect.centerY() + text.textSize * 0.35f, text)
@@ -4013,14 +4016,14 @@ class WatchView(
 
         val padX = dp(18f)
         val cardW = w - 2 * padX
-        var rowH = dp(38f)
+        var rowH = dp(50f)
         val gap = dp(4f)
         val all = ClusterTopology.entries
-        var sheetH = dp(68f) + all.size * (rowH + gap) + dp(52f)
+        var sheetH = dp(74f) + all.size * (rowH + gap) + dp(52f)
         if (sheetH > h - dp(36f)) {
             // Short screen: compress rows so the picker always fits.
-            rowH = ((h - dp(36f) - dp(68f) - dp(52f)) / all.size - gap).coerceAtLeast(dp(24f))
-            sheetH = dp(68f) + all.size * (rowH + gap) + dp(52f)
+            rowH = ((h - dp(36f) - dp(74f) - dp(52f)) / all.size - gap).coerceAtLeast(dp(34f))
+            sheetH = dp(74f) + all.size * (rowH + gap) + dp(52f)
         }
         // Same no-slide rule as the options sheet: rows never drift while opening.
         val sheetTop = (h - sheetH) / 2f
@@ -4032,17 +4035,17 @@ class WatchView(
         stroke.color = withAlpha(accent, (a * 0.6f).toInt())
         c.drawRoundRect(sheetBoundsRect, dp(24f), dp(24f), stroke)
 
-        text.textSize = sp(16.5f)
+        text.textSize = sp(18.5f)
         text.color = Color.argb(a, 255, 255, 255)
         val title = "Cluster Layout"
-        c.drawText(title, w / 2 - text.measureText(title) / 2, sheetTop + dp(30f), text)
+        c.drawText(title, w / 2 - text.measureText(title) / 2, sheetTop + dp(32f), text)
 
-        text.textSize = sp(11f)
+        text.textSize = sp(12.5f)
         text.color = Color.argb((a * 0.7f).toInt(), 188, 190, 198)
         val hint = "Tap a design to apply it instantly"
-        c.drawText(hint, w / 2 - text.measureText(hint) / 2, sheetTop + dp(49f), text)
+        c.drawText(hint, w / 2 - text.measureText(hint) / 2, sheetTop + dp(55f), text)
 
-        var ry = sheetTop + dp(62f)
+        var ry = sheetTop + dp(68f)
         for (topo in all) {
             val r = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + rowH)
             fill.color = Color.argb(a, 40, 42, 48)
@@ -4053,13 +4056,13 @@ class WatchView(
                 c.drawRoundRect(r, dp(14f), dp(14f), stroke)
             }
 
-            text.textSize = sp(13f)
+            text.textSize = sp(15.5f)
             text.color = Color.argb(a, 255, 255, 255)
-            c.drawText(topo.fullTitle, r.left + dp(14f), r.top + dp(16f), text)
+            c.drawText(topo.fullTitle, r.left + dp(14f), r.top + rowH * 0.40f, text)
 
-            text.textSize = sp(10.5f)
+            text.textSize = sp(12.5f)
             text.color = Color.argb((a * 0.75f).toInt(), 178, 180, 188)
-            c.drawText(topo.subtitle, r.left + dp(14f), r.top + dp(34f), text)
+            c.drawText(topo.subtitle, r.left + dp(14f), r.top + rowH * 0.86f, text)
 
             // Miniature preview of the layout's geometry, so designs are recognisable
             // before applying. (Liquid Pool previews as its hex seed; the live pool
@@ -4093,7 +4096,7 @@ class WatchView(
             }
 
             if (topo == clusterTopology) {
-                text.textSize = sp(15f)
+                text.textSize = sp(17f)
                 text.color = withAlpha(accent, a)
                 c.drawText("✓", r.right - dp(26f), r.centerY() + text.textSize * 0.35f, text)
             }
@@ -4102,12 +4105,12 @@ class WatchView(
             ry += rowH + gap
         }
 
-        val backW = dp(130f)
-        val backH = dp(38f)
+        val backW = dp(140f)
+        val backH = dp(42f)
         pickerBackRect.set(w / 2 - backW / 2, ry + dp(4f), w / 2 + backW / 2, ry + dp(4f) + backH)
         fill.color = Color.argb(a, 52, 54, 60)
         c.drawRoundRect(pickerBackRect, backH / 2, backH / 2, fill)
-        text.textSize = sp(14f)
+        text.textSize = sp(15.5f)
         text.color = Color.argb(a, 255, 255, 255)
         val backStr = "‹ Back"
         c.drawText(backStr, w / 2 - text.measureText(backStr) / 2, pickerBackRect.centerY() + text.textSize * 0.35f, text)

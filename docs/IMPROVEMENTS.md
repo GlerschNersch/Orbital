@@ -160,6 +160,20 @@ The whole 0.2.1 ideas backlog, built:
   the time string's ink spans 91.5% of the width against the 92% budget;
   the shrink-to-fit holds and nothing clips.
 
+## Done in 1.11.2 (2026-10-26)
+
+- **Cluster Options slimmed again (Matt's call from his phone
+  screenshot)** — front page is now Topology / Bubble Physics / Edit
+  Layout + More Options; Grid Layout, Folder Open Style and Category
+  Clustering moved into the expanded set; the App Search row was
+  removed entirely (the cluster's header pill already opens search).
+  Verified compact + expanded on the emulator.
+- **Bigger menu text** — sheet and topology-picker rows grew from
+  38dp to 50dp with larger label/value fonts (10.5/13sp → 12.5/15.5sp),
+  bigger ON/OFF chips, title and Done/Back buttons; row text baselines
+  now scale with row height so compressed rows on short screens still
+  fit their text.
+
 ## Done in 1.11.1 (2026-10-25, night)
 
 - **Topo view memory persisted** — selectTopology reports the outgoing
