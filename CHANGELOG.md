@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.20.0 — 2026-10-26
+
+- **Widget picker with previews.** The ＋ Add button now opens
+  Orbital's own picker: every widget on a card with the actual
+  preview image, its app, and its approximate size — tap one to
+  add it. (The old system picker was a bare list of names.) First
+  add may ask once for permission to create widgets.
+
 ## 1.19.1 — 2026-10-26
 
 - Fix some widgets rendering blank on the new Widgets page (the

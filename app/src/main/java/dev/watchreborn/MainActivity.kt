@@ -10,6 +10,7 @@ import android.app.Dialog
 import android.app.role.RoleManager
 import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetManager
+import android.appwidget.AppWidgetProviderInfo
 import android.bluetooth.BluetoothManager
 import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
@@ -52,6 +53,7 @@ import android.view.Window
 import android.view.WindowInsets
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ScrollView
@@ -271,6 +273,11 @@ class MainActivity : Activity(), SensorEventListener {
         val now = android.os.SystemClock.uptimeMillis()
         if (now - lastBackHandledMs < 350L) return
         lastBackHandledMs = now
+        // The widget picker, then the Widgets page, take Back first.
+        if (widgetPickerVisible()) {
+            hideWidgetPicker()
+            return
+        }
         // The Widgets page overlay takes Back first (1.19.0).
         if (widgetsPageVisible()) {
             hideWidgetsPage()
@@ -1202,7 +1209,7 @@ class MainActivity : Activity(), SensorEventListener {
                 setColor(view.accent)
                 cornerRadius = dpPx(20f).toFloat()
             }
-            setOnClickListener { launchWidgetPicker() }
+            setOnClickListener { showWidgetPicker() }
         }
         titleRow.addView(title)
         titleRow.addView(addBtn)
@@ -1283,7 +1290,7 @@ class MainActivity : Activity(), SensorEventListener {
             runCatching {
                 val hv = appWidgetHost.createView(this, id, info)
                 hv.setAppWidget(id, info)
-                val minH = info.minHeight.coerceAtLeast(dpPx(110f))
+                val minH = info.minHeight.coerceAtLeast(dpPx(150f))
                 card.addView(
                     hv,
                     LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, minH).apply {
@@ -1328,6 +1335,227 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
+    // ------------------------------------------------------------------
+    // Custom widget picker (1.20.0). The system's "Choose widget"
+    // sheet is a bare name list — Matt couldn't tell what any widget
+    // actually looked like. This picker shows each provider's own
+    // preview image on a card. Tapping one binds it directly
+    // (bindAppWidgetIdIfAllowed), falling back to the system's
+    // one-time bind-consent screen, and as a last resort to the old
+    // system list picker.
+    // ------------------------------------------------------------------
+
+    private var widgetsPicker: FrameLayout? = null
+    private var widgetsPickerCol: LinearLayout? = null
+    private var pendingBindId: Int = -1
+    private var pendingBindInfo: AppWidgetProviderInfo? = null
+
+    private fun widgetPickerVisible(): Boolean = widgetsPicker?.visibility == View.VISIBLE
+
+    private fun showWidgetPicker() {
+        val picker = widgetsPicker ?: buildWidgetPicker().also { widgetsPicker = it }
+        if (picker.parent == null) {
+            rootFrame?.addView(picker)
+        }
+        populateWidgetPicker()
+        picker.visibility = View.VISIBLE
+    }
+
+    private fun hideWidgetPicker() {
+        widgetsPicker?.visibility = View.GONE
+    }
+
+    private fun buildWidgetPicker(): FrameLayout {
+        val frame = FrameLayout(this).apply {
+            setBackgroundColor(Color.rgb(10, 11, 14))
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ).apply { bottomMargin = dpPx(118f) }
+            visibility = View.GONE
+            isClickable = true
+        }
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpPx(18f), dpPx(46f), dpPx(18f), dpPx(14f))
+        }
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val title = TextView(this).apply {
+            text = "🧩 Choose a widget"
+            textSize = 19f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val closeBtn = TextView(this).apply {
+            text = "✕ Close"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(dpPx(14f), dpPx(9f), dpPx(14f), dpPx(9f))
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(52, 54, 62))
+                cornerRadius = dpPx(20f).toFloat()
+            }
+            setOnClickListener { hideWidgetPicker() }
+        }
+        titleRow.addView(title)
+        titleRow.addView(closeBtn)
+        col.addView(titleRow)
+
+        val sub = TextView(this).apply {
+            text = "What each widget actually looks like — tap one to add it"
+            textSize = 11.5f
+            setTextColor(Color.rgb(180, 185, 195))
+            setPadding(0, dpPx(4f), 0, dpPx(12f))
+        }
+        col.addView(sub)
+
+        val scroll = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f,
+            )
+        }
+        val listCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        widgetsPickerCol = listCol
+        scroll.addView(listCol)
+        col.addView(scroll)
+        frame.addView(col)
+        return frame
+    }
+
+    private fun populateWidgetPicker() {
+        val col = widgetsPickerCol ?: return
+        col.removeAllViews()
+        val pm = packageManager
+        fun appLabel(info: AppWidgetProviderInfo): String =
+            runCatching {
+                pm.getApplicationLabel(
+                    pm.getApplicationInfo(info.provider.packageName, 0),
+                ).toString()
+            }.getOrDefault(info.provider.packageName)
+        val providers = appWidgetManager.installedProviders.sortedWith(
+            compareBy({ appLabel(it).lowercase() }, { it.loadLabel(pm).lowercase() }),
+        )
+        if (providers.isEmpty()) {
+            val empty = TextView(this).apply {
+                text = "No widgets available on this device."
+                textSize = 12.5f
+                setTextColor(Color.rgb(200, 205, 215))
+                gravity = Gravity.CENTER
+                setPadding(dpPx(16f), dpPx(36f), dpPx(16f), dpPx(36f))
+            }
+            col.addView(empty)
+            return
+        }
+        val density = resources.configuration.densityDpi
+        for (info in providers) {
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dpPx(12f), dpPx(12f), dpPx(12f), dpPx(12f))
+                background = GradientDrawable().apply {
+                    setColor(Color.rgb(34, 36, 44))
+                    cornerRadius = dpPx(18f).toFloat()
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply { bottomMargin = dpPx(10f) }
+                isClickable = true
+                setOnClickListener { bindAndAddWidget(info) }
+            }
+            val preview = runCatching { info.loadPreviewImage(this, density) }.getOrNull()
+            val icon = if (preview == null) {
+                runCatching { info.loadIcon(this, density) }.getOrNull()
+            } else {
+                null
+            }
+            if (preview != null) {
+                // The provider's own preview image — the whole point of
+                // this picker (Matt couldn't tell widgets apart in the
+                // old name-only system list).
+                val iv = ImageView(this).apply {
+                    setImageDrawable(preview)
+                    adjustViewBounds = true
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    maxHeight = dpPx(130f)
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ).apply { bottomMargin = dpPx(8f) }
+                }
+                card.addView(iv)
+            } else if (icon != null) {
+                // No preview shipped: fall back to the app icon, kept
+                // small — a full-width icon looks like a broken preview.
+                val iv = ImageView(this).apply {
+                    setImageDrawable(icon)
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        dpPx(64f),
+                    ).apply { bottomMargin = dpPx(8f) }
+                }
+                card.addView(iv)
+            }
+            val lbl = TextView(this).apply {
+                text = info.loadLabel(pm) ?: "App Widget"
+                textSize = 13.5f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Color.WHITE)
+            }
+            card.addView(lbl)
+            val meta = TextView(this).apply {
+                text = appLabel(info)
+                textSize = 11f
+                setTextColor(Color.rgb(170, 175, 185))
+                setPadding(0, dpPx(2f), 0, 0)
+            }
+            card.addView(meta)
+            col.addView(card)
+        }
+    }
+
+    private fun bindAndAddWidget(info: AppWidgetProviderInfo) {
+        val id = appWidgetHost.allocateAppWidgetId()
+        val opts = android.os.Bundle().apply {
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, info.minWidth)
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, info.minWidth)
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, info.minHeight)
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, info.minHeight)
+        }
+        val bound = runCatching {
+            appWidgetManager.bindAppWidgetIdIfAllowed(id, info.provider, opts)
+        }.getOrDefault(false)
+        if (bound) {
+            configureOrFinish(id, info)
+            return
+        }
+        // Needs the system's one-time bind consent.
+        pendingBindId = id
+        pendingBindInfo = info
+        val bindIntent = Intent(AppWidgetManager.ACTION_APPWIDGET_BIND).apply {
+            putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+            putExtra(AppWidgetManager.EXTRA_APPWIDGET_PROVIDER, info.provider)
+        }
+        val launched = runCatching {
+            startActivityForResult(bindIntent, REQ_BIND_APPWIDGET)
+        }.isSuccess
+        if (!launched) {
+            pendingBindId = -1
+            pendingBindInfo = null
+            runCatching { appWidgetHost.deleteAppWidgetId(id) }
+            // Last resort: the old system list picker.
+            launchWidgetPicker()
+        }
+    }
+
     @Suppress("DEPRECATION")
     private fun launchWidgetPicker() {
         val appWidgetId = appWidgetHost.allocateAppWidgetId()
@@ -1366,12 +1594,36 @@ class MainActivity : Activity(), SensorEventListener {
             } else if (widgetId != -1) {
                 runCatching { appWidgetHost.deleteAppWidgetId(widgetId) }
             }
+        } else if (requestCode == REQ_BIND_APPWIDGET) {
+            val bindId = pendingBindId
+            val bindInfo = pendingBindInfo
+            pendingBindId = -1
+            pendingBindInfo = null
+            if (resultCode == RESULT_OK && bindId != -1 && bindInfo != null) {
+                configureOrFinish(bindId, bindInfo)
+            } else if (bindId != -1) {
+                runCatching { appWidgetHost.deleteAppWidgetId(bindId) }
+            }
         }
+    }
+
+    /** After a successful bind: run the widget's configure screen if it
+     *  has one, otherwise finish adding straight away. */
+    private fun configureOrFinish(id: Int, info: AppWidgetProviderInfo) {
+        if (info.configure != null) {
+            val cfg = Intent(AppWidgetManager.ACTION_APPWIDGET_CONFIGURE).apply {
+                component = info.configure
+                putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+            }
+            if (runCatching { startActivityForResult(cfg, REQ_CREATE_APPWIDGET) }.isSuccess) return
+        }
+        finishAddWidget(id)
     }
 
     private fun finishAddWidget(widgetId: Int) {
         val updated = (savedWidgetIds() + widgetId).distinct()
         saveWidgetIds(updated)
+        hideWidgetPicker()
         showWidgetsPage()
     }
 
@@ -1397,6 +1649,7 @@ class MainActivity : Activity(), SensorEventListener {
             }
         const val REQ_PICK_APPWIDGET = 401
         const val REQ_CREATE_APPWIDGET = 402
+        const val REQ_BIND_APPWIDGET = 403
         const val KEY_ACCENT = "accent"
         const val KEY_LIST = "list"
         const val KEY_FOLDERS = "auto_folders"
