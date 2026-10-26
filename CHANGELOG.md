@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.0 — 2026-10-25 (prototype)
+
+- **Context Card replaces Center Stage** — Center Stage (1.1.0) took up the
+  whole screen; Matt sent the iOS Haptic Touch menu as the model instead.
+  The Context Card keeps the grid visible under a light dim, lifts the
+  pressed bubble in place with an accent ring, and anchors one compact
+  rounded card next to it (below when there's room, above when there
+  isn't, clamped on-screen). Rows follow the iOS layout — label left,
+  glyph right, hairline dividers: Pin to Hex / Unpin, App Info (or Open
+  Folder / Open Pod), More Options (the classic full menu), Edit Home
+  Screen (enters Edit Layout), and a red Remove App last when the app can
+  be uninstalled. Rows are a normal second tap; tap-outside, Back (the
+  CARD_MENU layer) or Home dismisses the card.
+
 ## 1.1.0 — 2026-10-25 (prototype)
 
 - **Center Stage replaces the quick-menu bloom** — Matt wasn't a fan of the

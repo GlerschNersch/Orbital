@@ -4,9 +4,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class NavBackTest {
-    @Test fun centerStagePopsBeforeEverything() {
-        val s = NavState(centerStageOpen = true, searching = true, sheetOpen = true, inApps = true, folderOpen = true)
-        assertEquals(NavLayer.CENTER_STAGE, NavBack.layerToPop(s))
+    @Test fun cardMenuPopsBeforeEverything() {
+        val s = NavState(cardMenuOpen = true, searching = true, sheetOpen = true, inApps = true, folderOpen = true)
+        assertEquals(NavLayer.CARD_MENU, NavBack.layerToPop(s))
     }
 
     @Test fun searchPopsBeforeEverything() {

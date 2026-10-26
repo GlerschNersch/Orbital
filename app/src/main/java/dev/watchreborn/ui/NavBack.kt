@@ -9,7 +9,7 @@ package dev.watchreborn.ui
  * full order is visible in one place.
  */
 enum class NavLayer {
-    CENTER_STAGE,
+    CARD_MENU,
     SEARCH,
     TOPOLOGY_PICKER,
     SHEET,
@@ -28,7 +28,7 @@ enum class NavLayer {
 
 /** Snapshot of the navigation-relevant state of WatchView at a Back press. */
 data class NavState(
-    val centerStageOpen: Boolean = false,
+    val cardMenuOpen: Boolean = false,
     val searching: Boolean = false,
     val topologyPickerOpen: Boolean = false,
     val sheetOpen: Boolean = false,
@@ -49,7 +49,7 @@ data class NavState(
 object NavBack {
     /** Which layer one Back press should pop, or [NavLayer.NONE] to let the system handle it. */
     fun layerToPop(s: NavState): NavLayer = when {
-        s.centerStageOpen -> NavLayer.CENTER_STAGE
+        s.cardMenuOpen -> NavLayer.CARD_MENU
         s.searching -> NavLayer.SEARCH
         s.topologyPickerOpen -> NavLayer.TOPOLOGY_PICKER
         s.sheetOpen -> NavLayer.SHEET
