@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.22.0 — 2026-10-26
+
+- **Widgets page polish** (from a test pass over the page):
+  adding a widget now scrolls the page to it — new widgets land
+  at the bottom and were easy to miss on a long page. The resize
+  grip's touch strip is taller (24→32dp) and brighter, and it
+  announces itself to TalkBack. The Remove button gets a bigger
+  tap target too.
+
 ## 1.21.0 — 2026-10-26
 
 - **Drag to resize widgets.** Every widget card on the Widgets

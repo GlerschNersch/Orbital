@@ -1153,6 +1153,7 @@ class MainActivity : Activity(), SensorEventListener {
     // ------------------------------------------------------------------
 
     private var widgetsPage: FrameLayout? = null
+    private var widgetsScroll: ScrollView? = null
     private var widgetsListCol: LinearLayout? = null
 
     private fun widgetsPageVisible(): Boolean = widgetsPage?.visibility == View.VISIBLE
@@ -1233,6 +1234,7 @@ class MainActivity : Activity(), SensorEventListener {
             orientation = LinearLayout.VERTICAL
         }
         widgetsListCol = listCol
+        widgetsScroll = scroll
         scroll.addView(listCol)
         col.addView(scroll)
         frame.addView(col)
@@ -1278,7 +1280,7 @@ class MainActivity : Activity(), SensorEventListener {
                 text = "✕ Remove"
                 textSize = 11f
                 setTextColor(Color.rgb(255, 100, 100))
-                setPadding(dpPx(8f), dpPx(4f), dpPx(8f), dpPx(4f))
+                setPadding(dpPx(12f), dpPx(8f), dpPx(12f), dpPx(8f))
                 setOnClickListener {
                     runCatching { appWidgetHost.deleteAppWidgetId(id) }
                     prefs.edit().remove("appwidget_h_$id").apply()
@@ -1358,16 +1360,20 @@ class MainActivity : Activity(), SensorEventListener {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
+            // 32dp tall (1.22.0): the 24dp strip was a fiddly target,
+            // and the row now announces itself to TalkBack.
+            isFocusable = true
+            contentDescription = "Resize widget. Drag up or down."
             layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dpPx(24f),
+                ViewGroup.LayoutParams.MATCH_PARENT, dpPx(32f),
             )
         }
         val grip = View(this).apply {
             background = GradientDrawable().apply {
-                setColor(Color.rgb(110, 115, 125))
+                setColor(Color.rgb(140, 146, 158))
                 cornerRadius = dpPx(3f).toFloat()
             }
-            layoutParams = LinearLayout.LayoutParams(dpPx(44f), dpPx(5f))
+            layoutParams = LinearLayout.LayoutParams(dpPx(48f), dpPx(6f))
         }
         row.addView(grip)
         var startY = 0f
@@ -1693,6 +1699,9 @@ class MainActivity : Activity(), SensorEventListener {
         saveWidgetIds(updated)
         hideWidgetPicker()
         showWidgetsPage()
+        // Land on the widget just added (1.22.0): it's appended at the
+        // bottom of the page, off-screen when the page is long.
+        widgetsScroll?.post { widgetsScroll?.fullScroll(View.FOCUS_DOWN) }
     }
 
     private companion object {
