@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.11.0 — 2026-10-25
+
+- **Each cluster design remembers where you left it** — switching
+  designs used to keep whatever pan you had (landing you in empty
+  space in a differently-shaped layout) while resetting your zoom.
+  Now leaving a design saves its pan and zoom, returning restores
+  them, and a design you haven't visited yet starts centred. The
+  dock's Cluster-tap recenter still zeroes the current design.
+  (Remembered for the session; not yet persisted across restarts.)
+
 ## 1.10.0 — 2026-10-25
 
 - **Watch Face tidy-up** — three review findings in one pass:

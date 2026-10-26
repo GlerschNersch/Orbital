@@ -160,6 +160,16 @@ The whole 0.2.1 ideas backlog, built:
   the time string's ink spans 91.5% of the width against the 92% budget;
   the shrink-to-fit holds and nothing clips.
 
+## Done in 1.11.0 (2026-10-25, night)
+
+- **Per-topology pan/zoom memory (session)** — selectTopology now saves
+  the outgoing design's pan/zoom targets into a per-design map and
+  restores the incoming design's; first visits start centred (carrying
+  one design's pan into another's differently-shaped world landed you
+  in empty space). Verified end-to-end on the emulator: panned
+  Honeycomb left → switched to Vertical River (centred) → back to
+  Honeycomb (pan restored pixel-for-pixel, same centred-item pill).
+
 ## Done in 1.10.0 (2026-10-25, night)
 
 - **Face tidy-up** — (1) the info line no longer duplicates the alarm

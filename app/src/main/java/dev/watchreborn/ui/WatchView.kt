@@ -659,6 +659,13 @@ class WatchView(
 
     private val panX = Spring(0f, 0.35f)
     private val panY = Spring(0f, 0.35f)
+
+    /** Per-layout view memory (1.11.0): where you left each design's
+     *  pan/zoom, restored when you come back to it. Session-level — the
+     *  map lives in the view, so it survives design-hopping but not an
+     *  app restart. */
+    private data class TopoViewState(val panX: Float, val panY: Float, val zoom: Float)
+    private val topoViewMemory = HashMap<ClusterTopology, TopoViewState>()
     private val folderPanX = Spring(0f, 0.35f)
     private val folderPanY = Spring(0f, 0.35f)
     private val constellationPanX = Spring(0f, 0.35f)
@@ -1718,9 +1725,23 @@ class WatchView(
 
     /** Applies a layout chosen in the topology picker and reports it for persistence. */
     fun selectTopology(topo: ClusterTopology) {
+        // Save where the outgoing design was left; restore the incoming
+        // design's remembered spot, or centre it on a first visit (each
+        // design's world has different extents, so carrying one pan/zoom
+        // across designs landed you in empty space).
+        topoViewMemory[clusterTopology] = TopoViewState(panX.target, panY.target, userZoom.target)
         clusterTopology = topo
         overview.target = 0f
-        userZoom.target = if (topo == ClusterTopology.NEBULA) 0.72f else 1f
+        val remembered = topoViewMemory[topo]
+        if (remembered != null) {
+            panX.target = remembered.panX
+            panY.target = remembered.panY
+            userZoom.target = remembered.zoom
+        } else {
+            panX.target = 0f
+            panY.target = 0f
+            userZoom.target = if (topo == ClusterTopology.NEBULA) 0.72f else 1f
+        }
         topologyPickerOpen = false
         onTopologySelected(topo)
         performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
