@@ -1196,7 +1196,7 @@ class WatchView(
      *  Zero on narrow screens that already fit. (Until 1.13.0 this also
      *  lifted the Face's favourites row; that row is gone.) */
     private fun faceDockLift(w: Float): Float =
-        (dp(74f) - 0.07f * w).coerceAtLeast(0f)
+        (dp(90f) - 0.07f * w).coerceAtLeast(0f)
 
     private fun drawCoachHint(c: Canvas, w: Float, bottom: Float, alpha: Float) {
         // The undo bar and the Edit-mode pill take this screen slot while active.
@@ -4405,7 +4405,7 @@ class WatchView(
         // segment (style Matt picked from a reference sheet, 2026-10-26):
         // white bar, violet accent, inactive segments go icon-only.
         fill.color = Color.argb((alpha * 246).toInt(), 248, 248, 252)
-        c.drawRoundRect(pill, dp(22f), dp(22f), fill)
+        c.drawRoundRect(pill, dp(24f), dp(24f), fill)
         val activeSeg = when {
             apps.target < 0.5f -> DOCK_FACE
             list.target >= 0.5f -> DOCK_LIST
@@ -4419,20 +4419,22 @@ class WatchView(
             val active = i == activeSeg
             if (active) {
                 fill.color = Color.argb((alpha * 255).toInt(), 233, 224, 255)
-                val hl = RectF(seg.left + dp(6f), seg.top + dp(6f), seg.right - dp(6f), seg.bottom - dp(6f))
-                c.drawRoundRect(hl, dp(16f), dp(16f), fill)
+                val hl = RectF(seg.left + dp(8f), seg.top + dp(8f), seg.right - dp(8f), seg.bottom - dp(8f))
+                c.drawRoundRect(hl, dp(20f), dp(20f), fill)
             }
             val iconColor = if (active) Color.argb((alpha * 255).toInt(), 124, 58, 237)
                 else Color.argb((alpha * 255).toInt(), 130, 130, 142)
             // Inactive segments centre their icon in the bar (no label);
             // the active one keeps the icon-over-label layout in its pill.
-            val iconY = if (active) py + dp(19f) else seg.centerY()
-            drawDockIcon(c, i, seg.centerX(), iconY, dp(17f), iconColor)
+            // Sizes rescaled in 1.14.0 to the reference sheet's chunkier
+            // proportions (64dp bar, 22dp icons, 11sp active label).
+            val iconY = if (active) py + dp(26f) else seg.centerY()
+            drawDockIcon(c, i, seg.centerX(), iconY, dp(22f), iconColor)
             if (active) {
                 text.textAlign = Paint.Align.CENTER
-                text.textSize = sp(9f)
+                text.textSize = sp(11f)
                 text.color = Color.argb((alpha * 255).toInt(), 124, 58, 237)
-                c.drawText(labels[i], seg.centerX(), py + ph - dp(6f), text)
+                c.drawText(labels[i], seg.centerX(), py + ph - dp(9f), text)
                 text.textAlign = Paint.Align.LEFT
             }
         }

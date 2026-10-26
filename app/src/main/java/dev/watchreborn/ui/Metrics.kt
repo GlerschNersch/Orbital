@@ -51,7 +51,7 @@ object Metrics {
     const val PHONE_LIST_ICON_X_DP = 46f
     const val PHONE_LIST_LABEL_X_DP = 92f
     const val PHONE_LIST_TEXT_SP = 19f
-    const val PHONE_PILL_H_DP = 48f
+    const val PHONE_PILL_H_DP = 64f
     const val PHONE_PILL_W_DP = 170f
     const val PHONE_PILL_TEXT_SP = 16f
 

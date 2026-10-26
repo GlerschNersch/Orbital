@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.14.0 — 2026-10-26
+
+- **Dock rescaled to the reference proportions** — the bar grows
+  from 48dp to 64dp tall, icons from 17dp to 22dp and the active
+  label to 11sp, so the full-width bar reads as a chunky card like
+  the reference sheet instead of a thin stretched strip.
+
 ## 1.13.0 — 2026-10-26
 
 - **The Face's bottom app row is gone** — the three app discs above

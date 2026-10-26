@@ -160,6 +160,16 @@ The whole 0.2.1 ideas backlog, built:
   the time string's ink spans 91.5% of the width against the 92% budget;
   the shrink-to-fit holds and nothing clips.
 
+## Done in 1.14.0 (2026-10-26)
+
+- **Dock rescaled to the reference proportions (Matt: "the scale
+  looks odd")** — PHONE_PILL_H_DP 48 → 64 (coach-hint clearance and
+  faceDockLift track it: lift constant 74 → 90), dock icons 17 → 22dp,
+  active label 9 → 11sp, highlight inset 6 → 8dp / radius 16 → 20dp,
+  bar corner radius 22 → 24dp. The full-width bar now reads as the
+  reference's chunky card instead of a thin strip. Emulator-verified
+  on Face and Cluster.
+
 ## Done in 1.13.0 (2026-10-26)
 
 - **Face favourites removed + full-width dock (Matt's asks)** — the
