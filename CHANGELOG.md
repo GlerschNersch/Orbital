@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.15.0 — 2026-10-26
+
+- **Snappier Face ⇄ cluster switching** — a dock touch test (plus
+  the phone's own frame stats: ~9 ms median frame) showed the
+  switch "lag" was the transition's own 0.3 s settle, not rendering.
+  The apps spring now settles in 0.22 s, so dock taps land faster.
+
 ## 1.14.0 — 2026-10-26
 
 - **Dock rescaled to the reference proportions** — the bar grows

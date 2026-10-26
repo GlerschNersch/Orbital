@@ -625,8 +625,12 @@ class WatchView(
     private var poolInitialized = false
     private var grabbedPoolIndex: Int = -1
 
-    /** 0 = face, 1 = apps. */
-    private val apps = Spring(0f)
+    /** 0 = face, 1 = apps. Settles faster than the shared 0.3 s zoom:
+     *  at 0.3 s the Face ⇄ cluster crossfade read as lag on a dock tap
+     *  (Matt, 2026-10-26 — his phone renders frames in ~9 ms, so the
+     *  spring's own duration was the delay), so nav switches use
+     *  0.22 s. */
+    private val apps = Spring(0f, 0.22f)
     /** 0 = focus cluster, 1 = full grid. */
     private val grid = Spring(0f)
     /** 0 = normal full grid, 1 = zoomed-out overview of all hexes (CSLOverviewHexLayout). */
