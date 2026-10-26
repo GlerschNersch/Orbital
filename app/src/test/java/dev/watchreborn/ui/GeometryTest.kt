@@ -1,5 +1,8 @@
 package dev.watchreborn.ui
 
+import dev.watchreborn.apps.AppClassifier
+import dev.watchreborn.apps.AppGroup
+import dev.watchreborn.apps.AppRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -50,5 +53,13 @@ class GeometryTest {
         while (t < 0.3f) { s.step(1 / 60f); t += 1 / 60f; max = maxOf(max, s.value) }
         assertTrue("within 1% at 0.3 s: ${s.value}", s.value > 0.99f)
         assertTrue("no overshoot: $max", max <= 1.0001f)
+    }
+
+    @Test fun classifierSortsAppsIntoFolders() {
+        assertEquals(AppGroup.SMART_HOME, AppClassifier.classify("Home Assistant", "io.homeassistant.companion.android", -1, false))
+        assertEquals(AppGroup.FINANCE, AppClassifier.classify("Chase", "com.chase.sig.android", 7, false))
+        assertEquals(AppGroup.GAMES, AppClassifier.classify("Minecraft", "com.mojang.minecraftpe", 0, true))
+        assertEquals(AppGroup.SOCIAL, AppClassifier.classify("Phone", "com.google.android.dialer", -1, false, setOf(AppRole.DIALER)))
+        assertEquals(AppGroup.TOOLS, AppClassifier.classify("Settings", "com.android.settings", -1, false))
     }
 }
