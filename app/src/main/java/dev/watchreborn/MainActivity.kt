@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.ActivityManager
 import android.app.AlarmManager
+import android.app.AlertDialog
 import android.app.Dialog
 import android.app.role.RoleManager
 import android.appwidget.AppWidgetHost
@@ -48,6 +49,7 @@ import android.view.KeyEvent
 import android.view.ViewGroup
 import android.view.Window
 import android.view.WindowInsets
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ScrollView
@@ -140,6 +142,7 @@ class MainActivity : Activity(), SensorEventListener {
             onTopologySelected = ::handleTopologySelected,
             onPlaceItem = ::placeItem,
             onFileIntoFolder = ::fileIntoFolder,
+            onCreateFolder = ::createFolder,
             onUnpinItem = ::unpinItem,
             onReorderFolderMember = ::reorderFolderMember,
             onQuickInfo = ::quickAppInfo,
@@ -285,7 +288,68 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     /** Dragging an app onto a folder bubble files it into that folder's group. */
+    /**
+     * Drag-onto-app folder creation (1.5.0): if the target already lives in
+     * a custom folder, the carried app simply joins it; otherwise ask for a
+     * name and create the folder with the target first, carried second.
+     */
+    private fun createFolder(carried: App, target: App) {
+        val existing = repo.customFolderOf(target.key)
+        if (existing != null) {
+            repo.addToCustomFolder(existing.id, carried.key)
+            pushAppsToView(apps)
+            view.showPlaceUndo("📁 ${carried.label} added to ${existing.name}") {
+                repo.removeFromCustomFolder(existing.id, carried.key)
+                pushAppsToView(apps)
+                Toast.makeText(this, "Removed from ${existing.name}", Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
+        val suggestion = if (target.defaultGroup != AppGroup.OTHER) target.defaultGroup.title else "Folder"
+        showFolderNameDialog("New Folder", suggestion, "Create") { name ->
+            val id = repo.createCustomFolder(name, listOf(target.key, carried.key))
+            pushAppsToView(apps)
+            view.showPlaceUndo("📁 Folder \u201C$name\u201D created") {
+                repo.deleteCustomFolder(id)
+                pushAppsToView(apps)
+                Toast.makeText(this, "Folder deleted", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun showFolderNameDialog(title: String, initial: String, okLabel: String, onOk: (String) -> Unit) {
+        val input = EditText(this).apply {
+            setText(initial)
+            setSingleLine(true)
+            selectAll()
+        }
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(input)
+            .setPositiveButton(okLabel) { _, _ ->
+                onOk(input.text.toString().trim().ifEmpty { initial })
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun fileIntoFolder(app: App, folder: Folder, slot: Int) {
+        if (folder.isCustom) {
+            val fid = folder.customId!!
+            if (folder.apps.any { it.key == app.key }) {
+                // Already a member — treat the drop as a plain placement.
+                placeItem(app, slot)
+                return
+            }
+            repo.addToCustomFolder(fid, app.key)
+            pushAppsToView(apps)
+            view.showPlaceUndo("📁 ${app.label} added to ${folder.label}") {
+                repo.removeFromCustomFolder(fid, app.key)
+                pushAppsToView(apps)
+                Toast.makeText(this, "Removed from ${folder.label}", Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
         if (repo.groupOf(app) == folder.group) {
             // Already in this group — treat the drop as a plain placement.
             placeItem(app, slot)
@@ -333,6 +397,17 @@ class MainActivity : Activity(), SensorEventListener {
         val keys = folder.apps.map { it.key }
         if (from !in keys.indices || to !in keys.indices || from == to) return
         val reordered = keys.toMutableList().apply { add(to, removeAt(from)) }
+        if (folder.isCustom) {
+            val fid = folder.customId!!
+            repo.setCustomFolderMembers(fid, reordered)
+            pushAppsToView(apps)
+            view.showPlaceUndo("↕ ${folder.label} order changed") {
+                repo.setCustomFolderMembers(fid, keys)
+                pushAppsToView(apps)
+                Toast.makeText(this, "Order restored", Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
         repo.setFolderOrder(folder.group, reordered)
         pushAppsToView(apps)
         view.showPlaceUndo("↕ ${folder.label} order changed") {
@@ -786,6 +861,10 @@ class MainActivity : Activity(), SensorEventListener {
                 menu.menu.add(1, 311, 6, "⚙ Honeycomb Cluster Options...")
                 menu.menu.add(1, 312, 7, "🏠 Set as Default Launcher")
                 menu.menu.add(1, 313, 8, "✥ Edit Layout Mode")
+                if (item.isCustom) {
+                    menu.menu.add(1, 314, 9, "✎ Rename Folder…")
+                    menu.menu.add(1, 315, 10, "🗑 Delete Folder")
+                }
                 menu.setOnMenuItemClickListener { mi ->
                     when (mi.itemId) {
                         300 -> {
@@ -807,6 +886,21 @@ class MainActivity : Activity(), SensorEventListener {
                         311 -> view.openClusterSheet()
                         312 -> chooseHome()
                         313 -> view.enterEditMode()
+                        314 -> showFolderNameDialog("Rename Folder", item.label, "Rename") { name ->
+                            repo.renameCustomFolder(item.customId!!, name)
+                            pushAppsToView(apps)
+                            Toast.makeText(this, "Renamed to $name", Toast.LENGTH_SHORT).show()
+                        }
+                        315 -> AlertDialog.Builder(this)
+                            .setTitle("Delete \u201C${item.label}\u201D?")
+                            .setMessage("The folder goes away; its ${item.apps.size} apps stay on the grid.")
+                            .setPositiveButton("Delete") { _, _ ->
+                                repo.deleteCustomFolder(item.customId!!)
+                                pushAppsToView(apps)
+                                Toast.makeText(this, "Folder deleted", Toast.LENGTH_SHORT).show()
+                            }
+                            .setNegativeButton("Cancel", null)
+                            .show()
                     }
                     true
                 }
@@ -816,6 +910,12 @@ class MainActivity : Activity(), SensorEventListener {
                 shortcuts.forEachIndexed { idx, s ->
                     val label = s.shortLabel ?: s.longLabel ?: s.id
                     menu.menu.add(1, 10 + idx, 5 + idx, "⚡ $label")
+                }
+
+                // Browsed inside a custom folder? Offer removal (1.5.0).
+                val hostFolder = view.openCustomFolder
+                if (hostFolder != null && hostFolder.apps.any { it.key == item.key }) {
+                    menu.menu.add(4, 316, 4, "Remove from ${hostFolder.label}")
                 }
 
                 // Move to Folder submenu
@@ -858,6 +958,16 @@ class MainActivity : Activity(), SensorEventListener {
                             val g = AppGroup.entries[mi.itemId - 200]
                             repo.setGroupOverride(item, g)
                             pushAppsToView(apps)
+                        }
+                        316 -> {
+                            val f = view.openCustomFolder
+                            val fid = f?.customId
+                            if (f != null && fid != null) {
+                                repo.removeFromCustomFolder(fid, item.key)
+                                pushAppsToView(apps)
+                                view.back()
+                                Toast.makeText(this, "${item.label} removed from ${f.label}", Toast.LENGTH_SHORT).show()
+                            }
                         }
                         311 -> view.openClusterSheet()
                         313 -> view.enterEditMode()

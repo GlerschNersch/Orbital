@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.5.0 — 2026-10-25
+
+- **Custom folders** — until now folders were only the fixed auto
+  categories. Now you can make your own:
+  - **Create:** drag an app onto another app and hold it there for a
+    moment — the target lights up with "Release to create folder";
+    release, type a name, done. Dragging onto an app that already lives
+    in a custom folder just adds yours to that folder instead.
+  - **Add:** drag any app onto a custom folder bubble (or onto a member
+    app) — it moves in, leaving whatever folder it was in before.
+  - **Remove:** open the folder, long-press a member, "Remove from …".
+    A folder left with one app dissolves back to loose apps.
+  - **Manage:** a custom folder's long-press menu gains Rename and
+    Delete (its apps stay on the grid). Members reorder by drag inside
+    the folder, folders pin like any bubble, and custom folders show in
+    both the folder grid and the flat grid. Membership rules (one folder
+    per app, dissolve below two) live in a pure `CustomFolders` helper.
+
 ## 1.4.0 — 2026-10-25
 
 - **Zero-G Billiards actually looks like a pool now** — the tank was sized

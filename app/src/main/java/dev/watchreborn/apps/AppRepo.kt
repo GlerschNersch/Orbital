@@ -21,6 +21,7 @@ import android.os.UserHandle
 import android.os.UserManager
 import android.provider.MediaStore
 import dev.watchreborn.listedProfiles
+import dev.watchreborn.ui.CustomFolders
 import java.text.Collator
 import kotlin.math.cos
 import kotlin.math.sin
@@ -79,9 +80,13 @@ class Folder(
     override val icon: Bitmap,
     override val blurred: Bitmap,
     override val blurredScale: Float,
+    /** Set for user-created folders (1.5.0); null for category folders. */
+    val customId: String? = null,
+    val customName: String? = null,
 ) : GridItem {
-    override val key: String = "folder:${group.name}"
-    override val label: String = group.title
+    override val key: String = if (customId != null) "cfolder:$customId" else "folder:${group.name}"
+    override val label: String = customName ?: group.title
+    val isCustom: Boolean get() = customId != null
 }
 
 /**
@@ -202,6 +207,95 @@ class AppRepo(private val context: Context) {
         prefs.edit().putString("forder:${group.name}", keys.joinToString(",")).apply()
     }
 
+    // ---- Custom folders (1.5.0): user-created, named, free-form. ----
+    // Storage: "cf:ids" lists the folder ids; each folder keeps
+    // "cf:<id>:name" and "cf:<id>:members" (comma-joined app keys, ordered).
+    // Membership rules (one folder per app, <2 members dissolves) live in
+    // the pure CustomFolders helper.
+
+    fun customFolderDefs(): List<CustomFolders.Def> {
+        val ids = CustomFolders.decode(prefs.getString("cf:ids", null))
+        return ids.mapNotNull { id ->
+            val name = prefs.getString("cf:$id:name", null) ?: return@mapNotNull null
+            CustomFolders.Def(id, name, CustomFolders.decode(prefs.getString("cf:$id:members", null)))
+        }
+    }
+
+    private fun saveCustomFolderDefs(defs: List<CustomFolders.Def>) {
+        val e = prefs.edit()
+        for (old in CustomFolders.decode(prefs.getString("cf:ids", null))) {
+            e.remove("cf:$old:name")
+            e.remove("cf:$old:members")
+        }
+        e.putString("cf:ids", CustomFolders.encode(defs.map { it.id }))
+        for (d in defs) {
+            e.putString("cf:${d.id}:name", d.name)
+            e.putString("cf:${d.id}:members", CustomFolders.encode(d.memberKeys))
+        }
+        e.apply()
+    }
+
+    fun customFolderOf(appKey: String): CustomFolders.Def? =
+        customFolderDefs().firstOrNull { appKey in it.memberKeys }
+
+    /** Creates a folder from [memberKeys]; each key is first extracted from
+     *  any folder it already lives in. Returns the new folder's id. */
+    fun createCustomFolder(name: String, memberKeys: List<String>): String {
+        var defs = customFolderDefs()
+        for (k in memberKeys) defs = CustomFolders.extract(defs, k)
+        val id = "f" + java.util.UUID.randomUUID().toString().replace("-", "").take(10)
+        defs = defs + CustomFolders.Def(id, name, memberKeys.distinct())
+        saveCustomFolderDefs(defs)
+        return id
+    }
+
+    /** Moves [appKey] into folder [id], extracting it from its old folder. */
+    fun addToCustomFolder(id: String, appKey: String) {
+        var defs = CustomFolders.extract(customFolderDefs(), appKey)
+        defs = defs.map { if (it.id == id) it.copy(memberKeys = it.memberKeys + appKey) else it }
+        saveCustomFolderDefs(defs)
+    }
+
+    /** Replaces a folder's member list (reorder); dissolves it below 2. */
+    fun setCustomFolderMembers(id: String, keys: List<String>) {
+        val defs = customFolderDefs()
+            .map { if (it.id == id) it.copy(memberKeys = keys.distinct()) else it }
+            .filter { !CustomFolders.dissolves(it.memberKeys.size) }
+        saveCustomFolderDefs(defs)
+    }
+
+    fun removeFromCustomFolder(id: String, appKey: String) {
+        val def = customFolderDefs().firstOrNull { it.id == id } ?: return
+        setCustomFolderMembers(id, def.memberKeys - appKey)
+    }
+
+    fun renameCustomFolder(id: String, name: String) {
+        saveCustomFolderDefs(customFolderDefs().map { if (it.id == id) it.copy(name = name) else it })
+    }
+
+    fun deleteCustomFolder(id: String) {
+        saveCustomFolderDefs(customFolderDefs().filter { it.id != id })
+    }
+
+    /** Resolves stored custom folders against the installed apps and builds
+     *  their grid items; also returns the set of app keys they claim. */
+    private fun buildCustomFolders(allApps: List<App>, iconPx: Int): Pair<List<Folder>, Set<String>> {
+        val byKey = allApps.associateBy { it.key }
+        val resolved = CustomFolders.resolve(customFolderDefs(), byKey.keys)
+        val folders = ArrayList<Folder>()
+        val claimed = HashSet<String>()
+        for (def in resolved) {
+            val members = def.memberKeys.mapNotNull { byKey[it] }
+            if (members.size < 2) continue
+            claimed += members.map { it.key }
+            // The platter tint follows the first member's category colour.
+            val bmp = renderFolderIcon(members.first().defaultGroup, members, iconPx)
+            val (soft, softScale) = blur(bmp)
+            folders += Folder(AppGroup.OTHER, members, bmp, soft, softScale, customId = def.id, customName = def.name)
+        }
+        return folders to claimed
+    }
+
     /** Members with a saved custom order come first (in that order); the rest keep their incoming order. */
     fun applyFolderOrder(group: AppGroup, members: List<App>): List<App> {
         val order = folderOrder(group)
@@ -246,14 +340,19 @@ class AppRepo(private val context: Context) {
         val essentials = essentialPackages()
         fun essentialRank(a: App) = essentials.indexOf(a.component.packageName).let { if (it < 0) Int.MAX_VALUE else it }
 
+        // Custom folders (1.5.0) claim their members before anything else:
+        // a member lives in its folder, not in the core, a category or loose.
+        val (customFolders, claimedKeys) = buildCustomFolders(alphabetical, iconPx)
+        val alphaFree = if (claimedKeys.isEmpty()) alphabetical else alphabetical.filter { it.key !in claimedKeys }
+        val byUseFree = if (claimedKeys.isEmpty()) byUse else byUse.filter { it.key !in claimedKeys }
         val primary = if (fixedNeighborhoods) {
             // Fixed core: essentials first in fixed role order, then alphabetical fallback
-            alphabetical.sortedWith(compareBy<App> { essentialRank(it) }.thenBy { it.label }).take(coreTake)
+            alphaFree.sortedWith(compareBy<App> { essentialRank(it) }.thenBy { it.label }).take(coreTake)
         } else {
-            byUse.take(coreTake)
+            byUseFree.take(coreTake)
         }
         val primaryKeys = primary.mapTo(HashSet()) { it.key }
-        val sourceApps = if (fixedNeighborhoods) alphabetical else byUse
+        val sourceApps = if (fixedNeighborhoods) alphaFree else byUseFree
         val byGroup = sourceApps.groupBy(::groupOf)
         val folders = ArrayList<Folder>()
         val loose = ArrayList<App>()
@@ -280,7 +379,10 @@ class AppRepo(private val context: Context) {
 
         if (fixedNeighborhoods) {
             folders.sortBy { it.group.compassOrder }
+            // Custom folders follow the categories, alphabetical by name.
+            folders += customFolders.sortedBy { it.label.lowercase() }
         } else {
+            folders += customFolders
             folders.sortByDescending { f -> f.apps.sumOf { score(it.key, now).toDouble() } }
         }
 
@@ -307,22 +409,44 @@ class AppRepo(private val context: Context) {
         liveWidgets: Boolean,
         pinScope: String? = null,
     ): List<GridItem> {
-        if (!coreClockHub && !liveWidgets) return applyPins(byUse, pinScope)
-        val widgets = buildWidgetBubbles(iconPx)
-        val coreTake = if (coreClockHub) 6 else 7
-        val base = buildList {
-            if (coreClockHub) widgets[WidgetKind.CORE_CLOCK]?.let(::add)
-            addAll(byUse.take(coreTake))
-            if (liveWidgets) {
-                widgets[WidgetKind.NOW_PLAYING]?.let(::add)
-                widgets[WidgetKind.CONTROLS]?.let(::add)
-                widgets[WidgetKind.VITALS]?.let(::add)
-                widgets[WidgetKind.TIMER]?.let(::add)
-                widgets[WidgetKind.CALENDAR]?.let(::add)
+        // Custom folders (1.5.0) show in the flat grid too: members are
+        // claimed out of the loose list and each folder takes the position
+        // of its earliest member in usage order.
+        val (customFolders, claimedKeys) = buildCustomFolders(byUse, iconPx)
+        val free = if (claimedKeys.isEmpty()) byUse else byUse.filter { it.key !in claimedKeys }
+        val skeleton: List<GridItem> = if (!coreClockHub && !liveWidgets) {
+            free
+        } else {
+            val widgets = buildWidgetBubbles(iconPx)
+            val coreTake = if (coreClockHub) 6 else 7
+            buildList {
+                if (coreClockHub) widgets[WidgetKind.CORE_CLOCK]?.let(::add)
+                addAll(free.take(coreTake))
+                if (liveWidgets) {
+                    widgets[WidgetKind.NOW_PLAYING]?.let(::add)
+                    widgets[WidgetKind.CONTROLS]?.let(::add)
+                    widgets[WidgetKind.VITALS]?.let(::add)
+                    widgets[WidgetKind.TIMER]?.let(::add)
+                    widgets[WidgetKind.CALENDAR]?.let(::add)
+                }
+                addAll(free.drop(coreTake))
             }
-            addAll(byUse.drop(coreTake))
         }
-        return applyPins(base, pinScope)
+        if (customFolders.isEmpty()) return applyPins(skeleton, pinScope)
+        val rank = HashMap<String, Int>()
+        byUse.forEachIndexed { i, a -> rank[a.key] = i }
+        val pending = customFolders
+            .map { f -> f to (f.apps.minOfOrNull { rank[it.key] ?: Int.MAX_VALUE } ?: Int.MAX_VALUE) }
+            .sortedBy { it.second }
+            .toMutableList()
+        val out = ArrayList<GridItem>(skeleton.size + pending.size)
+        for (item in skeleton) {
+            val r = if (item is App) rank[item.key] ?: Int.MAX_VALUE else -1
+            while (pending.isNotEmpty() && pending.first().second <= r) out += pending.removeAt(0).first
+            out += item
+        }
+        for (rest in pending) out += rest.first
+        return applyPins(out, pinScope)
     }
 
     private fun buildWidgetBubbles(px: Int): Map<WidgetKind, WidgetBubble> {

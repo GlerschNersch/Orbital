@@ -104,6 +104,7 @@ class WatchView(
     private val onTopologySelected: (ClusterTopology) -> Unit,
     private val onPlaceItem: (GridItem, Int) -> Unit,
     private val onFileIntoFolder: (App, Folder, Int) -> Unit,
+    private val onCreateFolder: (App, App) -> Unit,
     private val onUnpinItem: (GridItem) -> Unit,
     private val onReorderFolderMember: (Folder, Int, Int) -> Unit,
     private val onQuickInfo: (App) -> Unit,
@@ -223,6 +224,13 @@ class WatchView(
     private var placeItem: GridItem? = null
     private var placeFromSlot: Int = -1
     private var placeHoverSlot: Int = -1
+    // Custom-folder creation (1.5.0): holding a carried app over another app
+    // for a dwell arms folder creation; releasing then creates a folder
+    // instead of placing. The arm is a posted runnable so a still finger
+    // (no MOVE events) still arms.
+    private var folderArmSlot: Int = -1
+    private var folderArmRunnable: Runnable? = null
+    private var folderArmed: Boolean = false
     private var placeX: Float = 0f
     private var placeY: Float = 0f
     private var placeMoved: Boolean = false
@@ -1068,7 +1076,36 @@ class WatchView(
             constellationIn.target == 0f && folderIn.target == 0f && widgetIn.target == 0f &&
             activeFolder == null && !gridSearching && !searching
 
+    private fun cancelFolderArm() {
+        folderArmRunnable?.let { removeCallbacks(it) }
+        folderArmRunnable = null
+        folderArmSlot = -1
+        folderArmed = false
+    }
+
+    /** (Re)evaluate the folder-creation dwell for the current hover slot. */
+    private fun updateFolderArm() {
+        cancelFolderArm()
+        val carried = placeItem as? App ?: return
+        if (placeInFolder) return
+        val hover = placeHoverSlot
+        if (hover < 0 || hover == placeFromSlot) return
+        val target = hits.firstOrNull { it.slotIndex == hover }?.item as? App ?: return
+        if (target.key == carried.key) return
+        folderArmSlot = hover
+        val r = Runnable {
+            if (placeItem === carried && placeHoverSlot == folderArmSlot && !placeInFolder) {
+                folderArmed = true
+                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                invalidate()
+            }
+        }
+        folderArmRunnable = r
+        postDelayed(r, 650L)
+    }
+
     private fun beginPlace(item: GridItem, slot: Int, inFolder: Boolean = false) {
+        cancelFolderArm()
         placeItem = item
         placeFromSlot = slot
         placeHoverSlot = slot
@@ -1094,6 +1131,8 @@ class WatchView(
         val folder = placeFolder
         val dropX = placeX
         val dropY = placeY
+        val armed = folderArmed
+        cancelFolderArm()
         placeItem = null
         placeHoverSlot = -1
         placeMoved = false
@@ -1120,7 +1159,12 @@ class WatchView(
                 // Dropping an app onto a folder bubble files it into that folder.
                 val hoverItem = hits.firstOrNull { it.slotIndex == hover }?.item
                 val carriedDia = (hits.firstOrNull { it.slotIndex == from }?.r ?: dp(31f)) * 2f * placeScale
-                if (!inFolder && item is App && hoverItem is Folder) {
+                if (!inFolder && item is App && armed && hoverItem is App && hoverItem.key != item.key) {
+                    // Dwell-armed drop on another app: create a folder (or
+                    // join the target's folder — MainActivity decides).
+                    dropAnim = DropAnim(item, placeDrawX, placeDrawY, carriedDia, hoverItem.key, true, SystemClock.uptimeMillis())
+                    onCreateFolder(item, hoverItem)
+                } else if (!inFolder && item is App && hoverItem is Folder) {
                     // Glide into the folder bubble and shrink away.
                     dropAnim = DropAnim(item, placeDrawX, placeDrawY, carriedDia, hoverItem.key, true, SystemClock.uptimeMillis())
                     onFileIntoFolder(item, hoverItem, hover)
@@ -1360,6 +1404,22 @@ class WatchView(
             stroke.strokeWidth = dp(3f)
             stroke.color = withAlpha(accent, (alpha * 255).toInt())
             c.drawCircle(hover.x, hover.y, hover.r + dp(3f), stroke)
+        }
+        // Armed folder creation: the target bubble gets a filled halo and a
+        // caption, so what the release will do is unmistakable.
+        if (folderArmed && hover != null && placeHoverSlot != placeFromSlot) {
+            fill.color = withAlpha(accent, (alpha * 70).toInt())
+            c.drawCircle(hover.x, hover.y, hover.r + dp(7f), fill)
+            stroke.strokeWidth = dp(3.5f)
+            stroke.color = withAlpha(accent, (alpha * 255).toInt())
+            c.drawCircle(hover.x, hover.y, hover.r + dp(7f), stroke)
+            val label = "Release to create folder"
+            text.textSize = dp(13f)
+            text.color = withAlpha(Color.WHITE, (alpha * 255).toInt())
+            val tw = text.measureText(label)
+            val capX = hover.x.coerceIn(tw / 2 + dp(10f), width - tw / 2 - dp(10f))
+            val capY = (hover.y - hover.r - dp(24f)).coerceAtLeast(dp(96f))
+            c.drawText(label, capX - tw / 2, capY, text)
         }
         // The carried bubble itself, slightly enlarged, under the finger.
         val d = (origin?.r ?: dp(31f)) * 2f * placeScale
@@ -1920,6 +1980,9 @@ class WatchView(
             else -> 0.78f
         }
     }
+
+    /** The custom folder open in Folder view right now, if any (1.5.0). */
+    val openCustomFolder: Folder? get() = activeFolder?.takeIf { it.isCustom }
 
     fun openFolder(folder: Folder) {
         if (grid.target == 0f) grid.target = 1f
@@ -4493,6 +4556,7 @@ class WatchView(
                         if (newHover >= 0 && newHover != placeFromSlot) {
                             performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                         }
+                        updateFolderArm()
                     }
                     invalidate()
                     return true
