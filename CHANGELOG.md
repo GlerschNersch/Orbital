@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.8.0 — 2026-10-25
+
+- **Battery: the pulse loop only runs when it can be seen** — the ~75ms
+  redraw cycle that animates notification pulse rings and the icon jiggle
+  now only runs while a badged bubble is actually on screen. An unread
+  notification sitting on an off-screen bubble no longer keeps the whole
+  launcher redrawing at full tilt; the UI falls back to its 1-second tick.
+- **TalkBack coverage grows** — the Context Card's rows and the Cluster
+  sheet's rows (with toggle states spoken, e.g. "Bubble Physics, on") are
+  now accessibility nodes, focusable and activatable like the grid
+  bubbles. Still unmapped: the topology picker, widget pod and Control
+  Center.
+- Verified along the way: the watch face at a two-digit hour (10:43) —
+  the shrink-to-fit holds, the full time with seconds fits the screen.
+
 ## 1.7.0 — 2026-10-25
 
 - **Dock polish** — the four dock icons are now drawn in one line style

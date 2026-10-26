@@ -138,10 +138,33 @@ class WatchView(
         a11y ?: WatchAccessibilityProvider(this, ::a11yNodes, ::a11yActivate).also { a11y = it }
 
     private fun a11yNodes(): List<WatchAccessibilityProvider.Node> {
-        // Overlays whose own controls have no node mapping yet (Cluster sheet,
-        // topology picker, widget pod, Control Center): expose nothing rather
-        // than nodes for the visually covered bubbles underneath.
-        if (clusterSheet.target > 0f || widgetIn.target > 0f || controlIn.value > 0.5f || cardMenuOpen) return emptyList()
+        // The Context Card's rows (1.8.0): the same rects the card draws and
+        // the same cardLabel() text the sighted UI shows.
+        if (cardMenuOpen) {
+            val item = cardItem ?: return emptyList()
+            return cardRows.map { row ->
+                WatchAccessibilityProvider.Node(
+                    "card:" + row.kind, cardLabel(row.kind, item),
+                    Rect(row.rect.left.toInt(), row.rect.top.toInt(), row.rect.right.toInt(), row.rect.bottom.toInt()),
+                    row.rect.centerX(), row.rect.centerY(),
+                )
+            }
+        }
+        // The Cluster sheet's rows (1.8.0), from the rect/label lists the
+        // sheet draw builds. The topology picker opens over the sheet and
+        // stays unmapped, as do the widget pod and Control Center: expose
+        // nothing there rather than nodes for visually covered controls.
+        if (clusterSheet.target > 0f) {
+            if (topologyPickerOpen) return emptyList()
+            return sheetRowLabels.mapIndexed { i, (rect, label) ->
+                WatchAccessibilityProvider.Node(
+                    "sheet:$i", label,
+                    Rect(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt()),
+                    rect.centerX(), rect.centerY(),
+                )
+            }
+        }
+        if (widgetIn.target > 0f || controlIn.value > 0.5f) return emptyList()
         if (stackIn.value > 0.5f) {
             val out = ArrayList<WatchAccessibilityProvider.Node>()
             for ((rect, card) in stack.cardRects) {
@@ -242,6 +265,9 @@ class WatchView(
     private var placeInFolder: Boolean = false
     private var placeFolder: Folder? = null
     private val releasePinRect = RectF()
+    /** Set during a frame when a notification-badged bubble is drawn on
+     *  screen; gates the 75ms pulse loop (1.8.0 battery pass). */
+    private var frameBadgeVisible = false
     /** "Remove from folder" drop zone shown while dragging a folder member. */
     private val folderRemoveZone = RectF()
     /** Header action buttons of the open folder (rebuilt by the header draws). */
@@ -604,6 +630,8 @@ class WatchView(
     private val folderHeaderRect = RectF()
     private val clusterPillRect = RectF()
     private val sheetRowRects = ArrayList<Pair<RectF, ClusterOption>>()
+    /** Spoken labels parallel to [sheetRowRects], for TalkBack (1.8.0). */
+    private val sheetRowLabels = ArrayList<Pair<RectF, String>>()
     private val sheetBoundsRect = RectF()
     private val topologyRowRects = ArrayList<Pair<RectF, ClusterTopology>>()
     private val previewTmp = FloatArray(2)
@@ -2209,6 +2237,7 @@ class WatchView(
         lastFrame = now
         frameDtSec = dt
         motionAnimating = false
+        frameBadgeVisible = false
 
         val springs = arrayOf(apps, grid, overview, userZoom, constellationZoom, folderIn, widgetIn, clusterSheet, constellationIn, list, stackIn, controlIn, panX, panY, folderPanX, folderPanY, constellationPanX, constellationPanY, stackScroll, cardMenu)
         for (s in springs) s.step(dt)
@@ -2270,7 +2299,10 @@ class WatchView(
         if (animating) postInvalidateOnAnimation()
         else {
             lastFrame = 0L
-            val hasPulseOrTimer = a > 0f && (timerRunning || NowPlayingListener.activePackages.isNotEmpty())
+            // The fast pulse loop only earns its battery while a badged
+            // bubble is actually on screen (1.8.0); an unread notification
+            // on an off-screen bubble falls through to the 1s tick.
+            val hasPulseOrTimer = a > 0f && (timerRunning || frameBadgeVisible)
             val hasLiveGridBubbles = a > 0f && (honeycombHome || liveWidgets)
             if (hasPulseOrTimer) {
                 postInvalidateDelayed(75L)
@@ -3645,6 +3677,7 @@ class WatchView(
     private fun drawClusterSheet(c: Canvas, w: Float, h: Float, top: Float, bottom: Float, t: Float) {
         val a = (t * 255).toInt().coerceIn(0, 255)
         sheetRowRects.clear()
+        sheetRowLabels.clear()
 
         fill.color = Color.argb((t * 195).toInt(), 0, 0, 0)
         c.drawRect(0f, 0f, w, h, fill)
@@ -3776,6 +3809,11 @@ class WatchView(
             }
 
             sheetRowRects += r to opt
+            sheetRowLabels += r to when {
+                toggleOn != null -> "$label, ${if (toggleOn) "on" else "off"}"
+                opt == ClusterOption.CLUSTER_TOPOLOGY -> "$label, ${clusterTopology.fullTitle}"
+                else -> label
+            }
             ry += rowH + gap
         }
 
@@ -3789,6 +3827,7 @@ class WatchView(
         val doneStr = "Done"
         c.drawText(doneStr, w / 2 - text.measureText(doneStr) / 2, doneRect.centerY() + text.textSize * 0.35f, text)
         sheetRowRects += doneRect to ClusterOption.CLOSE_SHEET
+        sheetRowLabels += doneRect to "Done"
     }
 
     /** Full list of cluster layouts: tap one to apply it directly (replaces tap-to-cycle). */
@@ -4507,6 +4546,9 @@ class WatchView(
 
     private fun drawIcon(c: Canvas, b: android.graphics.Bitmap, x: Float, y: Float, d: Float, alpha: Float, badge: Boolean, pinned: Boolean, jiggle: Boolean = true) {
         if (alpha <= 0.004f || d < 2f) return
+        if (badge && d > dp(22f) && x + d / 2 > 0f && x - d / 2 < width && y + d / 2 > 0f && y - d / 2 < height) {
+            frameBadgeVisible = true
+        }
         val aInt = (alpha * 255).toInt().coerceIn(0, 255)
         // Notification jiggle (1.3.0): a bubble with a pending notification
         // wobbles like the iOS edit-mode jiggle — a small rotation oscillation

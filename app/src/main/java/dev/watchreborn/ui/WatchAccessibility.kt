@@ -25,9 +25,9 @@ import android.view.accessibility.AccessibilityNodeProvider
  * centre, so accessibility users get identical behaviour (launch, open
  * folder, widget pod, card action) rather than a parallel implementation.
  *
- * Not covered yet: the Cluster sheet, topology picker, widget pod and
- * Control Center keep only the host node; their rows are canvas-drawn in
- * separate rect systems and still need node mappings of their own.
+ * The Context Card rows and Cluster sheet rows are covered too (1.8.0),
+ * from the same rect lists their draws build. Not covered yet: the topology
+ * picker, widget pod and Control Center keep only the host node.
  */
 class WatchAccessibilityProvider(
     private val host: View,
