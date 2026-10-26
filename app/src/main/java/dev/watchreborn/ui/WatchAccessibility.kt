@@ -32,6 +32,7 @@ class WatchAccessibilityProvider(
     private val host: View,
     private val nodesProvider: () -> List<Node>,
     private val activate: (Node) -> Unit,
+    private val longActivate: (Node) -> Unit = {},
 ) : AccessibilityNodeProvider() {
 
     /** One virtual accessibility view: stable [key], spoken [label], bounds. */
@@ -81,6 +82,8 @@ class WatchAccessibilityProvider(
         info.isFocusable = true
         info.isAccessibilityFocused = focusedKey == node.key
         info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK)
+        info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_LONG_CLICK)
+        info.isLongClickable = true
         info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_ACCESSIBILITY_FOCUS)
         info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLEAR_ACCESSIBILITY_FOCUS)
         return info
@@ -92,6 +95,10 @@ class WatchAccessibilityProvider(
         return when (action) {
             AccessibilityNodeInfo.ACTION_CLICK -> {
                 activate(node)
+                true
+            }
+            AccessibilityNodeInfo.ACTION_LONG_CLICK -> {
+                longActivate(node)
                 true
             }
             AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS -> {

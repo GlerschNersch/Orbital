@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.7.0 — 2026-10-26
+
+The UX-audit release: every finding from the ui-ux-pro-max guideline audit (ux-audit-2026-10-26.md) fixed.
+- Reduced motion is respected: with the system animation scale at 0, the notification jiggle and breathing pulse ring stop (ring drawn statically), rotary inertia/detents freeze, Liquid Pool's tilt eases to zero so the pool settles still, and all UI springs snap instead of easing.
+- The bottom dock now has TalkBack nodes ("Cluster", "Widgets", "Settings", with the active one marked current) on both the grid and the Settings page — Settings and the Widgets page are reachable by screen reader for the first time.
+- Clear Pins is undoable: it snapshots every pin in every scope and offers the standard undo bar instead of wiping instantly behind a toast.
+- Folder header buttons (Rename/Delete/Hide) keep their 30dp glyphs but their hit rects are now 48dp, and they expose TalkBack nodes while a folder is open.
+- Drag alternatives: TalkBack long-press picks a bubble up, long-pressing another swaps them (pinned at each other's slots, one undo); the widget resize handle now also cycles preset heights (150/240/340/460dp) when tapped.
+- Bubble TalkBack labels speak state: ", pinned", ", has notifications", ", picked up".
+- Settings section captions brightened (3.95:1 -> ~4.9:1 contrast).
+- Pressed-state flash on Settings/picker rows and dock segments.
+- Zero-match constellation search now shows "No apps match ..." instead of an empty field.
+- Micro-labels raised to legible floors (overview folder captions 9->11sp; HUD date/status 8.5-9.5->10.5sp floors; constellation chips and star labels 9.5->10.5sp; widget pod stats 9.5->10.5sp).
+- Settings and picker text is ellipsized against the space the switch/value actually occupies, so label and value can't collide at extreme font scales.
+
 ## 2.6.0 — 2026-10-26
 
 Grouped-list restyle of Settings (Matt's reference screenshot) + the dock on the Settings page:

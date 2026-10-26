@@ -145,6 +145,7 @@ class MainActivity : Activity(), SensorEventListener {
             onClusterOptionChanged = ::handleClusterOptionChanged,
             onTopologySelected = ::handleTopologySelected,
             onPlaceItem = ::placeItem,
+            onSwapItems = ::swapItems,
             onFileIntoFolder = ::fileIntoFolder,
             onCreateFolder = ::createFolder,
             onRenameFolder = ::renameFolder,
@@ -243,6 +244,7 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume()
+        view.refreshMotionScale() // 2.7.0 (audit #1)
         refreshInfo()
         syncControlState()
         if (apps.isNotEmpty()) pushAppsToView(apps)
@@ -323,6 +325,32 @@ class MainActivity : Activity(), SensorEventListener {
             if (prevPin != null && prevPin != slot) repo.setPinnedSlot(item.key, prevPin, scope)
             pushAppsToView(apps)
             Toast.makeText(this, "Placement undone", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /**
+     * TalkBack swap (2.7.0, audit #5): pin each item at the other's slot
+     * behind a single undo that restores both previous pins and any
+     * evicted slot occupants.
+     */
+    private fun swapItems(a: GridItem, slotB: Int, b: GridItem, slotA: Int) {
+        val scope = pinScope()
+        val prevA = repo.pinnedSlotOf(a.key, scope)
+        val prevB = repo.pinnedSlotOf(b.key, scope)
+        val occA = repo.keyPinnedAt(slotA, scope)?.takeIf { it != a.key && it != b.key }
+        val occB = repo.keyPinnedAt(slotB, scope)?.takeIf { it != a.key && it != b.key }
+        repo.setPinnedSlot(a.key, slotB, scope)
+        repo.setPinnedSlot(b.key, slotA, scope)
+        pushAppsToView(apps)
+        view.showPlaceUndo("↔ ${a.label} and ${b.label} swapped") {
+            repo.setPinnedSlot(a.key, null, scope)
+            repo.setPinnedSlot(b.key, null, scope)
+            if (prevA != null) repo.setPinnedSlot(a.key, prevA, scope)
+            if (prevB != null) repo.setPinnedSlot(b.key, prevB, scope)
+            if (occA != null) repo.setPinnedSlot(occA, slotA, scope)
+            if (occB != null) repo.setPinnedSlot(occB, slotB, scope)
+            pushAppsToView(apps)
+            Toast.makeText(this, "Swap undone", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -684,9 +712,17 @@ class MainActivity : Activity(), SensorEventListener {
                 chooseHome()
             }
             ClusterOption.CLEAR_PINS -> {
+                // 2.7.0 (audit #3): clearing every pin was the one
+                // destructive action with no safety net — snapshot all
+                // scopes and offer the standard undo bar.
+                val snapshot = repo.allPins()
                 repo.clearAllPins()
                 if (apps.isNotEmpty()) pushAppsToView(apps)
-                Toast.makeText(this, "Cleared all pinned hex slots", Toast.LENGTH_SHORT).show()
+                view.showPlaceUndo("📌 Cleared ${snapshot.size} pinned hex slots") {
+                    repo.restorePins(snapshot)
+                    if (apps.isNotEmpty()) pushAppsToView(apps)
+                    Toast.makeText(this, "Pins restored", Toast.LENGTH_SHORT).show()
+                }
             }
             ClusterOption.MORE_OPTIONS -> Unit // expand/collapse is view-local
             ClusterOption.CLOSE_SHEET -> Unit
@@ -1271,7 +1307,7 @@ class MainActivity : Activity(), SensorEventListener {
             // 32dp tall (1.22.0): the 24dp strip was a fiddly target,
             // and the row now announces itself to TalkBack.
             isFocusable = true
-            contentDescription = "Resize widget. Drag up or down."
+            contentDescription = "Resize widget. Drag up or down, or tap to cycle through sizes."
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dpPx(32f),
             )
@@ -1284,17 +1320,34 @@ class MainActivity : Activity(), SensorEventListener {
             layoutParams = LinearLayout.LayoutParams(dpPx(48f), dpPx(6f))
         }
         row.addView(grip)
+        // 2.7.0 (audit #5): tapping the handle cycles preset heights —
+        // the non-drag alternative. TalkBack activation routes through
+        // this click; the touch listener forwards only bare taps, so a
+        // real drag still resizes freely.
+        row.isClickable = true
+        row.setOnClickListener {
+            val curDp = if (hv.height > 0) (hv.height / resources.displayMetrics.density).toInt()
+                else prefs.getInt("appwidget_h_$id", 240)
+            val presets = intArrayOf(150, 240, 340, 460)
+            val next = presets.firstOrNull { it > curDp + 12 } ?: presets.first()
+            hv.layoutParams = hv.layoutParams.apply { height = dpPx(next.toFloat()) }
+            prefs.edit().putInt("appwidget_h_$id", next).apply()
+            sendWidgetSize(id, next)
+        }
         var startY = 0f
         var startH = 0
+        var dragged = false
         row.setOnTouchListener { v, ev ->
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     startY = ev.rawY
                     startH = if (hv.height > 0) hv.height else hv.layoutParams.height
+                    dragged = false
                     v.parent?.requestDisallowInterceptTouchEvent(true)
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    if (Math.abs(ev.rawY - startY) > dpPx(10f)) dragged = true
                     val newH = (startH + (ev.rawY - startY).toInt())
                         .coerceIn(dpPx(110f), dpPx(560f))
                     val lp = hv.layoutParams
@@ -1305,10 +1358,14 @@ class MainActivity : Activity(), SensorEventListener {
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    val hDp = (hv.height / resources.displayMetrics.density)
-                        .toInt().coerceAtLeast(1)
-                    prefs.edit().putInt("appwidget_h_$id", hDp).apply()
-                    sendWidgetSize(id, hDp)
+                    if (!dragged && ev.actionMasked == MotionEvent.ACTION_UP) {
+                        v.performClick()
+                    } else if (dragged) {
+                        val hDp = (hv.height / resources.displayMetrics.density)
+                            .toInt().coerceAtLeast(1)
+                        prefs.edit().putInt("appwidget_h_$id", hDp).apply()
+                        sendWidgetSize(id, hDp)
+                    }
                     true
                 }
                 else -> true

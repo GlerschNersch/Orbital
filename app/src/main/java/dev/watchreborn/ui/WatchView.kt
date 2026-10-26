@@ -14,6 +14,7 @@ import android.os.SystemClock
 import android.text.InputType
 import android.text.TextPaint
 import android.text.TextUtils
+import android.provider.Settings
 import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -103,6 +104,7 @@ class WatchView(
     private val onClusterOptionChanged: (ClusterOption) -> Unit,
     private val onTopologySelected: (ClusterTopology) -> Unit,
     private val onPlaceItem: (GridItem, Int) -> Unit,
+    private val onSwapItems: (GridItem, Int, GridItem, Int) -> Unit,
     private val onFileIntoFolder: (App, Folder, Int) -> Unit,
     private val onCreateFolder: (App, App) -> Unit,
     private val onRenameFolder: (Folder) -> Unit,
@@ -135,7 +137,7 @@ class WatchView(
     override fun getAccessibilityNodeProvider(): WatchAccessibilityProvider = a11yProvider()
 
     private fun a11yProvider(): WatchAccessibilityProvider =
-        a11y ?: WatchAccessibilityProvider(this, ::a11yNodes, ::a11yActivate).also { a11y = it }
+        a11y ?: WatchAccessibilityProvider(this, ::a11yNodes, ::a11yActivate, ::a11yLongActivate).also { a11y = it }
 
     private fun a11yNodes(): List<WatchAccessibilityProvider.Node> {
         // The Context Card's rows (1.8.0): the same rects the card draws and
@@ -172,6 +174,7 @@ class WatchView(
                         pickerBackRect.centerX(), pickerBackRect.centerY(),
                     )
                 }
+                out += dockNodes(DOCK_SETTINGS)
                 return out
             }
             return sheetRowLabels.mapIndexed { i, (rect, label) ->
@@ -180,7 +183,7 @@ class WatchView(
                     Rect(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt()),
                     rect.centerX(), rect.centerY(),
                 )
-            }
+            } + dockNodes(DOCK_SETTINGS)
         }
         // Control Center tiles (1.9.1): the same action rects the touch
         // handler uses, deduped per action (last rect wins, as in tap()).
@@ -223,10 +226,14 @@ class WatchView(
         // list; keep the last-drawn entry per item, like hitEntryAt does.
         val byKey = LinkedHashMap<String, Hit>()
         for (h in hits) byKey[h.item.key] = h
-        return byKey.values.map { h ->
-            val label = when (val item = h.item) {
-                is Folder -> item.label + " folder"
-                else -> item.label
+        val bubbles = byKey.values.map { h ->
+            // 2.7.0 (audit #6): pin/notification state is spoken, not
+            // carried by coloured dots alone.
+            val label = buildString {
+                append(if (h.item is Folder) h.item.label + " folder" else h.item.label)
+                if (h.item.key in pinnedItemKeys) append(", pinned")
+                if (hasNotification(h.item)) append(", has notifications")
+                if (a11yCarryItem?.key == h.item.key) append(", picked up")
             }
             WatchAccessibilityProvider.Node(
                 h.item.key, label,
@@ -234,10 +241,73 @@ class WatchView(
                 h.x, h.y,
             )
         }
+        return bubbles + folderHeaderNodes() + dockNodes(if (widgetsPageOpen) DOCK_WIDGETS else DOCK_CLUSTER)
+    }
+
+    /** Dock segment nodes (2.7.0, audit #2): the dock is primary
+     *  navigation and is on screen in both the grid and Settings states. */
+    private fun dockNodes(current: Int): List<WatchAccessibilityProvider.Node> {
+        val names = arrayOf("Cluster", "Widgets", "Settings")
+        return dockSegs.mapIndexedNotNull { i, r ->
+            if (r.isEmpty) null else WatchAccessibilityProvider.Node(
+                "dock:$i", names[i] + if (i == current) ", current" else "",
+                Rect(r.left.toInt(), r.top.toInt(), r.right.toInt(), r.bottom.toInt()),
+                r.centerX(), r.centerY(),
+            )
+        }
+    }
+
+    /** Folder header button nodes (2.7.0, audit #4). */
+    private fun folderHeaderNodes(): List<WatchAccessibilityProvider.Node> {
+        if (activeFolder == null) return emptyList()
+        val out = ArrayList<WatchAccessibilityProvider.Node>()
+        fun add(key: String, label: String, r: RectF) {
+            if (!r.isEmpty) out += WatchAccessibilityProvider.Node(
+                key, label,
+                Rect(r.left.toInt(), r.top.toInt(), r.right.toInt(), r.bottom.toInt()),
+                r.centerX(), r.centerY(),
+            )
+        }
+        add("folder:rename", "Rename folder", folderRenameRect)
+        add("folder:delete", "Delete folder", folderDeleteRect)
+        add("folder:hide", "Hide folder", folderHideRect)
+        return out
     }
 
     private fun a11yActivate(node: WatchAccessibilityProvider.Node) {
         tap(node.centerX, node.centerY)
+    }
+
+    /**
+     * TalkBack long-press (2.7.0, audit #5): the single-pointer
+     * alternative to drag-rearranging. Long-press a bubble to pick it
+     * up, long-press another to swap them (the activity pins each at
+     * the other's slot behind one undo), long-press the carried
+     * bubble again to put it back.
+     */
+    private fun a11yLongActivate(node: WatchAccessibilityProvider.Node) {
+        if (clusterSheet.target > 0f || cardMenuOpen || controlIn.value > 0.5f || widgetIn.target > 0f) return
+        val item = activeGridItems.firstOrNull { it.key == node.key } ?: return
+        val carry = a11yCarryItem
+        when {
+            carry == null -> {
+                if (!editMode) enterEditMode()
+                a11yCarryItem = item
+                announceForAccessibility("${item.label} picked up. Long-press another app to swap places, or long-press it again to put it back.")
+            }
+            carry.key == item.key -> {
+                a11yCarryItem = null
+                announceForAccessibility("${item.label} put back")
+            }
+            else -> {
+                val slotA = activeGridItems.indexOfFirst { it.key == carry.key }
+                val slotB = activeGridItems.indexOfFirst { it.key == item.key }
+                if (slotA >= 0 && slotB >= 0) onSwapItems(carry, slotB, item, slotA)
+                a11yCarryItem = null
+                announceForAccessibility("${carry.label} and ${item.label} swapped")
+            }
+        }
+        invalidate()
     }
 
     override fun onHoverEvent(event: MotionEvent): Boolean {
@@ -300,6 +370,14 @@ class WatchView(
     /** Set during a frame when a notification-badged bubble is drawn on
      *  screen; gates the 75ms pulse loop (1.8.0 battery pass). */
     private var frameBadgeVisible = false
+
+    // 2.7.0 (UX audit fixes): system reduced-motion state, the pressed-row
+    // flash, and the TalkBack pick-up for tap-to-place rearranging.
+    private var motionScale = 1f
+    val reducedMotion: Boolean get() = motionScale == 0f
+    private var pressedRect: RectF? = null
+    private var pressedRadius = 16f
+    private var a11yCarryItem: GridItem? = null
     /** "Remove from folder" drop zone shown while dragging a folder member. */
     private val folderRemoveZone = RectF()
     /** Header action buttons of the open folder (rebuilt by the header draws). */
@@ -496,6 +574,7 @@ class WatchView(
 
     fun exitEditMode() {
         editMode = false
+        a11yCarryItem = null
         invalidate()
     }
 
@@ -1828,10 +1907,13 @@ class WatchView(
     private fun stepPhysics(dt: Float): Boolean {
         var active = false
 
-        // 1. Smooth tilt filter
+        // 1. Smooth tilt filter (2.7.0: under reduced motion the tilt
+        // eases to zero, so Liquid Pool settles into a still cluster).
         val tiltStep = (dt * 9f).coerceIn(0f, 1f)
-        tiltX += (targetTiltX - tiltX) * tiltStep
-        tiltY += (targetTiltY - tiltY) * tiltStep
+        val ttX = if (reducedMotion) 0f else targetTiltX
+        val ttY = if (reducedMotion) 0f else targetTiltY
+        tiltX += (ttX - tiltX) * tiltStep
+        tiltY += (ttY - tiltY) * tiltStep
 
         // 2. Shockwave ripple progress
         if (shockwaveProgress < 1f) {
@@ -1850,7 +1932,8 @@ class WatchView(
             clusterTopology == ClusterTopology.CHRONO_BEZEL ||
             clusterTopology == ClusterTopology.FIBONACCI ||
             clusterTopology == ClusterTopology.DNA_HELIX
-        if (!dragging && isRotary) {
+        if (reducedMotion) orbitalVelocity = 0f
+        if (!dragging && isRotary && !reducedMotion) {
             if (abs(orbitalVelocity) > 0.02f) {
                 val oldTick = (orbitalAngle / 0.30f).roundToInt()
                 orbitalAngle += orbitalVelocity * dt
@@ -2130,6 +2213,7 @@ class WatchView(
         frameBadgeVisible = false
 
         val springs = arrayOf(apps, grid, overview, userZoom, constellationZoom, folderIn, widgetIn, clusterSheet, constellationIn, controlIn, panX, panY, folderPanX, folderPanY, constellationPanX, constellationPanY, cardMenu)
+        if (reducedMotion) for (s in springs) s.snap(s.target) // 2.7.0 (audit #1)
         for (s in springs) s.step(dt)
         val physicsAnimating = stepPhysics(dt)
 
@@ -2158,6 +2242,7 @@ class WatchView(
             drawCrownTrack(c, w, h, top, bottom, a)
             if (clusterSheet.value > 0.001f) drawClusterSheet(c, w, h, top, bottom, clusterSheet.value)
             if (clusterSheet.value > 0.001f) drawDock(c, w, bottom, a) // 2.6.0: the dock stays on the Settings page
+            if (clusterSheet.value > 0.001f && undoActive) drawUndoBar(c, w, bottom, a) // 2.7.0: the Clear Pins undo must be visible on the page, not under it
             if (cardItem != null) drawCardMenu(c, w, h, cal, cardMenu.value)
         }
 
@@ -2182,7 +2267,16 @@ class WatchView(
                 postInvalidateDelayed(1000L - System.currentTimeMillis() % 1000L)
             }
         }
+        drawPressedOverlay(c)
         a11y?.contentChanged()
+    }
+
+    /** Pressed-state flash (2.7.0, audit #8): a soft white overlay on
+     *  whatever Settings/picker row or dock segment is held down. */
+    private fun drawPressedOverlay(c: Canvas) {
+        val pr = pressedRect ?: return
+        fill.color = Color.argb(22, 255, 255, 255)
+        c.drawRoundRect(pr, pressedRadius, pressedRadius, fill)
     }
 
     /** The cluster: most used app in the middle, the next six round it, the rest blurred behind. */
@@ -2609,7 +2703,7 @@ class WatchView(
                 if (ov > 0.35f && item is Folder) {
                     val ovAlpha = ((ov - 0.35f) / 0.5f).coerceIn(0f, 1f) * itemAlpha
                     val ovInt = (ovAlpha * 255).toInt()
-                    text.textSize = sp(9f)
+                    text.textSize = sp(11f)
                     val rawLbl = "${item.label.substringBefore(' ')} · ${item.apps.size}"
                     val lbl = TextUtils.ellipsize(rawLbl, text, dia * 1.55f, TextUtils.TruncateAt.END).toString()
                     val lw = text.measureText(lbl)
@@ -2701,7 +2795,7 @@ class WatchView(
 
         // Date at top of HUD
         val dayStr = SimpleDateFormat("EEE, MMM d", Locale.getDefault()).format(cal.time).uppercase()
-        text.textSize = (hudR * 0.145f).coerceAtLeast(sp(9f))
+        text.textSize = (hudR * 0.145f).coerceAtLeast(sp(10.5f))
         text.color = withAlpha(accent, aInt)
         c.drawText(dayStr, cx - text.measureText(dayStr) / 2, cy - hudR * 0.34f, text)
 
@@ -2733,7 +2827,7 @@ class WatchView(
         } else {
             windowText ?: "SPIN BEZEL"
         }
-        text.textSize = (hudR * 0.135f).coerceAtLeast(sp(8.5f))
+        text.textSize = (hudR * 0.135f).coerceAtLeast(sp(10.5f))
         text.color = Color.argb((aInt * 0.85f).toInt(), 190, 205, 195)
         c.drawText(sub, cx - text.measureText(sub) / 2, cy + hudR * 0.54f, text)
 
@@ -2926,7 +3020,7 @@ class WatchView(
         val chipGap = dp(5f)
         val chipY = top + dp(6f) + barH + dp(7f)
         val catGroups = dev.watchreborn.apps.AppGroup.entries.filter { g -> alphabetical.any { it.defaultGroup == g } }
-        text.textSize = sp(9.5f)
+        text.textSize = sp(10.5f)
         val catChipW = catGroups.map { g ->
             text.measureText(g.title.substringBefore(' ').substringBefore('&').trim()) + dp(16f)
         }
@@ -2978,6 +3072,19 @@ class WatchView(
             else -> {
                 alphabetical.sortedWith(compareBy<App> { it.defaultGroup.compassOrder }.thenBy { it.label })
             }
+        }
+
+        // 2.7.0 (audit #9): a zero-match search says so, instead of
+        // showing a silently empty star field.
+        if (q.isNotEmpty() && stars.isEmpty()) {
+            text.textAlign = Paint.Align.CENTER
+            text.textSize = sp(15f)
+            text.color = Color.argb(aInt, 255, 255, 255)
+            c.drawText("No apps match \"$q\"", cx, cy - dp(8f), text)
+            text.textSize = sp(12.5f)
+            text.color = Color.argb((aInt * 0.7f).toInt(), 188, 190, 198)
+            c.drawText("Try a different spelling, or clear the search", cx, cy + dp(18f), text)
+            text.textAlign = Paint.Align.LEFT
         }
 
         val cHexes = Hex.spiral(stars.size)
@@ -3084,7 +3191,7 @@ class WatchView(
 
             // Show name pill under the stars closest to the center (or top 9 when filtered)
             if (starCenterDist[i] < 0.42f || (i < 9 && (q.isNotEmpty() || constellationFilter != "ALL" || catFilter != null))) {
-                text.textSize = sp(9.5f)
+                text.textSize = sp(10.5f)
                 val lbl = TextUtils.ellipsize(app.label, text, dia * 1.38f, TextUtils.TruncateAt.END).toString()
                 val lw = text.measureText(lbl)
                 val lRect = RectF(x - lw / 2 - dp(6f), y + dia * 0.48f, x + lw / 2 + dp(6f), y + dia * 0.48f + dp(16f))
@@ -3150,7 +3257,7 @@ class WatchView(
         // tint), flow-wrapped at natural label widths over as many rows as
         // they need — see the header-layout note at the top of this function.
         constellationCategoryChipRects.clear()
-        text.textSize = sp(9.5f)
+        text.textSize = sp(10.5f)
         for ((rowIdx, row) in catRows.withIndex()) {
             var cl = padX
             val ry = catY + rowIdx * (chipH + chipGap)
@@ -3429,7 +3536,7 @@ class WatchView(
                 c.drawText(batPct, cx - text.measureText(batPct) / 2, ringCy + text.textSize * 0.35f, text)
 
                 val stats = "🔋 Bat $batPct • 🧠 RAM $ramFreePct% free • 💾 $storFreePct% free"
-                text.textSize = sp(9.5f)
+                text.textSize = sp(10.5f)
                 text.color = Color.argb((aInt * 0.85f).toInt(), 210, 220, 215)
                 c.drawText(stats, cx - text.measureText(stats) / 2, cy + islandR * 0.28f, text)
 
@@ -3714,7 +3821,7 @@ class WatchView(
         }
         for ((hr, hlabel) in headers) {
             text.textSize = sp(12f)
-            text.color = Color.argb((a * 0.65f).toInt(), 168, 170, 178)
+            text.color = Color.argb((a * 0.85f).toInt(), 168, 170, 178) // 0.85 alpha: 4.9:1+ (audit #7)
             c.drawText(hlabel, padX + dp(16f), hr.top + dp(15f), text)
         }
 
@@ -3732,9 +3839,31 @@ class WatchView(
             }
             drawSheetGlyph(c, opt, r.left + dp(24f), r.centerY(), dp(21f), glyphColor)
 
+            // Right-side content is measured first (2.7.0, audit #11):
+            // the label is ellipsized against what the switch or value
+            // actually occupies, so the two can never collide at
+            // extreme font scales.
+            val modeText = if (toggleOn != null) when (opt) {
+                ClusterOption.FIXED_NEIGHBORHOODS -> if (fixedNeighborhoods) "Fixed" else "Spiral"
+                ClusterOption.BLOOM_MODE -> if (bloomFolders) "Bloom" else "Full-screen"
+                else -> ""
+            } else ""
+            val valueText = if (toggleOn == null) when (opt) {
+                ClusterOption.CLUSTER_TOPOLOGY -> clusterTopology.fullTitle
+                ClusterOption.CLEAR_PINS -> "Unpin all"
+                ClusterOption.UNHIDE_FOLDERS -> "Restore"
+                else -> ""
+            } else ""
+            text.textSize = sp(13f)
+            val rightBoundary = when {
+                toggleOn != null -> r.right - dp(58f) - if (modeText.isNotEmpty()) text.measureText(modeText) + dp(18f) else dp(8f)
+                valueText.isNotEmpty() -> r.right - dp(32f) - text.measureText(valueText)
+                else -> r.right - dp(32f)
+            }
             text.textSize = sp(15.5f)
             text.color = Color.argb(a, 255, 255, 255)
-            c.drawText(label, r.left + dp(44f), r.centerY() + text.textSize * 0.35f, text)
+            val labelText = TextUtils.ellipsize(label, text, (rightBoundary - r.left - dp(44f)).coerceAtLeast(dp(24f)), TextUtils.TruncateAt.END).toString()
+            c.drawText(labelText, r.left + dp(44f), r.centerY() + text.textSize * 0.35f, text)
 
             if (toggleOn != null) {
                 // iOS-style switch: accent track when on, knob slides.
@@ -3749,23 +3878,12 @@ class WatchView(
                 c.drawCircle(knobX, sw.centerY(), knobR, fill)
                 // Two toggles switch MODES, not just on/off — name the mode
                 // in grey left of the switch.
-                val modeText = when (opt) {
-                    ClusterOption.FIXED_NEIGHBORHOODS -> if (fixedNeighborhoods) "Fixed" else "Spiral"
-                    ClusterOption.BLOOM_MODE -> if (bloomFolders) "Bloom" else "Full-screen"
-                    else -> ""
-                }
                 if (modeText.isNotEmpty()) {
                     text.textSize = sp(13f)
                     text.color = Color.argb((a * 0.85f).toInt(), 170, 172, 180)
                     c.drawText(modeText, sw.left - dp(10f) - text.measureText(modeText), r.centerY() + text.textSize * 0.35f, text)
                 }
             } else {
-                val valueText = when (opt) {
-                    ClusterOption.CLUSTER_TOPOLOGY -> clusterTopology.fullTitle
-                    ClusterOption.CLEAR_PINS -> "Unpin all"
-                    ClusterOption.UNHIDE_FOLDERS -> "Restore"
-                    else -> ""
-                }
                 if (valueText.isNotEmpty()) {
                     text.textSize = sp(13f)
                     text.color = Color.argb((a * 0.85f).toInt(), 170, 172, 180)
@@ -3843,11 +3961,12 @@ class WatchView(
 
             text.textSize = sp(15.5f)
             text.color = Color.argb(a, 255, 255, 255)
-            c.drawText(topo.fullTitle, r.left + dp(14f), r.top + rowH * 0.40f, text)
+            val titleMaxW = (r.right - dp(88f) - (r.left + dp(14f))).coerceAtLeast(dp(40f))
+            c.drawText(TextUtils.ellipsize(topo.fullTitle, text, titleMaxW, TextUtils.TruncateAt.END).toString(), r.left + dp(14f), r.top + rowH * 0.40f, text)
 
             text.textSize = sp(12.5f)
             text.color = Color.argb((a * 0.75f).toInt(), 178, 180, 188)
-            c.drawText(topo.subtitle, r.left + dp(14f), r.top + rowH * 0.86f, text)
+            c.drawText(TextUtils.ellipsize(topo.subtitle, text, titleMaxW, TextUtils.TruncateAt.END).toString(), r.left + dp(14f), r.top + rowH * 0.86f, text)
 
             // Miniature preview of the layout's geometry, so designs are recognisable
             // before applying. (Liquid Pool previews as its hex seed; the live pool
@@ -3926,6 +4045,10 @@ class WatchView(
             val renCx = delCx - dp(38f)
             folderDeleteRect.set(delCx - r, cy - r, delCx + r, cy + r)
             folderRenameRect.set(renCx - r, cy - r, renCx + r, cy + r)
+            // 2.7.0 (audit #4): glyphs stay 30dp, hit rects grow to the
+            // 48dp platform minimum.
+            folderDeleteRect.inset(-dp(9f), -dp(9f))
+            folderRenameRect.inset(-dp(9f), -dp(9f))
             folderHideRect.setEmpty()
             fill.color = Color.argb((aInt * 0.16f).toInt(), 255, 255, 255)
             c.drawCircle(renCx, cy, r, fill)
@@ -3943,6 +4066,7 @@ class WatchView(
             val bw = dp(48f)
             val bh = dp(26f)
             folderHideRect.set(folderHeaderRect.right - dp(8f) - bw, cy - bh / 2, folderHeaderRect.right - dp(8f), cy + bh / 2)
+            folderHideRect.inset(0f, -dp(11f)) // 26dp tall -> 48dp hit area (audit #4)
             fill.color = Color.argb((aInt * 0.16f).toInt(), 255, 255, 255)
             c.drawRoundRect(folderHideRect, bh / 2, bh / 2, fill)
             text.textAlign = Paint.Align.CENTER
@@ -4256,6 +4380,12 @@ class WatchView(
             drawWidgetBubble(c, item, x, y, d, alpha, cal)
         } else {
             drawIcon(c, item.icon, x, y, d, alpha, hasNotification(item), item.key in pinnedItemKeys, jiggle)
+            if (a11yCarryItem?.key == item.key) {
+                // The TalkBack pick-up (2.7.0): ring the carried bubble.
+                stroke.strokeWidth = dp(2.5f)
+                stroke.color = withAlpha(accent, (alpha * 255).toInt().coerceIn(0, 255))
+                c.drawCircle(x, y, d * 0.56f, stroke)
+            }
         }
     }
 
@@ -4492,7 +4622,7 @@ class WatchView(
     private fun drawIcon(c: Canvas, b: android.graphics.Bitmap, x: Float, y: Float, d: Float, alpha: Float, badge: Boolean, pinned: Boolean, jiggle: Boolean = true) {
         if (alpha <= 0.004f || d < 2f) return
         if (badge && d > dp(22f) && x + d / 2 > 0f && x - d / 2 < width && y + d / 2 > 0f && y - d / 2 < height) {
-            frameBadgeVisible = true
+            if (!reducedMotion) frameBadgeVisible = true
         }
         val aInt = (alpha * 255).toInt().coerceIn(0, 255)
         // Notification jiggle (1.3.0): a bubble with a pending notification
@@ -4502,7 +4632,7 @@ class WatchView(
         // rotates together around the bubble centre. Transient copies (the
         // carried bubble, the drop glide, the Context Card lift) pass
         // jiggle = false and stay steady.
-        val jiggling = jiggle && (badge || editMode) && d > dp(22f)
+        val jiggling = jiggle && (badge || editMode) && d > dp(22f) && !reducedMotion
         if (jiggling) {
             val phase = (System.identityHashCode(b) and 0xFFFF) / 65535f * 6.2832f
             val ang = sin(System.currentTimeMillis() / 75.0 + phase).toFloat() * 1.7f
@@ -4514,7 +4644,7 @@ class WatchView(
         c.drawBitmap(b, null, rect, bitmapPaint)
         if (badge && d > dp(22f)) {
             // Animated breathing neon Pulse Ring around any app/folder with an active notification!
-            val pulse = 0.5f + 0.5f * sin(System.currentTimeMillis() / 280.0).toFloat()
+            val pulse = if (reducedMotion) 0.5f else 0.5f + 0.5f * sin(System.currentTimeMillis() / 280.0).toFloat() // static ring under reduced motion
             stroke.strokeWidth = dp(2.0f + 1.2f * pulse)
             stroke.color = withAlpha(accent, (aInt * (0.45f + 0.45f * pulse)).toInt())
             c.drawCircle(x, y, d * (0.49f + 0.04f * pulse), stroke)
@@ -4545,6 +4675,25 @@ class WatchView(
     )
 
     // ---------------------------------------------------------------- keyboard / search input
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        refreshMotionScale()
+    }
+
+    /**
+     * Re-reads the system animation scale (2.7.0, audit #1). A scale of
+     * 0 means the user has turned animations off (or on some devices,
+     * enabled Remove Animations): Orbital then stills the jiggle, the
+     * pulse ring, rotary inertia, pool tilt, and snaps its springs.
+     */
+    fun refreshMotionScale() {
+        motionScale = try {
+            Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f)
+        } catch (e: Exception) {
+            1f
+        }
+    }
 
     override fun onCheckIsTextEditor(): Boolean = true
 
@@ -4781,6 +4930,19 @@ class WatchView(
                     crownStartZoom = if (overview.target >= 0.5f) 0.48f else userZoom.value
                 }
                 velocity?.recycle(); velocity = VelocityTracker.obtain().apply { addMovement(e) }
+                // 2.7.0 (audit #8): pressed-state flash — remember the
+                // row or dock segment under the finger for the draw pass.
+                pressedRect = null
+                if (clusterSheet.target > 0f) {
+                    val hitR = sheetRowRects.lastOrNull { it.first.contains(e.x, e.y) }?.first
+                        ?: topologyRowRects.lastOrNull { it.first.contains(e.x, e.y) }?.first
+                        ?: pickerBackRect.takeIf { !it.isEmpty && it.contains(e.x, e.y) }
+                        ?: dockSegs.firstOrNull { !it.isEmpty && it.contains(e.x, e.y) }
+                    if (hitR != null) { pressedRect = RectF(hitR); pressedRadius = dp(16f) }
+                } else if (controlIn.target == 0f) {
+                    val seg = dockSegs.firstOrNull { !it.isEmpty && it.contains(e.x, e.y) }
+                    if (seg != null) { pressedRect = RectF(seg); pressedRadius = dp(24f) }
+                }
                 // Edit mode: touching a bubble picks it up immediately — the
                 // whole point is arranging without long-pressing each bubble.
                 if (editMode && modeAtDown == MODE_APPS && !edgeCrownDragging) {
@@ -4836,6 +4998,7 @@ class WatchView(
             }
             MotionEvent.ACTION_UP -> {
                 removeCallbacks(longPress)
+                pressedRect = null
                 if (placeItem != null) {
                     finishPlace()
                     dragging = false
@@ -4867,6 +5030,7 @@ class WatchView(
             }
             MotionEvent.ACTION_CANCEL -> {
                 removeCallbacks(longPress)
+                pressedRect = null
                 dragging = false
                 pinching = false
                 edgeCrownDragging = false

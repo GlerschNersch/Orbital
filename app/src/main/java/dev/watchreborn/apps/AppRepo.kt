@@ -219,6 +219,21 @@ class AppRepo(private val context: Context) {
         e.apply()
     }
 
+    /** Snapshot of every pin in every scope (2.7.0): raw pref key -> slot,
+     *  so Clear Pins can be undone exactly, scopes included. */
+    fun allPins(): Map<String, Int> =
+        prefs.all.filterKeys { it.startsWith("pin:") || it.startsWith("pin@") }
+            .mapValues { (it.value as? Int) ?: -1 }
+            .filterValues { it >= 0 }
+
+    /** Restores a snapshot taken by [allPins], replacing all current pins. */
+    fun restorePins(snapshot: Map<String, Int>) {
+        clearAllPins()
+        val e = prefs.edit()
+        for ((k, v) in snapshot) e.putInt(k, v)
+        e.apply()
+    }
+
     /** Custom member order for a folder (app keys), set by drag-arranging in Folder view. */
     fun folderOrder(group: AppGroup): List<String> =
         prefs.getString("forder:${group.name}", null)?.split(",")?.filter { it.isNotEmpty() } ?: emptyList()
