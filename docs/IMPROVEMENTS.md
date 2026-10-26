@@ -160,6 +160,18 @@ The whole 0.2.1 ideas backlog, built:
   the time string's ink spans 91.5% of the width against the 92% budget;
   the shrink-to-fit holds and nothing clips.
 
+## Done in 1.10.0 (2026-10-25, night)
+
+- **Face tidy-up** — (1) the info line no longer duplicates the alarm
+  (the "ALARM …" line is gone; the complication + timeline dot carry
+  it). (2) Face favourites are pin-driven: pinned apps in hex-slot
+  order first, most-used fill the rest (verified fallback on the
+  emulator, which has no pins). (3) Face coach hint: "Swipe ↑ for the
+  Stack, ↓ for Controls" pill above the favourites (new HINT_FACE_SWIPE),
+  drawn unscaled on the Face, tap-to-dismiss, and retired by the first
+  Stack/Control open — verified end-to-end on the emulator (hint shown,
+  swipe opened the Stack, `faceswipe` landed in hints_seen).
+
 ## Done in 1.9.1 (2026-10-25, night)
 
 - **TalkBack coverage completed** — the topology picker (rows + Back,

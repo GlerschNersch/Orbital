@@ -774,7 +774,10 @@ class WatchView(
                 folderHexes = Hex.spiral(updated.apps.size)
             }
         }
-        face.favorites = use.take(3)
+        // Face favourites (1.10.0): the apps you pinned, in hex-slot
+        // order; most-used apps fill any remaining spots.
+        val pinnedFavs = use.filter { it.key in pinnedItemKeys }
+        face.favorites = (pinnedFavs + use).distinctBy { it.key }.take(3)
         rebuildStackCards()
         invalidate()
     }
@@ -1077,6 +1080,7 @@ class WatchView(
     }
 
     fun openStack() {
+        markHintSeen(HINT_FACE_SWIPE)
         hideKeyboard()
         gridSearching = false
         constellationIn.target = 0f
@@ -1091,6 +1095,7 @@ class WatchView(
     }
 
     fun openControlCenter() {
+        markHintSeen(HINT_FACE_SWIPE)
         hideKeyboard()
         gridSearching = false
         constellationIn.target = 0f
@@ -1175,6 +1180,8 @@ class WatchView(
     }
 
     private fun currentCoachHint(): String? {
+        // On the Face, the only undiscoverable moves are the two swipes.
+        if (onFace) return HINT_FACE_SWIPE.takeIf { it !in hintsSeen }
         if (apps.target != 1f || clusterSheet.target > 0f || constellationIn.target > 0.5f ||
             folderIn.target > 0.5f || widgetIn.target > 0.5f || gridSearching || searching
         ) return null
@@ -1200,13 +1207,17 @@ class WatchView(
             HINT_PIN -> "📌 Long-press a bubble, then drag to place it"
             HINT_CROWN -> "↕ Drag the right screen edge to zoom"
             HINT_SCRUB -> "🔤 Drag the A–Z edge to jump through the list"
+            HINT_FACE_SWIPE -> "Swipe ↑ for the Stack, ↓ for Controls"
             else -> return
         }
         text.textSize = sp(12.5f)
         val tw = text.measureText(label)
         val hh = dp(30f)
         val hw = tw + dp(28f)
-        val hy = bottom - dp(16f) - dp(Metrics.PHONE_PILL_H_DP) - dp(10f) - hh
+        // On the Face there is no dock to clear; the pill sits just above
+        // the favourites row instead.
+        val hy = if (id == HINT_FACE_SWIPE) bottom - 0.27f * w - hh - dp(10f)
+        else bottom - dp(16f) - dp(Metrics.PHONE_PILL_H_DP) - dp(10f) - hh
         coachHintRect.set(w / 2 - hw / 2, hy, w / 2 + hw / 2, hy + hh)
         fill.color = Color.argb((alpha * 235).toInt(), 30, 34, 40)
         c.drawRoundRect(coachHintRect, hh / 2, hh / 2, fill)
@@ -2323,6 +2334,12 @@ class WatchView(
             c.scale(scale, scale, w / 2, h / 2)
             face.draw(c, w, h, top, bottom, cal, info, faceAlpha)
             c.restore()
+        }
+
+        // The Face's coach hint (swipe gestures) draws unscaled, only while
+        // the Face is fully in front.
+        if (apps.value == 0f && stackIn.value == 0f && controlIn.value == 0f) {
+            drawCoachHint(c, w, bottom, faceAlpha)
         }
 
         if (stackIn.value > 0f) {
@@ -5858,6 +5875,7 @@ class WatchView(
     private fun hitEntryAt(x: Float, y: Float): Hit? = hits.lastOrNull { hypot(x - it.x, y - it.y) <= it.r }
 
     private companion object {
+        const val HINT_FACE_SWIPE = "faceswipe"
         const val HINT_PINCH = "pinch"
         const val HINT_CROWN = "crown"
         const val HINT_PIN = "pin"

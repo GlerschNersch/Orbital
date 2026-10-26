@@ -25,7 +25,8 @@ class FaceInfo(
 /**
  * Our own digital face in the spirit of a modular watch face (none of Apple's faces, fonts or art):
  * three small complications on top, a large time with the seconds in the accent colour, an info
- * line, and three complications at the bottom that open your most-used apps. A ring of minute
+ * line, and three complications at the bottom that open your pinned apps (most-used apps fill
+ * any gaps). A ring of minute
  * ticks runs around the screen's edge, lit up to the current second.
  */
 class Face {
@@ -102,18 +103,13 @@ class Face {
         text.color = withAlpha(accent, a); c.drawText(ss, x, timeY, text)
         text.textAlign = Paint.Align.CENTER
 
-        // Info line: the next alarm, or the full date.
+        // Info line: the full date. The next alarm isn't repeated here —
+        // it already has the top-right complication (and its timeline dot),
+        // so the old "ALARM 7:00 AM" line only said the same thing twice.
         text.typeface = medium; text.textSize = 0.065f * w
         val dayLine = SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(now.time)
-        if (info.nextAlarm != null) {
-            text.color = withAlpha(accent, a)
-            c.drawText("ALARM " + DateFormat.getTimeInstance(DateFormat.SHORT).format(info.nextAlarm), w / 2, timeY + 0.1f * w, text)
-            text.color = withAlpha(Color.WHITE, a)
-            c.drawText(dayLine, w / 2, timeY + 0.18f * w, text)
-        } else {
-            text.color = withAlpha(Color.WHITE, a)
-            c.drawText(dayLine, w / 2, timeY + 0.1f * w, text)
-        }
+        text.color = withAlpha(Color.WHITE, a)
+        c.drawText(dayLine, w / 2, timeY + 0.1f * w, text)
 
         if (spare > 0.3f * w) drawTimeline(c, w, timeY + 0.3f * w + spare * 0.3f, now, info, a)
 

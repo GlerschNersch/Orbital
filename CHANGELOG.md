@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.10.0 — 2026-10-25
+
+- **Watch Face tidy-up** — three review findings in one pass:
+  - The info line no longer repeats the alarm: "ALARM 7:00 AM" under
+    the time duplicated the alarm complication (and the timeline dot);
+    the line now just shows the full date.
+  - The three bottom favourites are now your pinned apps, in hex-slot
+    order — most-used apps only fill gaps when you have fewer than
+    three pins.
+  - The Face finally explains its gestures: a small hint pill ("Swipe
+    ↑ for the Stack, ↓ for Controls") appears above the favourites
+    until you use a swipe or tap it away, like the grid's coach hints.
+
 ## 1.9.1 — 2026-10-25
 
 - **TalkBack coverage is complete** — the three surfaces that still had
