@@ -236,17 +236,9 @@ class WatchView(
             return out
         }
         if (apps.target < 0.5f) {
-            val out = ArrayList<WatchAccessibilityProvider.Node>()
-            for ((i, r) in face.favoriteRects.withIndex()) {
-                val app = face.favorites.getOrNull(i) ?: continue
-                if (r.isEmpty) continue
-                out += WatchAccessibilityProvider.Node(
-                    "face:" + app.key, app.label,
-                    Rect(r.left.toInt(), r.top.toInt(), r.right.toInt(), r.bottom.toInt()),
-                    r.centerX(), r.centerY(),
-                )
-            }
-            return out
+            // The Face has no actionable nodes: its favourites row was
+            // removed in 1.13.0 and the complications were never nodes.
+            return emptyList()
         }
         // Grid / list / search / folder / overview bubbles from the touch hit
         // list; keep the last-drawn entry per item, like hitEntryAt does.
@@ -782,10 +774,6 @@ class WatchView(
                 folderHexes = Hex.spiral(updated.apps.size)
             }
         }
-        // Face favourites (1.10.0): the apps you pinned, in hex-slot
-        // order; most-used apps fill any remaining spots.
-        val pinnedFavs = use.filter { it.key in pinnedItemKeys }
-        face.favorites = (pinnedFavs + use).distinctBy { it.key }.take(3)
         rebuildStackCards()
         invalidate()
     }
@@ -1202,10 +1190,11 @@ class WatchView(
         }
     }
 
-    /** How far the Face's favourites row (and its coach hint) lift so the
-     *  bottom dock (1.12.0) never overlaps them: enough for the dock's
-     *  height + its bottom margin + a 10dp gap, minus the clearance the
-     *  favourites already had. Zero on narrow screens that already fit. */
+    /** How far the Face's coach hint lifts so the bottom dock (1.12.0)
+     *  never overlaps it: enough for the dock's height + its bottom
+     *  margin + a 10dp gap, minus the clearance the hint already had.
+     *  Zero on narrow screens that already fit. (Until 1.13.0 this also
+     *  lifted the Face's favourites row; that row is gone.) */
     private fun faceDockLift(w: Float): Float =
         (dp(74f) - 0.07f * w).coerceAtLeast(0f)
 
@@ -1229,8 +1218,7 @@ class WatchView(
         val tw = text.measureText(label)
         val hh = dp(30f)
         val hw = tw + dp(28f)
-        // On the Face the pill sits just above the favourites row, which
-        // itself lifts to clear the bottom dock (1.12.0) — lift with it.
+        // On the Face the pill lifts to clear the bottom dock (1.12.0).
         val hy = if (id == HINT_FACE_SWIPE) bottom - 0.27f * w - faceDockLift(w) - hh - dp(10f)
         else bottom - dp(16f) - dp(Metrics.PHONE_PILL_H_DP) - dp(10f) - hh
         coachHintRect.set(w / 2 - hw / 2, hy, w / 2 + hw / 2, hy + hh)
@@ -2374,7 +2362,7 @@ class WatchView(
             val scale = 1f - 0.12f * overlayMax
             c.save()
             c.scale(scale, scale, w / 2, h / 2)
-            face.draw(c, w, h, top, bottom, cal, info, faceAlpha, faceDockLift(w))
+            face.draw(c, w, h, top, bottom, cal, info, faceAlpha)
             c.restore()
         }
 
@@ -4405,11 +4393,14 @@ class WatchView(
             return
         }
         val ph = dp(Metrics.PHONE_PILL_H_DP)
-        val segW = dp(68f)
+        // Full-width bar (1.13.0, Matt's ask): a small side margin keeps
+        // the floating look; the four segments share the width evenly.
+        val sideMargin = dp(10f)
+        val segW = (w - sideMargin * 2f) / 4f
         val pw = segW * 4f
         val py = bottom - ph - dp(16f)
 
-        pill.set(w / 2 - pw / 2, py, w / 2 + pw / 2, py + ph)
+        pill.set(sideMargin, py, sideMargin + pw, py + ph)
         // Light floating bar with a purple pill highlight on the active
         // segment (style Matt picked from a reference sheet, 2026-10-26):
         // white bar, violet accent, inactive segments go icon-only.
@@ -5852,10 +5843,6 @@ class WatchView(
             performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
             onCardAction(CardAction.OPEN_ALARMS)
             return
-        }
-        for ((i, r) in face.favoriteRects.withIndex()) {
-            val app = face.favorites.getOrNull(i) ?: continue
-            if (!r.isEmpty && r.contains(x, y)) { onLaunch(app, RectF(r)); return }
         }
         if (honeycombHome) openFullHoneycomb() else openApps()
     }

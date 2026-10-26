@@ -160,6 +160,20 @@ The whole 0.2.1 ideas backlog, built:
   the time string's ink spans 91.5% of the width against the 92% budget;
   the shrink-to-fit holds and nothing clips.
 
+## Done in 1.13.0 (2026-10-26)
+
+- **Face favourites removed + full-width dock (Matt's asks)** — the
+  Face's bottom app row (the 1.10.0 pin-driven discs) is deleted end
+  to end: Face.draw no longer takes dockLift or draws the row,
+  favoriteRects/favorites are gone, along with their tap targets,
+  TalkBack nodes and the pinnedFavs computation. The Face is clock,
+  complications and timeline only. drawDock now spans the screen
+  width (10dp side margins keep the floating look) with the four
+  segments sharing the width evenly; dockSegs derive from the bar,
+  so taps follow automatically. Emulator-verified: clean Face, wide
+  dock on both surfaces, Face segment tap navigates at the new
+  geometry.
+
 ## Done in 1.12.0 (2026-10-26)
 
 - **Dock on the Face + restyle (Matt's asks)** — drawDock now also runs

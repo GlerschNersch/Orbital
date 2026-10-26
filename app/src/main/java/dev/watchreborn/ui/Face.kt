@@ -1,6 +1,5 @@
 package dev.watchreborn.ui
 
-import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -8,7 +7,6 @@ import android.graphics.Path
 import android.graphics.PathMeasure
 import android.graphics.RectF
 import android.graphics.Typeface
-import dev.watchreborn.apps.App
 import java.text.DateFormat
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -24,9 +22,9 @@ class FaceInfo(
 
 /**
  * Our own digital face in the spirit of a modular watch face (none of Apple's faces, fonts or art):
- * three small complications on top, a large time with the seconds in the accent colour, an info
- * line, and three complications at the bottom that open your pinned apps (most-used apps fill
- * any gaps). A ring of minute
+ * three small complications on top, a large time with the seconds in the accent colour, and an
+ * info line. (A bottom row of pinned-app complications lived here until 1.13.0, when Matt
+ * asked for it off the Face.) A ring of minute
  * ticks runs around the screen's edge, lit up to the current second.
  */
 class Face {
@@ -37,7 +35,6 @@ class Face {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
-    private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val bold = Typeface.create("sans-serif", Typeface.BOLD)
     private val medium = Typeface.create("sans-serif-medium", Typeface.NORMAL)
     private val condensed = Typeface.create("sans-serif-condensed", Typeface.BOLD)
@@ -50,11 +47,7 @@ class Face {
     /** Where the top complications (0=Battery, 1=Date, 2=Alarm) were drawn, for taps. */
     val topRects = Array(3) { RectF() }
 
-    /** Where the bottom complications were drawn, for taps (null where there's no app). */
-    val favoriteRects = Array(3) { RectF() }
-    var favorites: List<App?> = emptyList()
-
-    fun draw(c: Canvas, w: Float, h: Float, top: Float, bottom: Float, now: Calendar, info: FaceInfo, alpha: Float, dockLift: Float = 0f) {
+    fun draw(c: Canvas, w: Float, h: Float, top: Float, bottom: Float, now: Calendar, info: FaceInfo, alpha: Float) {
         val a = (alpha * 255).toInt().coerceIn(0, 255)
         if (a == 0) return
         drawTicks(c, w, h, top, bottom, now, a)
@@ -112,19 +105,6 @@ class Face {
         c.drawText(dayLine, w / 2, timeY + 0.1f * w, text)
 
         if (spare > 0.3f * w) drawTimeline(c, w, timeY + 0.3f * w + spare * 0.3f, now, info, a)
-
-        // Bottom row: your pinned favourites (most-used apps fill gaps).
-        // Lifted by dockLift so the row clears the bottom dock (1.12.0).
-        val big = 0.2f * w
-        val bottomY = bottom - 0.17f * w - dockLift
-        for (i in 0 until 3) {
-            val cx = xs[i]
-            favoriteRects[i].set(cx - big / 2, bottomY - big / 2, cx + big / 2, bottomY + big / 2)
-            val app = favorites.getOrNull(i)
-            disc(c, cx, bottomY, big, a)
-            if (app != null) icon(c, app.icon, cx, bottomY, big * 0.78f, a)
-            else favoriteRects[i].setEmpty()
-        }
     }
 
     private fun drawTicks(c: Canvas, w: Float, h: Float, top: Float, bottom: Float, now: Calendar, a: Int) {
@@ -219,12 +199,6 @@ class Face {
         p.close()
         c.drawPath(p, fill)
         c.drawCircle(x, y + s * 0.48f, s * 0.12f, fill)
-    }
-
-    private fun icon(c: Canvas, b: Bitmap, x: Float, y: Float, d: Float, a: Int) {
-        bitmapPaint.alpha = a
-        rect.set(x - d / 2, y - d / 2, x + d / 2, y + d / 2)
-        c.drawBitmap(b, null, rect, bitmapPaint)
     }
 
     private fun withAlpha(color: Int, a: Int) = Color.argb(Color.alpha(color) * a / 255, Color.red(color), Color.green(color), Color.blue(color))

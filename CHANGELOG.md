@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.13.0 — 2026-10-26
+
+- **The Face's bottom app row is gone** — the three app discs above
+  the dock (Phone / Messages / Camera and friends) are removed;
+  the Face is clock, complications and timeline only now.
+- **The dock spans the full width** — the bottom bar stretches
+  edge to edge (a slim margin keeps the floating look) and the
+  four segments share the width evenly.
+
 ## 1.12.0 — 2026-10-26
 
 - **The bottom dock now lives on the Face too** — Face · Cluster ·
