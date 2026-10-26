@@ -1,9 +1,11 @@
-# Watch Reborn
+# Orbital
 
 An Android home screen modelled on watchOS 27's: a watch face, the app cluster and honeycomb
 grid, the List view and the Smart Stack. It is a clean-room rebuild: the layout and motion are
 measured from screen recordings of a real watch (see [docs/RE_NOTES.md](docs/RE_NOTES.md)), and
 every face, icon shape and drawing is our own. No Apple code, artwork or fonts are included.
+
+(Formerly Watch Reborn — renamed 2026-10-26. The internal package name remains dev.watchreborn.)
 
 Sibling of XMB, PS4, X360, Switch, C64U, VCS and TSF Reborn.
 

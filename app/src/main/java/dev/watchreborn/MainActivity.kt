@@ -750,7 +750,7 @@ class MainActivity : Activity(), SensorEventListener {
             }
             ControlAction.LOCK -> {
                 if (!TurnOffService.perform(AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN)) {
-                    Toast.makeText(this, "Enable Watch Reborn in Accessibility to lock screen", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Enable Orbital in Accessibility to lock screen", Toast.LENGTH_SHORT).show()
                     runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
                 }
             }
@@ -1135,7 +1135,7 @@ class MainActivity : Activity(), SensorEventListener {
         root.addView(title)
 
         val sub = TextView(this).apply {
-            text = "Host real interactive Android widgets inside Watch Reborn"
+            text = "Host real interactive Android widgets inside Orbital"
             textSize = 11.5f
             setTextColor(Color.rgb(180, 185, 195))
             gravity = Gravity.CENTER_HORIZONTAL

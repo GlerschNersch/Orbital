@@ -3886,7 +3886,7 @@ class WatchView(
             add(Triple(ClusterOption.EDIT_LAYOUT, "Edit Layout", "Drag bubbles to place them"))
             if (sheetExpanded) {
                 add(Triple(ClusterOption.SYSTEM_WIDGETS, "Android System Widgets", "View / add app widgets"))
-                add(Triple(ClusterOption.SET_DEFAULT_HOME, "Default Phone Launcher", "Set Watch Reborn as Home app"))
+                add(Triple(ClusterOption.SET_DEFAULT_HOME, "Default Phone Launcher", "Set Orbital as Home app"))
                 if (pinnedItemKeys.isNotEmpty()) {
                     add(Triple(ClusterOption.CLEAR_PINS, "Pinned Hex Slots (${pinnedItemKeys.size})", "Tap to unpin all bubbles"))
                 }

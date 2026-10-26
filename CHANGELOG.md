@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.16.0 — 2026-10-26
+
+- **The app is now called Orbital** — display name, in-app
+  references and the GitHub repo renamed from Watch Reborn
+  (Matt's pick). The internal package name stays dev.watchreborn,
+  so the install, settings and notification access carry over
+  untouched.
+
 ## 1.15.0 — 2026-10-26
 
 - **Snappier Face ⇄ cluster switching** — a dock touch test (plus
