@@ -160,6 +160,17 @@ The whole 0.2.1 ideas backlog, built:
   the time string's ink spans 91.5% of the width against the 92% budget;
   the shrink-to-fit holds and nothing clips.
 
+## Done in 1.15.0 (2026-10-26)
+
+- **Dock touch test → snappier switch** — Matt felt lag switching
+  Cluster → Face from the dock. Emulator gfxinfo is GPU-noise, but
+  his phone's own frame stats (read-only) are clean: ~9 ms median
+  frame, 0.22% janky — rendering was never the bottleneck. The delay
+  is the apps spring's designed 0.3 s critically-damped settle plus
+  its soft tail. Fix: the apps spring gets its own 0.22 s settle;
+  other springs keep 0.3 s. Verified on the emulator; installed on
+  his phone.
+
 ## Done in 1.14.0 (2026-10-26)
 
 - **Dock rescaled to the reference proportions (Matt: "the scale
