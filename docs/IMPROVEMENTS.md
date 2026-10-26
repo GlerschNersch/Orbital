@@ -3,6 +3,31 @@
 Living list. The navigation cleanup of 2026-10-25 (commits `c5ad977`, `f8b7158`, `c201aca`,
 `a334f54`) is the baseline; items move between sections as they land.
 
+## UX test findings (2026-10-25, full pass at 181 grid items)
+
+- **Ring layouts saturate**: Orbitals, Chrono Bezel and Thumb Arc Dock pack the overflow
+  onto rings/arcs until bubbles overlap into unreadable "caterpillars". Positional layouts
+  (Honeycomb, Gravity, River, Fibonacci, Hourglass, Helix) scale fine. Ideas: cap ring
+  membership + overflow into the grid, shrink ring bubbles with ring index, or fade
+  outer-ring bubbles until spun into focus.
+- **Quick-menu chips clip at screen edges**: for a bubble near the left/right edge, the
+  bloom arc pushes the outer chip halfway off-screen. Clamp chip targets into the view
+  (or mirror the arc) — small fix in drawQuickChips.
+- **Constellation category ribbon overlaps**: the AI/Work/News/… tag pills in the
+  Unraveled header draw on top of each other; labels collide.
+- **Magnetic Dock floats**: in focus view the dock arcs sit mid-screen with the clock
+  core half-buried and the bottom third empty; the dock should anchor low.
+- **Face time slightly overflows**: the seconds digits clip at the right screen edge.
+- **Sheet row positions shift ~40px between opens** (row compression adapting), which
+  makes muscle-memory taps occasionally land on a neighbouring row.
+- Observed once, needs repro: Back from the Smart Stack exited the app instead of
+  returning to the face (WatchReborn is not the default home app, so an unconsumed
+  Back finishes the activity — check the STACK layer is always consumed).
+- Verified working in the same pass: all 11 layouts apply + persist; all 9 sheet
+  toggles flip + persist both ways; App Search typing/filter; Edit Layout enter/exit;
+  drag-place + Undo; List view + A–Z scrub; Control pod + flashlight; Smart Stack;
+  system-widgets dialog; default-home settings door.
+
 ## Done
 
 - **Bubble Physics toggle wired end-to-end** — sheet row, handler, `bubble_physics` prefs
