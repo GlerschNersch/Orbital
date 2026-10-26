@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.8.1 — 2026-10-26
+
+The notification peek now morphs organically instead of scaling in: the owning bubble buds a droplet (and squeezes slightly as it pushes it out), the droplet travels to the pill's spot on a tapering goo neck that thins as it arrives, stretches into the pill shape with a soft squash-and-settle overshoot, and only then fades the icon and text in, clipped to the forming shape. Retraction runs the same path in reverse — content fades first, the pill shrinks home into the bubble. The peek spring is lazier (0.5s) so the morph reads; under reduced motion it still simply appears and vanishes.
+
 ## 2.8.0 — 2026-10-26
 
 Notification peek: when a fresh notification arrives, the owning bubble sprouts a speech pill — the app's icon, the notification's title and first line of text — grows it out of its own edge on a spring, holds it for ~4 seconds, then retracts to the plain badge dot. Tapping the pill opens the posting app (a folder's pill opens the member app that posted). The pill flips below the bubble near the top of the screen, dismisses early if the notification clears, and under reduced motion it simply appears and vanishes. The listener now tracks the newest readable notification (group summaries skipped while real children exist); only arrivals fresher than 20 seconds morph, so returning home never replays stale notifications.

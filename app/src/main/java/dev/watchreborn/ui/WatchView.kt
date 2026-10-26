@@ -559,7 +559,7 @@ class WatchView(
     private var peekText = ""
     private var peekPkg: String? = null
     private var handledPeekSeq = 0L
-    private val peekIn = Spring(0f, 0.22f)
+    private val peekIn = Spring(0f, 0.5f)
     private var peekUntilMs = 0L
     private val peekRect = RectF()
 
@@ -1045,17 +1045,21 @@ class WatchView(
         invalidate()
     }
 
-    /** The notification speech pill (2.8.0): grows out of the owning
-     *  bubble (canvas scaled about the tail tip), holds, retracts. */
+    /** The notification speech pill (2.8.0; organic morph 2.8.1): the
+     *  owning bubble buds a droplet that travels out on a thinning goo
+     *  neck, stretches into the pill with a soft overshoot, and only
+     *  then fades its content in. Retraction runs the same path home:
+     *  content fades first, the pill shrinks back into the bubble. */
     private fun drawPeek(c: Canvas, alpha: Float) {
         val key = peekItemKey ?: return
         if (clusterSheet.value > 0.001f || controlIn.value > 0.001f) { peekRect.setEmpty(); return }
-        val g = peekIn.value
-        if (g <= 0.01f) { peekRect.setEmpty(); return }
+        val v = peekIn.value.coerceIn(0f, 1f)
+        if (v <= 0.005f) { peekRect.setEmpty(); return }
         val hit = hits.lastOrNull { it.item.key == key } ?: run { peekRect.setEmpty(); return }
         val app = peekApp ?: return
         val aInt = (alpha * 255).toInt().coerceIn(0, 255)
 
+        // Final pill geometry (the 2.8.0 layout).
         val padX = dp(11f); val padY = dp(8f); val iconD = dp(20f); val gapX = dp(8f)
         val maxTextW = min(width * 0.60f, dp(225f))
         text.textSize = sp(12.5f); text.isFakeBoldText = true
@@ -1067,52 +1071,103 @@ class WatchView(
         val pillW = padX * 2 + iconD + gapX + bodyW
         val lineH = sp(15f)
         val pillH = padY * 2 + if (peekText.isEmpty()) max(iconD, lineH) else lineH * 2 + dp(1f)
-
-        // Above the bubble, flipping below it near the top of the screen.
         val above = hit.y - hit.r - dp(10f) - pillH > topInset + dp(10f)
         val pillTop = if (above) hit.y - hit.r - dp(10f) - pillH else hit.y + hit.r + dp(10f)
         val pillLeft = (hit.x - pillW / 2).coerceIn(dp(10f), max(dp(10f), width - pillW - dp(10f)))
         peekRect.set(pillLeft, pillTop, pillLeft + pillW, pillTop + pillH)
 
-        // The tail tip touches the bubble's edge; the pill scales about it.
-        val tipX = hit.x.coerceIn(pillLeft + dp(16f), pillLeft + pillW - dp(16f))
-        val tipY = if (above) pillTop + pillH + dp(9f) else pillTop - dp(9f)
-        val baseY = if (above) pillTop + pillH else pillTop
+        // Morph: travel (fast-out), shape (smooth both ends), and a
+        // squash-stretch overshoot — wider while it travels, settling flat.
+        val tPos = Motion.easeOutCubic(v)
+        val tShape = v * v * (3f - 2f * v)
+        val wobble = Motion.easeOutBack(v)
+        val dirY = if (above) -1f else 1f
+        val budD = hit.r * 1.05f
+        val cx = Motion.lerp(hit.x, pillLeft + pillW / 2, tPos)
+        val cy = Motion.lerp(hit.y + dirY * hit.r * 0.72f, pillTop + pillH / 2, tPos)
+        val shapeW = Motion.lerp(budD, pillW, tShape) * wobble
+        val shapeH = Motion.lerp(budD, pillH, tShape) * (2f - wobble)
+        val radius = min(shapeH / 2, Motion.lerp(budD / 2, dp(14f), tShape))
+        val shape = RectF(cx - shapeW / 2, cy - shapeH / 2, cx + shapeW / 2, cy + shapeH / 2)
 
-        c.save()
-        c.translate(tipX, tipY)
-        c.scale(g, g)
-        c.translate(-tipX, -tipY)
-        val fade = (aInt * g).toInt().coerceIn(0, 255)
+        val fade = (aInt * min(1f, v * 3f)).toInt().coerceIn(0, 255)
         fill.color = Color.argb((fade * 0.97f).toInt(), 32, 34, 40)
-        val tail = Path()
-        tail.moveTo(tipX - dp(7f), baseY)
-        tail.lineTo(tipX + dp(7f), baseY)
-        tail.lineTo(tipX, tipY)
-        tail.close()
-        c.drawPath(tail, fill)
-        c.drawRoundRect(peekRect, dp(14f), dp(14f), fill)
-        val iconTop = pillTop + (pillH - iconD) / 2
-        rect.set(pillLeft + padX, iconTop, pillLeft + padX + iconD, iconTop + iconD)
-        bitmapPaint.alpha = fade
-        c.drawBitmap(app.icon, null, rect, bitmapPaint)
-        val tx = pillLeft + padX + iconD + gapX
-        text.textAlign = Paint.Align.LEFT
-        text.color = Color.argb(fade, 255, 255, 255)
-        text.textSize = sp(12.5f); text.isFakeBoldText = true
-        val titleShown = TextUtils.ellipsize(peekTitle, text, maxTextW, TextUtils.TruncateAt.END).toString()
-        if (peekText.isEmpty()) {
-            c.drawText(titleShown, tx, pillTop + pillH / 2 + text.textSize * 0.35f, text)
-        } else {
-            c.drawText(titleShown, tx, pillTop + padY + lineH * 0.82f, text)
-            text.isFakeBoldText = false
-            text.color = Color.argb(fade, 196, 198, 206)
-            text.textSize = sp(12f)
-            val textShown = TextUtils.ellipsize(peekText, text, maxTextW, TextUtils.TruncateAt.END).toString()
-            c.drawText(textShown, tx, pillTop + padY + lineH * 1.82f, text)
+
+        // Goo neck while travelling: a tapering bridge from a chord
+        // inside the bubble to the droplet, plus a mid droplet that
+        // rounds the union. It thins away as the pill arrives.
+        val neckT = 1f - smooth01((v - 0.5f) / 0.4f)
+        if (neckT > 0.01f) {
+            val chordY = hit.y + dirY * hit.r * 0.42f
+            val edgeY = cy - dirY * shapeH * 0.40f
+            val wB = hit.r * 0.50f * neckT + dp(1f)
+            val wS = shapeH * 0.30f * neckT + dp(1f)
+            val neck = Path()
+            neck.moveTo(hit.x - wB, chordY)
+            neck.lineTo(cx - wS, edgeY)
+            neck.lineTo(cx + wS, edgeY)
+            neck.lineTo(hit.x + wB, chordY)
+            neck.close()
+            c.drawPath(neck, fill)
+            c.drawCircle((hit.x + cx) / 2, (chordY + edgeY) / 2, min(wB, wS) * 1.05f, fill)
         }
-        text.isFakeBoldText = false
-        c.restore()
+
+        // The pill body itself.
+        val shapePath = Path()
+        shapePath.addRoundRect(shape, radius, radius, Path.Direction.CW)
+        c.drawPath(shapePath, fill)
+
+        // The speech tail fades in once the pill has basically arrived.
+        val tailT = smooth01((v - 0.8f) / 0.2f)
+        if (tailT > 0.01f) {
+            val tipX = hit.x.coerceIn(pillLeft + dp(16f), pillLeft + pillW - dp(16f))
+            val tipY = if (above) pillTop + pillH + dp(9f) else pillTop - dp(9f)
+            val baseY = if (above) pillTop + pillH else pillTop
+            fill.color = Color.argb((fade * 0.97f * tailT).toInt(), 32, 34, 40)
+            val tail = Path()
+            tail.moveTo(tipX - dp(7f), baseY)
+            tail.lineTo(tipX + dp(7f), baseY)
+            tail.lineTo(tipX, tipY)
+            tail.close()
+            c.drawPath(tail, fill)
+            fill.color = Color.argb((fade * 0.97f).toInt(), 32, 34, 40)
+        }
+
+        // Content fades in last, clipped to the still-forming shape so
+        // nothing spills outside the droplet while it stretches.
+        val contentT = smooth01((v - 0.45f) / 0.3f)
+        if (contentT > 0.01f) {
+            val cf = (aInt * contentT).toInt().coerceIn(0, 255)
+            c.save()
+            c.clipPath(shapePath)
+            val iconTop = pillTop + (pillH - iconD) / 2
+            rect.set(pillLeft + padX, iconTop, pillLeft + padX + iconD, iconTop + iconD)
+            bitmapPaint.alpha = cf
+            c.drawBitmap(app.icon, null, rect, bitmapPaint)
+            val tx = pillLeft + padX + iconD + gapX
+            text.textAlign = Paint.Align.LEFT
+            text.color = Color.argb(cf, 255, 255, 255)
+            text.textSize = sp(12.5f); text.isFakeBoldText = true
+            val titleShown = TextUtils.ellipsize(peekTitle, text, maxTextW, TextUtils.TruncateAt.END).toString()
+            if (peekText.isEmpty()) {
+                c.drawText(titleShown, tx, pillTop + pillH / 2 + text.textSize * 0.35f, text)
+            } else {
+                c.drawText(titleShown, tx, pillTop + padY + lineH * 0.82f, text)
+                text.isFakeBoldText = false
+                text.color = Color.argb(cf, 196, 198, 206)
+                text.textSize = sp(12f)
+                val textShown = TextUtils.ellipsize(peekText, text, maxTextW, TextUtils.TruncateAt.END).toString()
+                c.drawText(textShown, tx, pillTop + padY + lineH * 1.82f, text)
+            }
+            text.isFakeBoldText = false
+            c.restore()
+        }
+    }
+
+    /** Clamped smoothstep for the peek morph blends (2.8.1). */
+    private fun smooth01(x: Float): Float {
+        val t = x.coerceIn(0f, 1f)
+        return t * t * (3f - 2f * t)
     }
 
     /** Transient "placed — Undo" bar shown after a drag-to-place mutation. */
@@ -4508,7 +4563,12 @@ class WatchView(
         if (item is WidgetBubble) {
             drawWidgetBubble(c, item, x, y, d, alpha, cal)
         } else {
-            drawIcon(c, item.icon, x, y, d, alpha, hasNotification(item), item.key in pinnedItemKeys, jiggle)
+            // Notification peek (2.8.1): the owning bubble squeezes
+            // slightly mid-morph, like it is pushing the droplet out.
+            val squeeze = if (item.key == peekItemKey) {
+                1f - 0.055f * sin(PI.toFloat() * peekIn.value.coerceIn(0f, 1f))
+            } else 1f
+            drawIcon(c, item.icon, x, y, d * squeeze, alpha, hasNotification(item), item.key in pinnedItemKeys, jiggle)
             if (a11yCarryItem?.key == item.key) {
                 // The TalkBack pick-up (2.7.0): ring the carried bubble.
                 stroke.strokeWidth = dp(2.5f)
