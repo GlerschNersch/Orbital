@@ -123,26 +123,27 @@ The whole 0.2.1 ideas backlog, built:
   was lost. Pure drop logic in `PlaceSlots` with unit tests; full gesture covered by the
   instrumented `DragPlaceTest`.
 
+## Done in 1.7.0 (2026-10-25, evening — Matt's 1.6.0 feedback)
+
+- **Dock polish** — the four dock icons are drawn in one line style (clock,
+  7-dot hex cluster, list, stacked squares) instead of mixed font glyphs + an
+  emoji; softer accent highlight on the active segment. Verified on the emulator.
+- **Folder header buttons** — an open folder's header pill (bloom + full view)
+  carries ✎ Rename + 🗑 Delete on custom folders, and a **Hide** pill on
+  automatic category folders: Hide spills the members loose, persists
+  (`hidden_groups` pref), shows the undo bar, and the Cluster sheet gains a
+  "Hidden Folders (n)" row to restore them. Hide verified end-to-end on the
+  emulator (Photos folder). Deleting the folder you're standing in closes it.
+- **Remove from folder, visibly** — long-press inside a custom folder opens a
+  member card (Open App / App Info / More Options / **Remove from …**), and
+  dragging a member onto the red "✕ Remove from folder" zone un-files it —
+  covers the old "Drag out of a folder" backlog item in zone form. Live check
+  of the member card + drag-out is still pending: the emulator doesn't register
+  injected long-presses, so these two wait for the phone.
+
 ## Next
 
-Queued by Matt, 2026-10-25 evening (after trying 1.6.0):
-
-- **Dock polish pass** (S) — the 1.6.0 bottom dock works but looks rough: the four
-  segments mix text glyphs (⌂ ▦ ☰) with one emoji (🗂), the glyph+label stack is
-  cramped in the 48dp bar, and the active-segment highlight is a plain tint box.
-  Redraw the four icons as one consistent drawn set, tune spacing and baselines,
-  and give the active segment a cleaner treatment (consider a slightly taller bar).
-- **Folder delete people can actually find** (S) — Delete/Rename ship in 1.6.0 but
-  only on a custom folder's long-press Context Card; Matt went looking and never
-  found them, and automatic category folders can't be deleted at all. Add
-  Rename/Delete to the open folder's own header, and give category folders a
-  "Hide folder" (spill the members loose and suppress the folder) so every folder
-  bubble has an obvious way out.
-- **Remove apps from folders, visibly** (S–M) — the only way out today is a
-  classic-menu row inside the folder view; undiscoverable, and the bloom has
-  none. Put "Remove from folder" on the member's press card inside folders
-  (bloom + full view) and finish **Drag out of a folder** (below) so un-filing
-  is a gesture, not a menu hunt.
+Nothing queued — pick from Later below.
 
 ## Ideas backlog (comprehensive pass, 2026-10-25)
 
@@ -152,8 +153,8 @@ Sizes: S = an hour-ish, M = an afternoon, L = a bigger project.
 
 - **Bloom-mode member arranging** (M) — reorder members while a folder is bloomed in
   place; 0.3.0 covers the full-screen Folder view only.
-- **Drag out of a folder** (M) — drag a bloomed/folder-view member back onto the grid to
-  un-file it (today filing is one-way by drag; the menu is the way back).
+- **Drag out of a folder** (M) — DONE in 1.7.0 in zone form: drag a member onto the
+  "✕ Remove from folder" zone to un-file it (plus the member card's Remove row).
 - **Swap instead of evict** (S) — setting: dropping on an occupied slot swaps the two
   bubbles instead of unpinning the occupant.
 - **Pin to a chosen hex number** (S) — long-press menu gains "Pin to Hex #…", closing
