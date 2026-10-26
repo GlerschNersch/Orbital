@@ -1234,7 +1234,7 @@ class WatchView(
             stroke.strokeWidth = dp(1.6f)
             stroke.color = withAlpha(accent, (a * 180).toInt())
             c.drawCircle(cardOriginX, cardOriginY, cardOriginR * 1.14f, stroke)
-            drawGridItem(c, item, cardOriginX, cardOriginY, liftDia, a, cal)
+            drawGridItem(c, item, cardOriginX, cardOriginY, liftDia, a, cal, jiggle = false)
         }
 
         // Card geometry: fixed width, one row per action.
@@ -1305,7 +1305,7 @@ class WatchView(
         val x = Motion.lerp(da.fromX, bubbleX[idx], e)
         val y = Motion.lerp(da.fromY, bubbleY[idx], e)
         val d = Motion.lerp(da.fromDia, endDia, e)
-        drawGridItem(c, da.item, x, y, d, alpha, cal)
+        drawGridItem(c, da.item, x, y, d, alpha, cal, jiggle = false)
         if (p >= 1f) dropAnim = null else motionAnimating = true
     }
 
@@ -1363,7 +1363,7 @@ class WatchView(
         }
         // The carried bubble itself, slightly enlarged, under the finger.
         val d = (origin?.r ?: dp(31f)) * 2f * placeScale
-        drawGridItem(c, item, placeDrawX, placeDrawY, d, alpha, cal)
+        drawGridItem(c, item, placeDrawX, placeDrawY, d, alpha, cal, jiggle = false)
     }
 
     fun openClusterSheet() {
@@ -3674,7 +3674,7 @@ class WatchView(
             if (app != null) {
                 advancePlaceSpring()
                 val d = (origin?.r ?: dp(31f)) * 2f * placeScale
-                drawIcon(c, app.icon, placeDrawX, placeDrawY, d, alpha, hasNotification(app), app.key in pinnedItemKeys)
+                drawIcon(c, app.icon, placeDrawX, placeDrawY, d, alpha, hasNotification(app), app.key in pinnedItemKeys, jiggle = false)
             }
         }
 
@@ -3874,11 +3874,11 @@ class WatchView(
     }
 
     /** Draws either a standard App/Folder icon or a live vector [WidgetBubble] (#1, #5). */
-    private fun drawGridItem(c: Canvas, item: GridItem, x: Float, y: Float, d: Float, alpha: Float, cal: Calendar) {
+    private fun drawGridItem(c: Canvas, item: GridItem, x: Float, y: Float, d: Float, alpha: Float, cal: Calendar, jiggle: Boolean = true) {
         if (item is WidgetBubble) {
             drawWidgetBubble(c, item, x, y, d, alpha, cal)
         } else {
-            drawIcon(c, item.icon, x, y, d, alpha, hasNotification(item), item.key in pinnedItemKeys)
+            drawIcon(c, item.icon, x, y, d, alpha, hasNotification(item), item.key in pinnedItemKeys, jiggle)
         }
     }
 
@@ -4112,9 +4112,23 @@ class WatchView(
         }
     }
 
-    private fun drawIcon(c: Canvas, b: android.graphics.Bitmap, x: Float, y: Float, d: Float, alpha: Float, badge: Boolean, pinned: Boolean) {
+    private fun drawIcon(c: Canvas, b: android.graphics.Bitmap, x: Float, y: Float, d: Float, alpha: Float, badge: Boolean, pinned: Boolean, jiggle: Boolean = true) {
         if (alpha <= 0.004f || d < 2f) return
         val aInt = (alpha * 255).toInt().coerceIn(0, 255)
+        // Notification jiggle (1.3.0): a bubble with a pending notification
+        // wobbles like the iOS edit-mode jiggle — a small rotation oscillation
+        // (±1.7°, ~0.47s period), phase-offset per icon so notified bubbles
+        // don't move in lockstep. The whole icon (bitmap, pulse ring, dots)
+        // rotates together around the bubble centre. Transient copies (the
+        // carried bubble, the drop glide, the Context Card lift) pass
+        // jiggle = false and stay steady.
+        val jiggling = jiggle && badge && d > dp(22f)
+        if (jiggling) {
+            val phase = (System.identityHashCode(b) and 0xFFFF) / 65535f * 6.2832f
+            val ang = sin(System.currentTimeMillis() / 75.0 + phase).toFloat() * 1.7f
+            c.save()
+            c.rotate(ang, x, y)
+        }
         bitmapPaint.alpha = aInt
         rect.set(x - d / 2, y - d / 2, x + d / 2, y + d / 2)
         c.drawBitmap(b, null, rect, bitmapPaint)
@@ -4142,6 +4156,7 @@ class WatchView(
             fill.color = Color.argb(aInt, 255, 214, 10)
             c.drawCircle(px, py, pr, fill)
         }
+        if (jiggling) c.restore()
     }
 
     private fun withAlpha(color: Int, a: Int) = Color.argb(

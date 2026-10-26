@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0 — 2026-10-25
+
+- **Notification jiggle** — a bubble with a pending notification now wobbles
+  alongside its breathing pulse ring: a ±1.7° rotation oscillation on a
+  ~0.47s period, phase-offset per icon so notified bubbles don't jiggle in
+  lockstep. The whole icon (bitmap, pulse ring, badges) rotates together.
+  Transient copies stay steady: the carried bubble while dragging, the
+  drop glide, and the Context Card's lifted copy don't jiggle.
+
 ## 1.2.0 — 2026-10-25 (prototype)
 
 - **Context Card replaces Center Stage** — Center Stage (1.1.0) took up the
