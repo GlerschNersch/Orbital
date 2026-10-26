@@ -2257,7 +2257,11 @@ class WatchView(
                 continue
             }
             val scaleMod = 1f - 0.55f * cVal
-            bubbleDia[i] = Metrics.GRID_CENTER_D * u * size * effZoom * scaleMod * growthFor(item)
+            // In the pool, Usage Growth is damped (1.4.0): at full size the
+            // most-used bubbles render ~2x their collision radius and bury
+            // the clock hub at the centre of the tank.
+            val growth = if (isPool) 1f + (growthFor(item) - 1f) * 0.35f else growthFor(item)
+            bubbleDia[i] = Metrics.GRID_CENTER_D * u * size * effZoom * scaleMod * growth
         }
 
         val itemAlpha = alpha * (1f - 0.68f * bVal) * (1f - cVal)
