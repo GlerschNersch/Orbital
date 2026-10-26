@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.0 — 2026-10-25 (prototype)
+
+- **Center Stage replaces the quick-menu bloom** — Matt wasn't a fan of the
+  hold-and-aim chips that bloomed out of a carried bubble (0.3.4), so the
+  bloom is gone: a long-press is now purely a pickup for drag-to-place.
+  Releasing without a drag opens Center Stage instead of the classic menu:
+  the item animates to the centre of the screen, enlarged over a dimmed
+  grid, with its name and Hex slot underneath and its actions as large
+  pills below (Pin Here / Unpin, App Info, Uninstall when allowed, Open
+  Folder / Open Pod, and More Options → the classic full menu). Pills are
+  tapped as a normal second tap; tapping anywhere else, Back, or Home
+  dismisses the stage. Inside a folder or Edit Layout, release-without-drag
+  still opens the classic menu. Back priority gained a CENTER_STAGE layer
+  (pops before everything; unit-tested, 41 tests).
+
 ## 1.0.0 — 2026-10-25
 
 First production release.

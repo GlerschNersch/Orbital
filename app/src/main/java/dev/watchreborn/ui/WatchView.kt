@@ -135,7 +135,7 @@ class WatchView(
         // Overlays whose own controls have no node mapping yet (Cluster sheet,
         // topology picker, widget pod, Control Center): expose nothing rather
         // than nodes for the visually covered bubbles underneath.
-        if (clusterSheet.target > 0f || widgetIn.target > 0f || controlIn.value > 0.5f) return emptyList()
+        if (clusterSheet.target > 0f || widgetIn.target > 0f || controlIn.value > 0.5f || centerStageOpen) return emptyList()
         if (stackIn.value > 0.5f) {
             val out = ArrayList<WatchAccessibilityProvider.Node>()
             for ((rect, card) in stack.cardRects) {
@@ -230,16 +230,38 @@ class WatchView(
     private var placeFolder: Folder? = null
     private val releasePinRect = RectF()
 
-    // --- Quick menu that blooms out of the carried app bubble (0.3.4).
-    /** One bloomed quick-menu option: kind plus its live circle (recomputed every frame). */
-    private class QuickChip(val kind: Int, val cx: Float, val cy: Float, val r: Float)
+    // --- Center Stage (1.1.0 prototype): replaces the 0.3.4 quick-menu bloom.
+    // A long-press released without a drag no longer pops the classic menu at
+    // the bubble (and nothing blooms while holding). Instead the item flies
+    // to the centre of the screen, enlarged over a dimmed grid, and its
+    // actions appear as large pills underneath — always in the same place,
+    // never clipped by a screen edge, tapped as a normal second tap.
+    private val centerStage = Spring(0f, 0.28f)
+    private var centerStageItem: GridItem? = null
+    private var centerStageSlot: Int = -1
+    private var centerStageOpenedMs: Long = 0L
 
-    private val quickChips = ArrayList<QuickChip>()
+    /** One Center Stage action pill: its live rect (recomputed every frame) plus its action kind. */
+    private class StagePill(val kind: Int, val rect: RectF)
 
-    /** Where the carried bubble was picked up — the quick menu blooms out of this spot. */
-    private var placeAnchorX: Float = 0f
-    private var placeAnchorY: Float = 0f
-    private var placeStartedMs: Long = 0L
+    private val stagePills = ArrayList<StagePill>()
+
+    private fun openCenterStage(item: GridItem, slot: Int) {
+        centerStageItem = item
+        centerStageSlot = slot
+        centerStageOpenedMs = SystemClock.uptimeMillis()
+        centerStage.target = 1f
+        performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+        invalidate()
+    }
+
+    private fun closeCenterStage() {
+        centerStage.target = 0f
+        invalidate()
+    }
+
+    private val centerStageOpen: Boolean
+        get() = centerStageItem != null && (centerStage.target > 0f || centerStage.value > 0.01f)
 
     /** Keys of apps that may be uninstalled (not system apps, main user). Set by the activity. */
     var uninstallableKeys: Set<String> = emptySet()
@@ -714,6 +736,10 @@ class WatchView(
 
     fun home() {
         hideKeyboard()
+        if (centerStageOpen) {
+            closeCenterStage()
+            return
+        }
         if (gridSearching) {
             clearSearch()
             return
@@ -740,6 +766,7 @@ class WatchView(
         // The layer to pop is decided by the pure NavBack priority (unit-tested);
         // this method only snapshots state and performs the side effects.
         val state = NavState(
+            centerStageOpen = centerStageOpen,
             searching = searching || gridSearching || searchQuery.isNotEmpty(),
             topologyPickerOpen = topologyPickerOpen && clusterSheet.target > 0f,
             sheetOpen = clusterSheet.target > 0f,
@@ -762,6 +789,10 @@ class WatchView(
             honeycombHome = honeycombHome,
         )
         return when (NavBack.layerToPop(state)) {
+            NavLayer.CENTER_STAGE -> {
+                closeCenterStage()
+                true
+            }
             NavLayer.SEARCH -> {
                 clearSearch()
                 true
@@ -1038,11 +1069,6 @@ class WatchView(
         placeDrawY = downY
         placeScale = 1f
         dropAnim = null
-        val originHit = hits.firstOrNull { it.slotIndex == slot }
-        placeAnchorX = originHit?.x ?: downX
-        placeAnchorY = originHit?.y ?: downY
-        placeStartedMs = SystemClock.uptimeMillis()
-        quickChips.clear()
         placeMoved = false
         placeInFolder = inFolder
         placeFolder = if (inFolder) activeFolder else null
@@ -1065,19 +1091,6 @@ class WatchView(
         placeInFolder = false
         placeFolder = null
 
-        // Quick-menu chips first: releasing on a bloomed chip runs its action.
-        if (!inFolder && item is App) {
-            val chip = quickChips.firstOrNull { hypot(dropX - it.cx, dropY - it.cy) <= it.r + dp(14f) }
-            if (chip != null) {
-                performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                when (chip.kind) {
-                    CHIP_INFO -> onQuickInfo(item)
-                    CHIP_UNINSTALL -> onQuickUninstall(item)
-                    CHIP_UNPIN -> onUnpinItem(item)
-                }
-                return
-            }
-        }
         // Dropping a pinned bubble on the release zone unpins it.
         if (moved && !inFolder && !releasePinRect.isEmpty && releasePinRect.contains(dropX, dropY)) {
             performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
@@ -1085,7 +1098,11 @@ class WatchView(
             return
         }
         when (PlaceSlots.resolveDrop(moved, from, hover)) {
-            PlaceSlots.DropAction.MENU -> onLongPressItem(item, from)
+            // Released without a drag in the full grid: Center Stage takes
+            // over from the classic menu. Inside a folder or Edit Layout the
+            // classic menu still opens (arranging flows keep their menu).
+            PlaceSlots.DropAction.MENU ->
+                if (!inFolder && !editMode) openCenterStage(item, from) else onLongPressItem(item, from)
             PlaceSlots.DropAction.PIN -> {
                 performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
                 // Dropping an app onto a folder bubble files it into that folder.
@@ -1110,63 +1127,127 @@ class WatchView(
         }
     }
 
-    /** Blooms the quick-menu chips out of the carried app's home spot, staggered with an overshoot pop. */
-    private fun drawQuickChips(c: Canvas, item: App, alpha: Float) {
+    /** The actions Center Stage offers for [item], in pill order. */
+    private fun stageKindsFor(item: GridItem): List<Int> {
         val kinds = ArrayList<Int>()
-        if (item.key in pinnedItemKeys) kinds += CHIP_UNPIN
-        kinds += CHIP_INFO
-        if (item.key in uninstallableKeys) kinds += CHIP_UNINSTALL
-        val glyphs = mapOf(CHIP_INFO to "ℹ️", CHIP_UNINSTALL to "🗑", CHIP_UNPIN to "✕")
-        val labels = mapOf(CHIP_INFO to "Info", CHIP_UNINSTALL to "Uninstall", CHIP_UNPIN to "Unpin")
-        val offsets = when (kinds.size) {
-            1 -> floatArrayOf(0f)
-            2 -> floatArrayOf(-40f, 40f)
-            else -> floatArrayOf(-54f, 0f, 54f)
-        }
-        // The arc opens upward, unless the bubble sits near the top — then downward.
-        val flip = placeAnchorY < dp(200f)
-        val dirY = if (flip) 1f else -1f
-        val reach = dp(96f)
-        val now = SystemClock.uptimeMillis()
-        quickChips.clear()
-        for ((i, kind) in kinds.withIndex()) {
-            val t = ((now - placeStartedMs - i * 45L) / 190f).coerceIn(0f, 1f)
-            if (t < 1f) motionAnimating = true
-            val e = Motion.easeOutBack(t)
-            val rad = Math.toRadians(offsets[i].toDouble())
-            val rawTx = placeAnchorX + reach * sin(rad).toFloat()
-            val rawTy = placeAnchorY + dirY * reach * cos(rad).toFloat()
-            // Keep the whole chip (and its label) inside the view: for a bubble
-            // near a screen edge the arc's outer chips used to bloom half
-            // off-screen. The stored hit circle uses the clamped target too.
-            val chipR = dp(26f)
-            val tx = rawTx.coerceIn(chipR + dp(6f), width - chipR - dp(6f))
-            val ty = rawTy.coerceIn(topInset + chipR + dp(16f), height - bottomInset - chipR - dp(18f))
-            val cx = Motion.lerp(placeAnchorX, tx, e)
-            val cy = Motion.lerp(placeAnchorY, ty, e)
-            val hot = hypot(placeX - tx, placeY - ty) <= dp(42f)
-            val r = dp(26f) * e.coerceIn(0f, 1.12f) * if (hot) 1.22f else 1f
-            if (r < 1f) continue
-            quickChips += QuickChip(kind, tx, ty, dp(26f))
-            val a = alpha * e.coerceIn(0f, 1f)
-            fill.color = when {
-                hot && kind != CHIP_INFO -> Color.argb((a * 245).toInt(), 150, 40, 46)
-                hot -> Color.argb((a * 245).toInt(), 46, 84, 40)
-                else -> Color.argb((a * 228).toInt(), 42, 42, 48)
+        if (item.key in pinnedItemKeys) kinds += STAGE_UNPIN else if (centerStageSlot >= 0) kinds += STAGE_PIN
+        when (item) {
+            is App -> {
+                kinds += STAGE_INFO
+                if (item.key in uninstallableKeys) kinds += STAGE_UNINSTALL
             }
-            c.drawCircle(cx, cy, r, fill)
+            is Folder, is WidgetBubble -> kinds += STAGE_OPEN
+        }
+        kinds += STAGE_MORE
+        return kinds
+    }
+
+    private fun stageLabel(kind: Int, item: GridItem): String = when (kind) {
+        STAGE_PIN -> "\uD83D\uDCCC Pin Here"
+        STAGE_UNPIN -> "\u2715 Unpin"
+        STAGE_INFO -> "\u2139 App Info"
+        STAGE_UNINSTALL -> "\uD83D\uDDD1 Uninstall"
+        STAGE_OPEN -> if (item is Folder) "\uD83D\uDCC1 Open Folder" else "\u26A1 Open Pod"
+        else -> "\u22EF More Options"
+    }
+
+    /** Runs one Center Stage pill. The stage is already closing. */
+    private fun runStageAction(kind: Int, item: GridItem, slot: Int) {
+        performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+        when (kind) {
+            STAGE_PIN -> if (slot >= 0) onPlaceItem(item, slot)
+            STAGE_UNPIN -> onUnpinItem(item)
+            STAGE_INFO -> if (item is App) onQuickInfo(item)
+            STAGE_UNINSTALL -> if (item is App) onQuickUninstall(item)
+            STAGE_OPEN -> when (item) {
+                is Folder -> openFolder(item)
+                is WidgetBubble -> openWidgetPod(item)
+                else -> {}
+            }
+            STAGE_MORE -> onLongPressItem(item, slot)
+        }
+    }
+
+    /**
+     * Center Stage overlay: a full-screen dim, the item enlarged at the
+     * centre with its name (and Hex slot) underneath, then its action pills
+     * stacked below — each pill rises and fades in, staggered. Pill rects are
+     * rebuilt every frame into [stagePills] for tap() to hit-test.
+     */
+    private fun drawCenterStage(c: Canvas, w: Float, h: Float, cal: Calendar, t: Float) {
+        val item = centerStageItem
+        if (item == null) {
+            stagePills.clear()
+            return
+        }
+        if (t <= 0.001f && centerStage.target == 0f) {
+            centerStageItem = null
+            stagePills.clear()
+            return
+        }
+        val a = t.coerceIn(0f, 1f)
+        // Dim the grid away.
+        fill.color = Color.argb((a * 205).toInt(), 4, 5, 8)
+        c.drawRect(0f, 0f, w, h, fill)
+
+        val cx = w / 2f
+        val cy = h * 0.34f
+        // Pop: the bubble scales in with an ease-out-back overshoot.
+        val popT = if (centerStage.target > 0f)
+            ((SystemClock.uptimeMillis() - centerStageOpenedMs) / 240f).coerceIn(0f, 1f)
+        else 1f
+        if (popT < 1f) motionAnimating = true
+        val dia = dp(118f) * Motion.easeOutBack(popT) * (0.55f + 0.45f * a)
+        // Soft accent halo behind the bubble.
+        fill.color = withAlpha(accent, (a * 36).toInt())
+        c.drawCircle(cx, cy, dia * 0.78f, fill)
+        stroke.strokeWidth = dp(1.6f)
+        stroke.color = withAlpha(accent, (a * 170).toInt())
+        c.drawCircle(cx, cy, dia * 0.62f, stroke)
+        drawGridItem(c, item, cx, cy, dia, a, cal)
+
+        // Name, then the slot it would pin to.
+        text.textSize = sp(20f)
+        text.color = Color.argb((a * 255).toInt(), 245, 245, 248)
+        val name = item.label
+        c.drawText(name, cx - text.measureText(name) / 2, cy + dia / 2 + dp(38f), text)
+        if (centerStageSlot >= 0) {
+            text.textSize = sp(12f)
+            text.color = withAlpha(accent, (a * 220).toInt())
+            val sub = "Hex #" + (centerStageSlot + 1) + if (item.key in pinnedItemKeys) " \u2022 pinned" else ""
+            c.drawText(sub, cx - text.measureText(sub) / 2, cy + dia / 2 + dp(60f), text)
+        }
+
+        // Action pills, staggered up from below the name.
+        val kinds = stageKindsFor(item)
+        val pillW = minOf(w - dp(72f), dp(264f))
+        val pillH = dp(46f)
+        val gap = dp(10f)
+        var py = cy + dia / 2 + dp(84f)
+        stagePills.clear()
+        val now = SystemClock.uptimeMillis()
+        for ((i, kind) in kinds.withIndex()) {
+            val pt = if (centerStage.target > 0f)
+                ((now - centerStageOpenedMs - 70L - i * 55L) / 180f).coerceIn(0f, 1f)
+            else 1f
+            if (pt < 1f) motionAnimating = true
+            val pe = Motion.easeOutCubic(pt)
+            val pa = a * pe
+            val r = RectF(cx - pillW / 2, py + (1f - pe) * dp(14f), cx + pillW / 2, py + (1f - pe) * dp(14f) + pillH)
+            stagePills += StagePill(kind, RectF(r))
+            val danger = kind == STAGE_UNINSTALL || kind == STAGE_UNPIN
+            fill.color = if (danger) Color.argb((pa * 235).toInt(), 74, 30, 34)
+                else Color.argb((pa * 235).toInt(), 38, 40, 48)
+            c.drawRoundRect(r, pillH / 2, pillH / 2, fill)
             stroke.strokeWidth = dp(1.2f)
-            stroke.color = if (kind != CHIP_INFO) Color.argb((a * 210).toInt(), 255, 120, 120) else withAlpha(accent, (a * 210).toInt())
-            c.drawCircle(cx, cy, r, stroke)
-            text.textSize = sp(15f) * e.coerceIn(0f, 1f)
-            text.color = Color.argb((a * 255).toInt(), 245, 245, 248)
-            val g = glyphs.getValue(kind)
-            c.drawText(g, cx - text.measureText(g) / 2, cy + text.textSize * 0.36f, text)
-            text.textSize = sp(9.5f)
-            val lab = labels.getValue(kind)
-            text.color = Color.argb((a * 235).toInt(), 235, 235, 240)
-            val labelY = if (flip) cy - r - dp(5f) else cy + r + dp(13f)
-            c.drawText(lab, cx - text.measureText(lab) / 2, labelY, text)
+            stroke.color = if (danger) Color.argb((pa * 200).toInt(), 255, 120, 120)
+                else withAlpha(accent, (pa * 170).toInt())
+            c.drawRoundRect(r, pillH / 2, pillH / 2, stroke)
+            text.textSize = sp(14.5f)
+            text.color = Color.argb((pa * 255).toInt(), 245, 245, 248)
+            val lab = stageLabel(kind, item)
+            c.drawText(lab, r.centerX() - text.measureText(lab) / 2, r.centerY() + text.textSize * 0.36f, text)
+            py += pillH + gap
         }
     }
 
@@ -1205,7 +1286,7 @@ class WatchView(
         val item = placeItem ?: return
         advancePlaceSpring()
         // Release zone for unpinning, offered while carrying a pinned bubble.
-        // (Apps get their unpin as a bloom chip instead.)
+        // (Apps get their unpin as a Center Stage pill instead.)
         if (placeMoved && item.key in pinnedItemKeys && item !is App) {
             val zw = dp(210f)
             val zh = dp(40f)
@@ -1223,12 +1304,8 @@ class WatchView(
         } else {
             releasePinRect.setEmpty()
         }
-        // Quick menu: option chips bloom out of the bubble's home spot in an arc.
-        if (item is App) {
-            drawQuickChips(c, item, alpha)
-        } else {
-            quickChips.clear()
-        }
+        // No menu while carrying (Center Stage replaced the bloom): a hold is
+        // purely a pickup for drag-to-place now.
         val origin = hits.firstOrNull { it.slotIndex == placeFromSlot }
         val hover = hits.firstOrNull { it.slotIndex == placeHoverSlot }
         // The origin slot reads as "picked up": dimmed with an accent ring.
@@ -1850,7 +1927,7 @@ class WatchView(
         frameDtSec = dt
         motionAnimating = false
 
-        val springs = arrayOf(apps, grid, overview, userZoom, constellationZoom, folderIn, widgetIn, clusterSheet, constellationIn, list, stackIn, controlIn, panX, panY, folderPanX, folderPanY, constellationPanX, constellationPanY, stackScroll)
+        val springs = arrayOf(apps, grid, overview, userZoom, constellationZoom, folderIn, widgetIn, clusterSheet, constellationIn, list, stackIn, controlIn, panX, panY, folderPanX, folderPanY, constellationPanX, constellationPanY, stackScroll, centerStage)
         for (s in springs) s.step(dt)
         stepListFling(dt)
         val physicsAnimating = stepPhysics(dt)
@@ -1903,6 +1980,7 @@ class WatchView(
             drawEditDone(c, w, bottom, a)
             drawCrownTrack(c, w, h, top, bottom, a)
             if (clusterSheet.value > 0.001f) drawClusterSheet(c, w, h, top, bottom, clusterSheet.value)
+            if (centerStageItem != null) drawCenterStage(c, w, h, cal, centerStage.value)
         }
 
         val animating = springs.any { !it.settled } || abs(listVelocity) > 1f || dragging || physicsAnimating || motionAnimating
@@ -4143,6 +4221,7 @@ class WatchView(
         longPressed = true
         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
         when {
+            centerStageOpen -> {}
             clusterSheet.target == 1f -> {}
             stackIn.target == 1f -> {
                 stack.cardRects.lastOrNull { it.first.contains(downX, downY) }?.let { (_, card) ->
@@ -4295,6 +4374,7 @@ class WatchView(
                 postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
             }
             MotionEvent.ACTION_MOVE -> {
+                if (centerStageOpen) return true
                 if (pinching) return true
                 if (placeItem != null) {
                     placeX = e.x; placeY = e.y
@@ -4677,6 +4757,16 @@ class WatchView(
     }
 
     private fun tap(x: Float, y: Float) {
+        // Center Stage is the topmost layer: a pill tap runs its action (the
+        // stage closes either way); a tap anywhere else just dismisses it.
+        if (centerStageOpen) {
+            val stageItem = centerStageItem
+            val pillHit = stagePills.lastOrNull { it.rect.contains(x, y) }
+            closeCenterStage()
+            if (pillHit != null && stageItem != null) runStageAction(pillHit.kind, stageItem, centerStageSlot)
+            return
+        }
+
         // Placement undo bar: the Undo button restores the pre-drag pin state;
         // tapping elsewhere on the bar just dismisses it.
         if (undoActive && !undoRect.isEmpty && undoRect.contains(x, y)) {
@@ -5108,9 +5198,12 @@ class WatchView(
         const val HINT_CROWN = "crown"
         const val HINT_PIN = "pin"
         const val HINT_SCRUB = "scrub"
-        const val CHIP_INFO = 0
-        const val CHIP_UNINSTALL = 1
-        const val CHIP_UNPIN = 2
+        const val STAGE_PIN = 0
+        const val STAGE_UNPIN = 1
+        const val STAGE_INFO = 2
+        const val STAGE_UNINSTALL = 3
+        const val STAGE_OPEN = 4
+        const val STAGE_MORE = 5
         /** Bubbles riding the Chrono Bezel's outer carousel ring at once. */
         const val BEZEL_OUTER_CAP = 18
         const val MODE_FACE = 0
