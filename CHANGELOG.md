@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.6.0 — 2026-10-25
+
+- **Bottom navigation dock** — the lone List/Grid pill becomes a compact
+  four-segment dock (Face · Cluster · List · Stack) in the same spot:
+  Face and the Smart Stack are now one tap from anywhere instead of
+  gesture-only, the current mode's segment is lit in the accent, and
+  tapping Cluster while already in the cluster recentres the field (the
+  recenter that used to hide behind the Back button).
+- **Folder management on the Context Card** — long-pressing a custom
+  folder now shows Rename Folder and (in red, last) Delete Folder
+  directly on its card, instead of burying both under More Options.
+  Removing an app stays one long-press away inside the folder.
+
 ## 1.5.1 — 2026-10-25
 
 - **Folder swallow animation** — filing an app into a folder (or creating

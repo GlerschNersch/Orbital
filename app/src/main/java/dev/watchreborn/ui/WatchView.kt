@@ -105,6 +105,8 @@ class WatchView(
     private val onPlaceItem: (GridItem, Int) -> Unit,
     private val onFileIntoFolder: (App, Folder, Int) -> Unit,
     private val onCreateFolder: (App, App) -> Unit,
+    private val onRenameFolder: (Folder) -> Unit,
+    private val onDeleteFolder: (Folder) -> Unit,
     private val onUnpinItem: (GridItem) -> Unit,
     private val onReorderFolderMember: (Folder, Int, Int) -> Unit,
     private val onQuickInfo: (App) -> Unit,
@@ -618,6 +620,8 @@ class WatchView(
     private val tmp = FloatArray(2)
     private val anchorTmp = FloatArray(2)
     private val pill = RectF()
+    /** Per-segment hit rects of the bottom dock (rebuilt by drawDock). */
+    private val dockSegs = Array(4) { RectF() }
 
     /** Every item drawn this frame (centre, radius) for hit testing; last drawn is on top. */
     private val hits = ArrayList<Hit>()
@@ -1239,11 +1243,16 @@ class WatchView(
         if (item.key in pinnedItemKeys) kinds += CARD_UNPIN else if (cardSlot >= 0) kinds += CARD_PIN
         when (item) {
             is App -> kinds += CARD_INFO
-            is Folder, is WidgetBubble -> kinds += CARD_OPEN
+            is Folder -> {
+                kinds += CARD_OPEN
+                if (item.isCustom) kinds += CARD_RENAME
+            }
+            is WidgetBubble -> kinds += CARD_OPEN
         }
         kinds += CARD_MORE
         kinds += CARD_EDIT
         if (item is App && item.key in uninstallableKeys) kinds += CARD_UNINSTALL
+        if (item is Folder && item.isCustom) kinds += CARD_DELETE_FOLDER
         return kinds
     }
 
@@ -1255,6 +1264,8 @@ class WatchView(
         CARD_MORE -> "More Options"
         CARD_EDIT -> "Edit Home Screen"
         CARD_UNINSTALL -> "Remove App"
+        CARD_RENAME -> "Rename Folder"
+        CARD_DELETE_FOLDER -> "Delete Folder"
         else -> ""
     }
 
@@ -1267,6 +1278,8 @@ class WatchView(
         CARD_MORE -> "\u22EF"
         CARD_EDIT -> "\u2725"
         CARD_UNINSTALL -> "\u2296"
+        CARD_RENAME -> "\u270E"
+        CARD_DELETE_FOLDER -> "\uD83D\uDDD1"
         else -> ""
     }
 
@@ -1285,6 +1298,8 @@ class WatchView(
             }
             CARD_MORE -> onLongPressItem(item, slot)
             CARD_EDIT -> enterEditMode()
+            CARD_RENAME -> if (item is Folder) onRenameFolder(item)
+            CARD_DELETE_FOLDER -> if (item is Folder) onDeleteFolder(item)
         }
     }
 
@@ -1370,7 +1385,7 @@ class WatchView(
                 stroke.color = Color.argb((ra * 38).toInt(), 255, 255, 255)
                 c.drawLine(cardLeft + dp(16f), rowTop, cardLeft + cardW - dp(16f), rowTop, stroke)
             }
-            val danger = kind == CARD_UNINSTALL
+            val danger = kind == CARD_UNINSTALL || kind == CARD_DELETE_FOLDER
             val ink = if (danger) Color.argb((ra * 255).toInt(), 255, 138, 138)
                 else Color.argb((ra * 255).toInt(), 245, 245, 248)
             text.textSize = sp(15f)
@@ -2174,7 +2189,7 @@ class WatchView(
             if (gridAlpha > 0.001f) drawGrid(c, w, h, top, cal, gridAlpha, 1.15f - 0.15f * grid.value)
             if (folderAlpha > 0.001f) drawFolderView(c, w, h, top, folderAlpha)
             if (listAlpha > 0.001f) drawList(c, w, h, top, bottom, listAlpha)
-            drawPill(c, w, bottom, a)
+            drawDock(c, w, bottom, a)
             drawCoachHint(c, w, bottom, a)
             drawUndoBar(c, w, bottom, a)
             drawEditDone(c, w, bottom, a)
@@ -4026,27 +4041,53 @@ class WatchView(
         }
     }
 
-    private fun drawPill(c: Canvas, w: Float, bottom: Float, alpha: Float) {
+    /**
+     * Bottom navigation dock (1.6.0): one floating bar, four segments —
+     * Face / Cluster / List / Stack — replacing the single List/Grid pill.
+     * The current mode's segment is lit in the accent; tapping Cluster
+     * while already in the cluster recentres the field.
+     */
+    private fun drawDock(c: Canvas, w: Float, bottom: Float, alpha: Float) {
         if (alpha <= 0.01f) {
             pill.setEmpty()
+            dockSegs.forEach { it.setEmpty() }
             return
         }
         val ph = dp(Metrics.PHONE_PILL_H_DP)
-        val pw = dp(Metrics.PHONE_PILL_W_DP)
+        val segW = dp(68f)
+        val pw = segW * 4f
         val py = bottom - ph - dp(16f)
 
         pill.set(w / 2 - pw / 2, py, w / 2 + pw / 2, py + ph)
         fill.color = Color.argb((alpha * 230).toInt(), 44, 44, 46)
         c.drawRoundRect(pill, ph / 2, ph / 2, fill)
-        text.textSize = sp(Metrics.PHONE_PILL_TEXT_SP)
-        text.color = Color.argb((alpha * 255).toInt(), 255, 255, 255)
-        val label = when {
-            list.target >= 0.5f -> "Grid View"
-            grid.target < 0.5f -> "All Apps"
-            else -> "List View"
+        val activeSeg = when {
+            list.target >= 0.5f -> DOCK_LIST
+            grid.target >= 0.5f -> DOCK_CLUSTER
+            else -> DOCK_FACE
         }
-        val tw = text.measureText(label)
-        c.drawText(label, w / 2 - tw / 2, pill.centerY() + text.textSize * 0.35f, text)
+        val glyphs = arrayOf("\u2302", "\u25A6", "\u2630", "\uD83D\uDDC2")
+        val labels = arrayOf("Face", "Cluster", "List", "Stack")
+        for (i in 0 until 4) {
+            val seg = RectF(pill.left + i * segW, py, pill.left + (i + 1) * segW, py + ph)
+            dockSegs[i].set(seg)
+            val active = i == activeSeg
+            if (active) {
+                fill.color = withAlpha(accent, (alpha * 46).toInt())
+                val hl = RectF(seg.left + dp(5f), seg.top + dp(5f), seg.right - dp(5f), seg.bottom - dp(5f))
+                c.drawRoundRect(hl, dp(19f), dp(19f), fill)
+            }
+            text.textAlign = Paint.Align.CENTER
+            text.textSize = sp(15f)
+            text.color = if (active) withAlpha(accent, (alpha * 255).toInt())
+                else Color.argb((alpha * 205).toInt(), 235, 235, 240)
+            c.drawText(glyphs[i], seg.centerX(), py + dp(25f), text)
+            text.textSize = sp(9f)
+            text.color = if (active) withAlpha(accent, (alpha * 255).toInt())
+                else Color.argb((alpha * 165).toInt(), 195, 195, 200)
+            c.drawText(labels[i], seg.centerX(), py + ph - dp(7f), text)
+            text.textAlign = Paint.Align.LEFT
+        }
     }
 
     private fun hasNotification(item: GridItem): Boolean {
@@ -5121,14 +5162,42 @@ class WatchView(
         // 3. Apps View (Honeycomb / Constellation Search / Folder / List)
         if (apps.target == 1f) {
             if (!pill.isEmpty && pill.contains(x, y)) {
+                // Bottom dock (1.6.0): four destinations, one tap each.
+                val seg = dockSegs.indexOfFirst { it.contains(x, y) }
                 clearSearch()
-                if (folderIn.target == 1f) closeFolder()
-                if (list.target < 0.5f && grid.target < 0.5f) {
-                    grid.target = 1f
-                } else {
-                    list.target = if (list.target >= 0.5f) 0f else 1f
-                    if (list.target == 0f) grid.target = 1f
-                    preferListChanged(list.target == 1f)
+                when (seg) {
+                    DOCK_FACE -> {
+                        if (folderIn.target == 1f) closeFolder()
+                        toFace()
+                    }
+                    DOCK_CLUSTER -> {
+                        if (folderIn.target == 1f) closeFolder()
+                        when {
+                            list.target >= 0.5f -> {
+                                list.target = 0f
+                                grid.target = 1f
+                                preferListChanged(false)
+                            }
+                            grid.target < 0.5f -> grid.target = 1f
+                            else -> {
+                                // Already in the cluster: recentre the field.
+                                overview.target = 0f
+                                panX.target = 0f
+                                panY.target = 0f
+                            }
+                        }
+                    }
+                    DOCK_LIST -> {
+                        if (folderIn.target == 1f) closeFolder()
+                        if (list.target < 0.5f) {
+                            list.target = 1f
+                            preferListChanged(true)
+                        }
+                    }
+                    DOCK_STACK -> {
+                        if (folderIn.target == 1f) closeFolder()
+                        openStack()
+                    }
                 }
                 performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
                 invalidate()
@@ -5446,6 +5515,12 @@ class WatchView(
         const val CARD_OPEN = 4
         const val CARD_MORE = 5
         const val CARD_EDIT = 6
+        const val CARD_RENAME = 7
+        const val CARD_DELETE_FOLDER = 8
+        const val DOCK_FACE = 0
+        const val DOCK_CLUSTER = 1
+        const val DOCK_LIST = 2
+        const val DOCK_STACK = 3
         /** Bubbles riding the Chrono Bezel's outer carousel ring at once. */
         const val BEZEL_OUTER_CAP = 18
         const val MODE_FACE = 0

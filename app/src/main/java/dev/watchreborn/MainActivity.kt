@@ -143,6 +143,8 @@ class MainActivity : Activity(), SensorEventListener {
             onPlaceItem = ::placeItem,
             onFileIntoFolder = ::fileIntoFolder,
             onCreateFolder = ::createFolder,
+            onRenameFolder = ::renameFolder,
+            onDeleteFolder = ::deleteFolder,
             onUnpinItem = ::unpinItem,
             onReorderFolderMember = ::reorderFolderMember,
             onQuickInfo = ::quickAppInfo,
@@ -320,6 +322,31 @@ class MainActivity : Activity(), SensorEventListener {
                 }
             }
         }, 300L)
+    }
+
+    /** Rename prompt for a custom folder (menu + Context Card share this). */
+    private fun renameFolder(item: Folder) {
+        val id = item.customId ?: return
+        showFolderNameDialog("Rename Folder", item.label, "Rename") { name ->
+            repo.renameCustomFolder(id, name)
+            pushAppsToView(apps)
+            Toast.makeText(this, "Renamed to $name", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** Delete confirm for a custom folder; its apps stay loose on the grid. */
+    private fun deleteFolder(item: Folder) {
+        val id = item.customId ?: return
+        AlertDialog.Builder(this)
+            .setTitle("Delete \u201C${item.label}\u201D?")
+            .setMessage("The folder goes away; its ${item.apps.size} apps stay on the grid.")
+            .setPositiveButton("Delete") { _, _ ->
+                repo.deleteCustomFolder(id)
+                pushAppsToView(apps)
+                Toast.makeText(this, "Folder deleted", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun showFolderNameDialog(title: String, initial: String, okLabel: String, onOk: (String) -> Unit) {
@@ -891,21 +918,8 @@ class MainActivity : Activity(), SensorEventListener {
                         311 -> view.openClusterSheet()
                         312 -> chooseHome()
                         313 -> view.enterEditMode()
-                        314 -> showFolderNameDialog("Rename Folder", item.label, "Rename") { name ->
-                            repo.renameCustomFolder(item.customId!!, name)
-                            pushAppsToView(apps)
-                            Toast.makeText(this, "Renamed to $name", Toast.LENGTH_SHORT).show()
-                        }
-                        315 -> AlertDialog.Builder(this)
-                            .setTitle("Delete \u201C${item.label}\u201D?")
-                            .setMessage("The folder goes away; its ${item.apps.size} apps stay on the grid.")
-                            .setPositiveButton("Delete") { _, _ ->
-                                repo.deleteCustomFolder(item.customId!!)
-                                pushAppsToView(apps)
-                                Toast.makeText(this, "Folder deleted", Toast.LENGTH_SHORT).show()
-                            }
-                            .setNegativeButton("Cancel", null)
-                            .show()
+                        314 -> renameFolder(item)
+                        315 -> deleteFolder(item)
                     }
                     true
                 }
