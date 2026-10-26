@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.3.0 — 2026-10-26
+
+- **Long-press is rearrange-only.** The quick menu (Context
+  Card) no longer pops up when you long-press to rearrange —
+  the gesture now does one thing: jiggle mode, pick the bubble
+  up, drag it, done. The Context Card moves to a quick tap on
+  a bubble while jiggle mode is already on, so Pin / App Info /
+  Remove are still at hand while arranging.
+- **Bigger Done pill.** The "✥ Editing — ✓ Done" pill grows
+  from 30dp to 46dp tall with larger text — an easier touch
+  target on a phone display.
+
 ## 2.2.0 — 2026-10-26
 
 - **Edit Layout is a gesture now.** Long-press any app bubble

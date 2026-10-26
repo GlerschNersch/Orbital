@@ -966,9 +966,9 @@ class WatchView(
             return
         }
         val listPillH = max(dp(44f), height * 0.055f)
-        val pillH = dp(30f)
+        val pillH = dp(46f) // 2.3.0: a thumb-sized Done target (was 30dp)
         val hy = bottom - dp(16f) - listPillH - dp(10f) - pillH
-        text.textSize = sp(12.5f)
+        text.textSize = sp(14f)
         val s = "✥ Editing — drag any bubble"
         val tw = text.measureText(s)
         text.isFakeBoldText = true
@@ -1063,7 +1063,11 @@ class WatchView(
         postDelayed(r, 650L)
     }
 
-    private fun beginPlace(item: GridItem, slot: Int, inFolder: Boolean = false) {
+    // True while the active place-drag began as a long-press (2.3.0:
+    // that gesture is rearrange-only and never opens a menu on release).
+    private var placeFromLongPress = false
+
+    private fun beginPlace(item: GridItem, slot: Int, inFolder: Boolean = false, fromLongPress: Boolean = false) {
         cancelFolderArm()
         placeItem = item
         placeFromSlot = slot
@@ -1075,6 +1079,7 @@ class WatchView(
         placeScale = 1f
         dropAnim = null
         placeMoved = false
+        placeFromLongPress = fromLongPress
         placeInFolder = inFolder
         placeFolder = if (inFolder) activeFolder else null
         markHintSeen(HINT_PIN)
@@ -1091,10 +1096,12 @@ class WatchView(
         val dropX = placeX
         val dropY = placeY
         val armed = folderArmed
+        val fromLongPress = placeFromLongPress
         cancelFolderArm()
         placeItem = null
         placeHoverSlot = -1
         placeMoved = false
+        placeFromLongPress = false
         placeInFolder = false
         placeFolder = null
 
@@ -1112,16 +1119,21 @@ class WatchView(
             return
         }
         when (PlaceSlots.resolveDrop(moved, from, hover)) {
-            // Released without a drag in the full grid: the Context Card
-            // takes over from the classic menu (also while jiggle mode is
-            // on — dismissing the card leaves the grid still editing).
-            // Inside a folder view the classic menu still opens.
+            // Released without a drag in the full grid. Since 2.3.0 the
+            // long-press is rearrange-only: a release that STARTED as a
+            // long-press just settles back into jiggle mode, no menu.
+            // The Context Card now opens on a quick TAP of a bubble while
+            // jiggle mode is already on (the edit-mode touch pickup) —
+            // Pin, App Info and Remove live there while arranging.
+            // Inside a folder view the card / classic menu still opens.
             PlaceSlots.DropAction.MENU ->
                 if (!inFolder) {
-                    cardFolder = null
-                    val origin = hits.firstOrNull { it.slotIndex == from && it.item.key == item.key }
-                        ?: hits.firstOrNull { it.slotIndex == from }
-                    openCardMenu(item, from, origin?.x ?: dropX, origin?.y ?: dropY, origin?.r ?: dp(31f))
+                    if (!fromLongPress) {
+                        cardFolder = null
+                        val origin = hits.firstOrNull { it.slotIndex == from && it.item.key == item.key }
+                            ?: hits.firstOrNull { it.slotIndex == from }
+                        openCardMenu(item, from, origin?.x ?: dropX, origin?.y ?: dropY, origin?.r ?: dp(31f))
+                    }
                 } else if (inFolder && folder != null && folder.isCustom && item is App) {
                     // Inside a custom folder the card takes over too, with a
                     // "Remove from …" row (the classic menu buried it).
@@ -4554,7 +4566,7 @@ class WatchView(
                         // Inside the full-screen Folder view, a long-press picks
                         // the member up to drag-arrange the folder's order.
                         folderIn.target == 1f && activeFolder != null && h.slotIndex >= 0 ->
-                            beginPlace(h.item, h.slotIndex, inFolder = true)
+                            beginPlace(h.item, h.slotIndex, inFolder = true, fromLongPress = true)
                         // In the full grid, a long-press picks the bubble up for
                         // drag-to-place; releasing without a drag opens the menu.
                         canDragPlace(slot) -> {
@@ -4562,7 +4574,7 @@ class WatchView(
                             // drops the whole grid into jiggle mode and picks
                             // the pressed bubble up in the same motion.
                             enterEditMode(haptic = false)
-                            beginPlace(h.item, slot)
+                            beginPlace(h.item, slot, fromLongPress = true)
                         }
                         else -> onLongPressItem(h.item, slot)
                     }
