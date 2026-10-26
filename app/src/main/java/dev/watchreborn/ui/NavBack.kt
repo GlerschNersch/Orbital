@@ -7,6 +7,10 @@ package dev.watchreborn.ui
  * pop used to be an order-sensitive chain of ifs inside `back()`. That priority now
  * lives here as a pure function of a state snapshot, so it is unit-testable and the
  * full order is visible in one place.
+ *
+ * Since 2.0.0 the Cluster is the only base surface (the watch Face and the List
+ * page were removed), so Back unwinds overlays and then the pan, and otherwise
+ * falls through to the system.
  */
 enum class NavLayer {
     CARD_MENU,
@@ -15,14 +19,11 @@ enum class NavLayer {
     SHEET,
     EDIT_MODE,
     TORCH_OFF,
-    STACK_OR_CONTROL,
+    CONTROL,
     WIDGET_POD,
     FOLDER,
     OVERVIEW,
-    LIST,
     RECENTER,
-    FACE,
-    EXIT_TO_FACE,
     NONE,
 }
 
@@ -34,16 +35,12 @@ data class NavState(
     val sheetOpen: Boolean = false,
     val editMode: Boolean = false,
     val torchOffViaBack: Boolean = false,
-    val stackOrControlOpen: Boolean = false,
-    val inApps: Boolean = false,
+    val controlOpen: Boolean = false,
     val widgetOpen: Boolean = false,
     val folderOpen: Boolean = false,
     val overviewOpen: Boolean = false,
-    val listOpen: Boolean = false,
     val gridOpen: Boolean = false,
     val panned: Boolean = false,
-    val onFace: Boolean = false,
-    val honeycombHome: Boolean = false,
 )
 
 object NavBack {
@@ -55,13 +52,11 @@ object NavBack {
         s.sheetOpen -> NavLayer.SHEET
         s.editMode -> NavLayer.EDIT_MODE
         s.torchOffViaBack -> NavLayer.TORCH_OFF
-        s.stackOrControlOpen -> NavLayer.STACK_OR_CONTROL
-        s.inApps && s.widgetOpen -> NavLayer.WIDGET_POD
-        s.inApps && s.folderOpen -> NavLayer.FOLDER
-        s.inApps && s.overviewOpen -> NavLayer.OVERVIEW
-        s.inApps && s.listOpen -> NavLayer.LIST
-        s.honeycombHome && s.inApps && s.gridOpen && s.panned -> NavLayer.RECENTER
-        s.onFace -> if (s.honeycombHome) NavLayer.FACE else NavLayer.NONE
-        else -> NavLayer.EXIT_TO_FACE
+        s.controlOpen -> NavLayer.CONTROL
+        s.widgetOpen -> NavLayer.WIDGET_POD
+        s.folderOpen -> NavLayer.FOLDER
+        s.overviewOpen -> NavLayer.OVERVIEW
+        s.gridOpen && s.panned -> NavLayer.RECENTER
+        else -> NavLayer.NONE
     }
 }

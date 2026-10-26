@@ -140,10 +140,8 @@ class MainActivity : Activity(), SensorEventListener {
             context = this,
             onLaunch = ::launch,
             onLongPressItem = ::itemOptions,
-            onLongPressFace = ::faceOptions,
             onControlAction = ::handleControlAction,
             onCardAction = ::handleCardAction,
-            onTogglePinCard = ::togglePinCard,
             onClusterOptionChanged = ::handleClusterOptionChanged,
             onTopologySelected = ::handleTopologySelected,
             onPlaceItem = ::placeItem,
@@ -160,9 +158,7 @@ class MainActivity : Activity(), SensorEventListener {
             onTopoViewSaved = ::handleTopoViewSaved,
         )
         view.accent = prefs.getInt(KEY_ACCENT, ACCENTS[0].second)
-        view.preferList = prefs.getBoolean(KEY_LIST, false)
         view.autoFolders = prefs.getBoolean(KEY_FOLDERS, true)
-        view.honeycombHome = prefs.getBoolean(KEY_HONEYCOMB_HOME, true)
         view.bloomFolders = prefs.getBoolean(KEY_BLOOM, true)
         view.quickSnipe = prefs.getBoolean(KEY_QUICK_SNIPE, false)
         view.liveWidgets = prefs.getBoolean(KEY_LIVE_WIDGETS, true)
@@ -185,7 +181,6 @@ class MainActivity : Activity(), SensorEventListener {
                 )
             }
         }
-        view.pinnedCardIds = prefs.getStringSet(KEY_PINNED_CARDS, emptySet()).orEmpty()
         view.hintsSeen = prefs.getStringSet(KEY_HINTS_SEEN, emptySet()).orEmpty()
         view.onHintSeen = { id ->
             val cur = prefs.getStringSet(KEY_HINTS_SEEN, emptySet()).orEmpty().toMutableSet()
@@ -193,7 +188,6 @@ class MainActivity : Activity(), SensorEventListener {
             prefs.edit().putStringSet(KEY_HINTS_SEEN, cur).apply()
             view.hintsSeen = cur
         }
-        view.preferListChanged = { prefs.edit().putBoolean(KEY_LIST, it).apply() }
         view.onWidgetsPage = { showWidgetsPage() }
         view.onWidgetsPageClosed = { hideWidgetsPage() }
         view.applyInitialHomeMode()
@@ -224,7 +218,6 @@ class MainActivity : Activity(), SensorEventListener {
         val artPx = (96 * resources.displayMetrics.density).toInt()
         nowPlaying = NowPlaying(this, artPx) {
             view.nowPlayingTrack = nowPlaying.track
-            view.refreshCards()
         }
         nowPlaying.start()
 
@@ -538,7 +531,6 @@ class MainActivity : Activity(), SensorEventListener {
             val steps = event.values.firstOrNull()?.toInt() ?: 0
             if (steps != view.stepCount) {
                 view.stepCount = steps
-                view.refreshCards()
             }
         }
     }
@@ -561,7 +553,7 @@ class MainActivity : Activity(), SensorEventListener {
     private fun pushAppsToView(list: List<App>) {
         val px = iconPx
         val fixedNeighborhoods = view.fixedNeighborhoods
-        val coreClockHub = view.honeycombHome
+        val coreClockHub = true
         val liveWidgets = view.liveWidgets
         loader.execute {
             val scope = pinScope()
@@ -608,7 +600,6 @@ class MainActivity : Activity(), SensorEventListener {
             if (stat.totalBytes > 0) view.storageUsedRatio = ((stat.totalBytes - stat.availableBytes).toFloat() / stat.totalBytes).coerceIn(0f, 1f)
         }
         view.nowPlayingTrack = nowPlaying.track
-        view.refreshCards()
     }
 
     private fun findTorchCamera() {
@@ -682,15 +673,6 @@ class MainActivity : Activity(), SensorEventListener {
                 val next = !view.usageGrowth
                 prefs.edit().putBoolean(KEY_USAGE_GROWTH, next).apply()
                 view.usageGrowth = next
-            }
-            ClusterOption.EDIT_LAYOUT -> {
-                // Handled inside WatchView: the sheet row enters edit mode directly.
-            }
-            ClusterOption.HONEYCOMB_HOME -> {
-                val next = !view.honeycombHome
-                prefs.edit().putBoolean(KEY_HONEYCOMB_HOME, next).apply()
-                view.honeycombHome = next
-                if (apps.isNotEmpty()) pushAppsToView(apps)
             }
             ClusterOption.BLOOM_MODE -> {
                 val next = !view.bloomFolders
@@ -787,7 +769,7 @@ class MainActivity : Activity(), SensorEventListener {
                 }
             }
             ControlAction.NOTIFICATIONS -> {
-                view.toFace()
+                view.openFullHoneycomb()
                 expandNotifications()
             }
             ControlAction.SET_HOME -> {
@@ -869,15 +851,6 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
-    private fun togglePinCard(cardId: String) {
-        val current = prefs.getStringSet(KEY_PINNED_CARDS, emptySet()).orEmpty().toMutableSet()
-        val pinned = if (cardId in current) { current.remove(cardId); false } else { current.add(cardId); true }
-        prefs.edit().putStringSet(KEY_PINNED_CARDS, current).apply()
-        view.pinnedCardIds = current
-        view.refreshCards()
-        Toast.makeText(this, if (pinned) "Card pinned to top" else "Card unpinned", Toast.LENGTH_SHORT).show()
-    }
-
     private fun launch(app: App, from: RectF) {
         try {
             val f = LaunchFrom.of(view, from)
@@ -909,8 +882,6 @@ class MainActivity : Activity(), SensorEventListener {
                 menu.menu.add(1, 319, 4, "⚡ Open Blooming Widget Pod")
                 when (item.kind) {
                     WidgetKind.CORE_CLOCK -> {
-                        menu.menu.add(1, 320, 5, "⌚ Open Full Watch Face")
-                        menu.menu.add(1, 321, 6, "📊 Open Smart Stack")
                         menu.menu.add(1, 322, 7, "🎛️ Open Control Center")
                     }
                     WidgetKind.NOW_PLAYING -> {
@@ -923,7 +894,6 @@ class MainActivity : Activity(), SensorEventListener {
                         menu.menu.add(1, 322, 5, "🎛️ Open Control Center")
                     }
                     WidgetKind.VITALS -> {
-                        menu.menu.add(1, 321, 5, "📊 Open Smart Stack")
                         menu.menu.add(1, 340, 6, "🔋 Battery & Vitals Settings")
                     }
                     WidgetKind.TIMER -> {
@@ -935,7 +905,7 @@ class MainActivity : Activity(), SensorEventListener {
                     }
                 }
                 menu.menu.add(2, 345, 14, "🧩 Android System Widgets...")
-                menu.menu.add(2, 311, 15, "⚙ Honeycomb Cluster Options...")
+                menu.menu.add(2, 311, 15, "⚙ Settings...")
                 menu.menu.add(2, 312, 16, "🏠 Set as Default Launcher")
                 menu.setOnMenuItemClickListener { mi ->
                     when (mi.itemId) {
@@ -955,8 +925,6 @@ class MainActivity : Activity(), SensorEventListener {
                             Toast.makeText(this, "Pinned ${item.label} to Center Core", Toast.LENGTH_SHORT).show()
                         }
                         319 -> view.openWidgetPod(item)
-                        320 -> view.toFace()
-                        321 -> view.openStack()
                         322 -> view.openControlCenter()
                         330 -> handleCardAction(CardAction.MEDIA_PLAY_PAUSE)
                         331 -> handleCardAction(CardAction.MEDIA_NEXT)
@@ -974,9 +942,8 @@ class MainActivity : Activity(), SensorEventListener {
             }
             is Folder -> {
                 menu.menu.add(1, 310, 5, "Open ${item.label} (${item.apps.size} apps)")
-                menu.menu.add(1, 311, 6, "⚙ Honeycomb Cluster Options...")
+                menu.menu.add(1, 311, 6, "⚙ Settings...")
                 menu.menu.add(1, 312, 7, "🏠 Set as Default Launcher")
-                menu.menu.add(1, 313, 8, "✥ Edit Layout Mode")
                 if (item.isCustom) {
                     menu.menu.add(1, 314, 9, "✎ Rename Folder…")
                     menu.menu.add(1, 315, 10, "🗑 Delete Folder")
@@ -1001,7 +968,6 @@ class MainActivity : Activity(), SensorEventListener {
                         310 -> view.openFolder(item)
                         311 -> view.openClusterSheet()
                         312 -> chooseHome()
-                        313 -> view.enterEditMode()
                         314 -> renameFolder(item)
                         315 -> deleteFolder(item)
                     }
@@ -1029,8 +995,7 @@ class MainActivity : Activity(), SensorEventListener {
                     folderSub.add(2, 200 + idx, idx, "$prefix${g.title}")
                 }
 
-                menu.menu.add(3, 311, 25, "⚙ Honeycomb Cluster Options...")
-                menu.menu.add(3, 313, 26, "✥ Edit Layout Mode")
+                menu.menu.add(3, 311, 25, "⚙ Settings...")
                 menu.menu.add(3, 1, 30, "App Info")
                 if (!item.system && item.user == Process.myUserHandle()) {
                     menu.menu.add(3, 2, 31, "Uninstall")
@@ -1067,44 +1032,12 @@ class MainActivity : Activity(), SensorEventListener {
                             if (f != null) removeFromFolder(f, item)
                         }
                         311 -> view.openClusterSheet()
-                        313 -> view.enterEditMode()
                         1 -> runCatching { launcherApps.startAppDetailsActivity(item.component, item.user, null, null) }
                         2 -> runCatching { startActivity(Intent(Intent.ACTION_DELETE, Uri.fromParts("package", item.component.packageName, null))) }
                     }
                     true
                 }
             }
-        }
-        menu.show()
-    }
-
-    private fun faceOptions() {
-        val menu = PopupMenu(this, view, Gravity.CENTER)
-        menu.menu.add(0, 10, 0, "Open Control Center")
-        menu.menu.add(0, 13, 1, "⚙ Honeycomb Cluster Options...")
-        menu.menu.add(0, 11, 2, "Auto Folders: ${if (view.autoFolders) "On" else "Off"}")
-        if (!nowPlaying.allowed) {
-            menu.menu.add(0, 12, 3, "Enable Now Playing & Badges")
-        }
-        ACCENTS.forEachIndexed { i, (name, _) -> menu.menu.add(1, 100 + i, 10 + i, "Colour: $name") }
-        menu.menu.add(2, 2, 50, "Choose Home App")
-        menu.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                10 -> view.openControlCenter()
-                13 -> {
-                    view.openApps()
-                    view.openClusterSheet()
-                }
-                11 -> handleControlAction(ControlAction.FOLDERS, null)
-                12 -> runCatching { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
-                2 -> chooseHome()
-                in 100 until 100 + ACCENTS.size -> {
-                    val c = ACCENTS[item.itemId - 100].second
-                    prefs.edit().putInt(KEY_ACCENT, c).apply()
-                    view.accent = c
-                }
-            }
-            true
         }
         menu.show()
     }
@@ -1166,7 +1099,7 @@ class MainActivity : Activity(), SensorEventListener {
         populateWidgetsPage()
         page.visibility = View.VISIBLE
         view.widgetsPageOpen = true
-        view.toFace()
+        view.openFullHoneycomb()
     }
 
     private fun hideWidgetsPage() {
@@ -1728,9 +1661,7 @@ class MainActivity : Activity(), SensorEventListener {
         const val REQ_CREATE_APPWIDGET = 402
         const val REQ_BIND_APPWIDGET = 403
         const val KEY_ACCENT = "accent"
-        const val KEY_LIST = "list"
         const val KEY_FOLDERS = "auto_folders"
-        const val KEY_HONEYCOMB_HOME = "honeycomb_home"
         const val KEY_BLOOM = "bloom_folders"
         const val KEY_QUICK_SNIPE = "quick_snipe_opt"
         const val KEY_LIVE_WIDGETS = "live_widgets"
@@ -1739,7 +1670,6 @@ class MainActivity : Activity(), SensorEventListener {
         const val KEY_BUBBLE_PHYSICS = "bubble_physics"
         const val KEY_PER_LAYOUT_PINS = "per_layout_pins"
         const val KEY_USAGE_GROWTH = "usage_growth"
-        const val KEY_PINNED_CARDS = "pinned_cards"
         const val KEY_HINTS_SEEN = "hints_seen"
         const val KEY_APPWIDGET_IDS = "appwidget_ids"
         val ACCENTS = listOf(

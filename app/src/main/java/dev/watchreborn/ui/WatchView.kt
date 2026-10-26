@@ -67,8 +67,6 @@ enum class ClusterOption {
     BUBBLE_PHYSICS,
     PER_LAYOUT_PINS,
     USAGE_GROWTH,
-    EDIT_LAYOUT,
-    HONEYCOMB_HOME,
     BLOOM_MODE,
     QUICK_SNIPE,
     CONSTELLATION_SEARCH,
@@ -83,25 +81,30 @@ enum class ClusterOption {
     CLOSE_SHEET,
 }
 
+/** Actions the widget pods ask the activity to perform (media keys, system screens). */
+enum class CardAction {
+    MEDIA_PREV, MEDIA_PLAY_PAUSE, MEDIA_NEXT, MEDIA_OPEN,
+    OPEN_ALARMS, OPEN_BATTERY, OPEN_CALENDAR,
+}
+
 /**
- * The whole launcher on one canvas:
- * - Watch Face (with interactive top & bottom complications)
+ * The whole launcher on one canvas (2.0.0 — the Cluster is home; the
+ * watch Face, List View and Smart Stack pages are gone):
  * - App Views: Focus Cluster, Full Honeycomb Grid (with #1 Core Clock Hub Home, #2 Blooming Clusters,
  *   #3 Quick-Snipe Mini-Icons, #4 Constellation Search, #5 Live Media/Control/Vitals Widget Bubbles,
- *   #6 Fixed Compass Neighborhoods & Hex Slot Pinning, Pinch Overview, and Edge Digital Crown zoom),
- *   and List View (with live Search bar and A-Z Edge Scrubber)
- * - Smart Stack (Now Playing media controls, Activity/System rings, Alarm, Battery, Recent Apps, card pinning)
- * - Control Center (Wi-Fi, Bluetooth, Flashlight, Sound/Vibrate, Auto Folders, Lock Screen, Volume slider, Notifications)
+ *   #6 Fixed Compass Neighborhoods & Hex Slot Pinning, Pinch Overview, and Edge Digital Crown zoom)
+ * - Control Center (Wi-Fi, Bluetooth, Flashlight, Sound/Vibrate, Auto Folders, Lock Screen, Volume slider, Notifications),
+ *   drawn over the Cluster
+ * - The Widgets page is a native overlay owned by the activity; the dock
+ *   (Cluster / Widgets) stays live beneath it
  */
 @SuppressLint("ViewConstructor")
 class WatchView(
     context: Context,
     private val onLaunch: (App, RectF) -> Unit,
     private val onLongPressItem: (GridItem, Int) -> Unit,
-    private val onLongPressFace: () -> Unit,
     private val onControlAction: (ControlAction, Float?) -> Unit,
     private val onCardAction: (CardAction) -> Unit,
-    private val onTogglePinCard: (String) -> Unit,
     private val onClusterOptionChanged: (ClusterOption) -> Unit,
     private val onTopologySelected: (ClusterTopology) -> Unit,
     private val onPlaceItem: (GridItem, Int) -> Unit,
@@ -221,26 +224,7 @@ class WatchView(
             }
             return out
         }
-        if (stackIn.value > 0.5f) {
-            val out = ArrayList<WatchAccessibilityProvider.Node>()
-            for ((rect, card) in stack.cardRects) {
-                if (rect.isEmpty) continue
-                val label = listOf(card.title, card.big, card.detail)
-                    .filter { it.isNotBlank() }.joinToString(", ")
-                out += WatchAccessibilityProvider.Node(
-                    "stack:" + card.id, label,
-                    Rect(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt()),
-                    rect.centerX(), rect.centerY(),
-                )
-            }
-            return out
-        }
-        if (apps.target < 0.5f) {
-            // The Face has no actionable nodes: its favourites row was
-            // removed in 1.13.0 and the complications were never nodes.
-            return emptyList()
-        }
-        // Grid / list / search / folder / overview bubbles from the touch hit
+        // Grid / search / folder / overview bubbles from the touch hit
         // list; keep the last-drawn entry per item, like hitEntryAt does.
         val byKey = LinkedHashMap<String, Hit>()
         for (h in hits) byKey[h.item.key] = h
@@ -273,15 +257,12 @@ class WatchView(
         return super.onHoverEvent(event)
     }
 
-    val face = Face()
-    val stack = Stack()
     val controlCenter = ControlCenter()
     var info = FaceInfo()
     var nowPlayingTrack: NowPlaying.Track? = null
     var ramUsedRatio: Float = 0.5f
     var storageUsedRatio: Float = 0.4f
     var stepCount: Int = 0
-    var pinnedCardIds: Set<String> = emptySet()
     var pinnedItemKeys: Set<String> = emptySet()
         set(v) {
             val grew = v.size > field.size
@@ -512,9 +493,9 @@ class WatchView(
     private val undoActive: Boolean
         get() = undoLabel != null && SystemClock.uptimeMillis() < undoUntilMs
 
-    fun enterEditMode() {
+    fun enterEditMode(haptic: Boolean = true) {
         editMode = true
-        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        if (haptic) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
         invalidate()
     }
 
@@ -545,8 +526,6 @@ class WatchView(
     var accent: Int = Color.rgb(166, 227, 110)
         set(v) {
             field = v
-            face.accent = v
-            stack.accent = v
             controlCenter.accent = v
             invalidate()
         }
@@ -561,10 +540,6 @@ class WatchView(
 
     /** Category folders currently hidden via the folder header (sheet count). */
     var hiddenFolderCount: Int = 0
-
-    /** #1: True = Honeycomb Grid is the primary home screen with a live Clock & Status Core Bubble at (0, 0). */
-    var honeycombHome: Boolean = true
-        set(v) { field = v; invalidate() }
 
     /** #2: True = Folders bloom open in-place with a radial shockwave; False = separate full-screen folder view. */
     var bloomFolders: Boolean = true
@@ -655,10 +630,6 @@ class WatchView(
     private val clusterSheet = Spring(0f)
     /** 0 = coiled in folders, 1 = unraveled into full-screen Star Constellation (#4). */
     private val constellationIn = Spring(0f)
-    /** 0 = grid, 1 = list. */
-    private val list = Spring(0f)
-    /** 0 = face, 1 = Smart Stack. */
-    private val stackIn = Spring(0f)
     /** 0 = face, 1 = Control Center. */
     private val controlIn = Spring(0f)
 
@@ -675,9 +646,6 @@ class WatchView(
     private val folderPanY = Spring(0f, 0.35f)
     private val constellationPanX = Spring(0f, 0.35f)
     private val constellationPanY = Spring(0f, 0.35f)
-    private val stackScroll = Spring(0f, 0.3f)
-    private var listScroll = 0f
-    private var listVelocity = 0f
 
     /** Live search filter (used by both List View search and #4 Honeycomb Constellation Search). */
     var searchQuery: String = ""
@@ -695,7 +663,6 @@ class WatchView(
     private val constellationChipRects = ArrayList<Pair<RectF, String>>()
     private val constellationCategoryChipRects = ArrayList<Pair<RectF, dev.watchreborn.apps.AppGroup>>()
     private val folderHeaderRect = RectF()
-    private val clusterPillRect = RectF()
     private val sheetRowRects = ArrayList<Pair<RectF, ClusterOption>>()
     /** Spoken labels parallel to [sheetRowRects], for TalkBack (1.8.0). */
     private val sheetRowLabels = ArrayList<Pair<RectF, String>>()
@@ -712,12 +679,9 @@ class WatchView(
     private val widgetActionLabels = ArrayList<Pair<RectF, String>>()
 
     /** Alphabet scrubber state in List View. */
-    private var scrubbingLetter: Char? = null
     private var edgeCrownDragging = false
 
     /** Open the List view rather than the cluster (the app view the user last chose). */
-    var preferList = false
-        set(v) { field = v; list.snap(if (v) 1f else 0f) }
 
     var topInset = 0f
     var bottomInset = 0f
@@ -736,7 +700,7 @@ class WatchView(
     private val anchorTmp = FloatArray(2)
     private val pill = RectF()
     /** Per-segment hit rects of the bottom dock (rebuilt by drawDock). */
-    private val dockSegs = Array(4) { RectF() }
+    private val dockSegs = Array(3) { RectF() }
 
     /** Every item drawn this frame (centre, radius) for hit testing; last drawn is on top. */
     private val hits = ArrayList<Hit>()
@@ -786,7 +750,6 @@ class WatchView(
                 folderHexes = Hex.spiral(updated.apps.size)
             }
         }
-        rebuildStackCards()
         invalidate()
     }
 
@@ -794,118 +757,16 @@ class WatchView(
         gridHexes = Hex.spiral(activeGridItems.size)
     }
 
-    fun refreshCards() {
-        rebuildStackCards()
-        invalidate()
-    }
-
-    private fun rebuildStackCards() {
-        val recents = byUse.take(4)
-        val raw = ArrayList<Card>()
-
-        val tr = nowPlayingTrack
-        if (tr != null) {
-            raw += Card(
-                id = "now_playing",
-                tint = Color.rgb(255, 55, 95),
-                title = if (tr.playing) "Now Playing" else "Paused",
-                big = tr.title,
-                detail = tr.artist.orEmpty().ifEmpty { "Media" },
-                art = tr.art,
-                mediaPlaying = tr.playing,
-                tapAction = CardAction.MEDIA_OPEN,
-                pinned = "now_playing" in pinnedCardIds,
-            )
-        } else {
-            raw += Card(
-                id = "now_playing",
-                tint = Color.rgb(255, 55, 95),
-                title = "Now Playing",
-                big = "Nothing Playing",
-                detail = "Tap Play to resume media",
-                mediaPlaying = false,
-                tapAction = CardAction.MEDIA_OPEN,
-                pinned = "now_playing" in pinnedCardIds,
-            )
-        }
-
-        info.nextAlarm?.let {
-            raw += Card(
-                id = "alarm",
-                tint = Color.rgb(255, 159, 10),
-                title = "Alarm",
-                big = timeText(it),
-                detail = "Tap to open Alarms",
-                tapAction = CardAction.OPEN_ALARMS,
-                pinned = "alarm" in pinnedCardIds,
-            )
-        }
-
-        val batPct = if (info.battery >= 0) "${info.battery}%" else "--"
-        val ramPct = (ramUsedRatio * 100).toInt().coerceIn(0, 100)
-        val storPct = (storageUsedRatio * 100).toInt().coerceIn(0, 100)
-        raw += Card(
-            id = "battery",
-            tint = Color.rgb(48, 209, 88),
-            title = if (info.charging) "Charging ⚡" else "Battery & Vitals",
-            big = batPct,
-            detail = "RAM $ramPct% • Storage $storPct%",
-            rings = floatArrayOf(
-                (info.battery.coerceAtLeast(0)) / 100f,
-                (1f - ramUsedRatio).coerceIn(0.05f, 1f),
-                (1f - storageUsedRatio).coerceIn(0.05f, 1f),
-            ),
-            tapAction = CardAction.OPEN_BATTERY,
-            pinned = "battery" in pinnedCardIds,
-        )
-
-        if (stepCount > 0) {
-            raw += Card(
-                id = "activity",
-                tint = Color.rgb(250, 17, 79),
-                title = "Activity",
-                big = "$stepCount steps",
-                detail = "${(stepCount * 0.04f).toInt()} kcal • ${"%.1f".format(stepCount * 0.00076f)} km",
-                rings = floatArrayOf(
-                    (stepCount / 8000f).coerceIn(0.05f, 1f),
-                    (stepCount / 6000f).coerceIn(0.05f, 1f),
-                    (stepCount / 4000f).coerceIn(0.05f, 1f),
-                ),
-                pinned = "activity" in pinnedCardIds,
-            )
-        }
-
-        if (recents.isNotEmpty()) {
-            raw += Card(
-                id = "recents",
-                tint = Color.rgb(100, 210, 255),
-                title = "Recent Apps",
-                big = "",
-                apps = recents,
-                pinned = "recents" in pinnedCardIds,
-            )
-        }
-
-        stack.cards = raw.sortedByDescending { it.pinned }
-    }
-
     private fun timeText(ms: Long) = DateFormat.getTimeInstance(DateFormat.SHORT).format(ms)
 
     // ---------------------------------------------------------------- navigation
 
-    val onFace get() = apps.target == 0f && stackIn.target == 0f && controlIn.target == 0f
-
-    /** Snap to the initial view on startup based on [honeycombHome]. */
+    /** Snap to the initial view on startup: the Cluster is home (2.0.0). */
     fun applyInitialHomeMode() {
-        if (honeycombHome) {
-            apps.snap(1f)
-            grid.snap(1f)
-            panX.snap(0f)
-            panY.snap(0f)
-        } else {
-            apps.snap(0f)
-            grid.snap(0f)
-        }
+        apps.snap(1f)
+        grid.snap(1f)
+        panX.snap(0f)
+        panY.snap(0f)
         invalidate()
     }
 
@@ -919,21 +780,17 @@ class WatchView(
             clearSearch()
             return
         }
-        if (honeycombHome) {
-            if (onFace || stackIn.target > 0f || controlIn.target > 0f) {
-                openFullHoneycomb()
-            } else if (folderIn.target > 0f || widgetIn.target > 0f || overview.target > 0f || list.target > 0f || grid.target < 0.5f) {
-                openFullHoneycomb()
-            } else if (hypot(panX.target, panY.target) > dp(8f)) {
-                panX.target = 0f
-                panY.target = 0f
-                performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                invalidate()
-            } else {
-                toFace()
-            }
-        } else {
-            if (onFace) openApps() else toFace()
+        // The Cluster is home (2.0.0): Home closes whatever overlay is up,
+        // returns from the Focus view, or recentres a panned field.
+        if (controlIn.target > 0f || folderIn.target > 0f || widgetIn.target > 0f ||
+            overview.target > 0f || clusterSheet.target > 0f || grid.target < 0.5f
+        ) {
+            openFullHoneycomb()
+        } else if (hypot(panX.target, panY.target) > dp(8f)) {
+            panX.target = 0f
+            panY.target = 0f
+            performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+            invalidate()
         }
     }
 
@@ -948,20 +805,15 @@ class WatchView(
             editMode = editMode,
             torchOffViaBack = controlIn.target > 0f && controlCenter.state.screenFlashlight,
             // A layer that is visibly open counts even if its target was already
-            // reset mid-animation: Back from the Smart Stack once slipped past
-            // a target-only check, returned "not consumed", and the activity
-            // finished because WatchReborn is not the default home app.
-            stackOrControlOpen = stackIn.target > 0f || controlIn.target > 0f ||
-                stackIn.value > 0.5f || controlIn.value > 0.5f,
-            inApps = apps.target == 1f,
+            // reset mid-animation: Back once slipped past a target-only check,
+            // returned "not consumed", and the activity finished because
+            // Orbital is not the default home app.
+            controlOpen = controlIn.target > 0f || controlIn.value > 0.5f,
             widgetOpen = widgetIn.target == 1f,
             folderOpen = folderIn.target == 1f,
             overviewOpen = overview.target == 1f,
-            listOpen = list.target >= 0.5f,
             gridOpen = grid.target == 1f,
             panned = hypot(panX.target, panY.target) > dp(12f),
-            onFace = onFace,
-            honeycombHome = honeycombHome,
         )
         return when (NavBack.layerToPop(state)) {
             NavLayer.CARD_MENU -> {
@@ -990,8 +842,8 @@ class WatchView(
                 onControlAction(ControlAction.TORCH, null)
                 true
             }
-            NavLayer.STACK_OR_CONTROL -> {
-                if (honeycombHome) openFullHoneycomb() else toFace()
+            NavLayer.CONTROL -> {
+                openFullHoneycomb()
                 true
             }
             NavLayer.WIDGET_POD -> {
@@ -1007,24 +859,10 @@ class WatchView(
                 invalidate()
                 true
             }
-            NavLayer.LIST -> {
-                list.target = 0f
-                grid.target = 1f
-                invalidate()
-                true
-            }
             NavLayer.RECENTER -> {
                 panX.target = 0f
                 panY.target = 0f
                 invalidate()
-                true
-            }
-            NavLayer.FACE -> {
-                openFullHoneycomb()
-                true
-            }
-            NavLayer.EXIT_TO_FACE -> {
-                toFace()
                 true
             }
             NavLayer.NONE -> false
@@ -1035,10 +873,9 @@ class WatchView(
         hideKeyboard()
         gridSearching = false
         constellationIn.snap(0f)
-        stackIn.target = 0f
         controlIn.target = 0f
         clusterSheet.snap(0f)
-        grid.snap(if (honeycombHome) 1f else 0f)
+        grid.snap(1f)
         overview.snap(0f)
         folderIn.snap(0f)
         widgetIn.snap(0f)
@@ -1054,10 +891,8 @@ class WatchView(
         hideKeyboard()
         gridSearching = false
         constellationIn.target = 0f
-        stackIn.target = 0f
         controlIn.target = 0f
         clusterSheet.target = 0f
-        list.target = 0f
         overview.target = 0f
         userZoom.target = 1f
         folderIn.target = 0f
@@ -1072,43 +907,10 @@ class WatchView(
         invalidate()
     }
 
-    fun toFace() {
-        hideKeyboard()
-        gridSearching = false
-        constellationIn.target = 0f
-        apps.target = 0f
-        stackIn.target = 0f
-        controlIn.target = 0f
-        clusterSheet.target = 0f
-        overview.target = 0f
-        folderIn.target = 0f
-        widgetIn.target = 0f
-        stackScroll.target = 0f
-        invalidate()
-    }
-
-    fun openStack() {
-        markHintSeen(HINT_FACE_SWIPE)
-        hideKeyboard()
-        gridSearching = false
-        constellationIn.target = 0f
-        apps.target = 0f
-        controlIn.target = 0f
-        widgetIn.target = 0f
-        stackIn.target = 1f
-        stackScroll.snap(0f)
-        stack.scroll = 0f
-        performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-        invalidate()
-    }
-
     fun openControlCenter() {
-        markHintSeen(HINT_FACE_SWIPE)
         hideKeyboard()
         gridSearching = false
         constellationIn.target = 0f
-        apps.target = 0f
-        stackIn.target = 0f
         widgetIn.target = 0f
         controlIn.target = 1f
         performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
@@ -1188,27 +990,15 @@ class WatchView(
     }
 
     private fun currentCoachHint(): String? {
-        // On the Face, the only undiscoverable moves are the two swipes.
-        if (onFace) return HINT_FACE_SWIPE.takeIf { it !in hintsSeen }
         if (apps.target != 1f || clusterSheet.target > 0f || constellationIn.target > 0.5f ||
             folderIn.target > 0.5f || widgetIn.target > 0.5f || gridSearching || searching
         ) return null
-        return if (list.target >= 0.5f) {
-            HINT_SCRUB.takeIf { it !in hintsSeen }
-        } else if (grid.target >= 0.5f) {
+        return if (grid.target >= 0.5f) {
             listOf(HINT_PINCH, HINT_PIN, HINT_CROWN).firstOrNull { it !in hintsSeen }
         } else {
             null
         }
     }
-
-    /** How far the Face's coach hint lifts so the bottom dock (1.12.0)
-     *  never overlaps it: enough for the dock's height + its bottom
-     *  margin + a 10dp gap, minus the clearance the hint already had.
-     *  Zero on narrow screens that already fit. (Until 1.13.0 this also
-     *  lifted the Face's favourites row; that row is gone.) */
-    private fun faceDockLift(w: Float): Float =
-        (dp(90f) - 0.07f * w).coerceAtLeast(0f)
 
     private fun drawCoachHint(c: Canvas, w: Float, bottom: Float, alpha: Float) {
         // The undo bar and the Edit-mode pill take this screen slot while active.
@@ -1222,17 +1012,13 @@ class WatchView(
             HINT_PINCH -> "🤏 Pinch out for an overview of everything"
             HINT_PIN -> "📌 Long-press a bubble, then drag to place it"
             HINT_CROWN -> "↕ Drag the right screen edge to zoom"
-            HINT_SCRUB -> "🔤 Drag the A–Z edge to jump through the list"
-            HINT_FACE_SWIPE -> "Swipe ↑ for the Stack, ↓ for Controls"
             else -> return
         }
         text.textSize = sp(12.5f)
         val tw = text.measureText(label)
         val hh = dp(30f)
         val hw = tw + dp(28f)
-        // On the Face the pill lifts to clear the bottom dock (1.12.0).
-        val hy = if (id == HINT_FACE_SWIPE) bottom - 0.27f * w - faceDockLift(w) - hh - dp(10f)
-        else bottom - dp(16f) - dp(Metrics.PHONE_PILL_H_DP) - dp(10f) - hh
+        val hy = bottom - dp(16f) - dp(Metrics.PHONE_PILL_H_DP) - dp(10f) - hh
         coachHintRect.set(w / 2 - hw / 2, hy, w / 2 + hw / 2, hy + hh)
         fill.color = Color.argb((alpha * 235).toInt(), 30, 34, 40)
         c.drawRoundRect(coachHintRect, hh / 2, hh / 2, fill)
@@ -1245,7 +1031,7 @@ class WatchView(
 
     /** Drag-to-place is a full-grid gesture: it must not fight the sheet, search, list or folders. */
     private fun canDragPlace(slot: Int): Boolean =
-        slot >= 0 && grid.target == 1f && list.target == 0f && clusterSheet.target == 0f &&
+        slot >= 0 && grid.target == 1f && clusterSheet.target == 0f &&
             constellationIn.target == 0f && folderIn.target == 0f && widgetIn.target == 0f &&
             activeFolder == null && !gridSearching && !searching
 
@@ -1327,10 +1113,11 @@ class WatchView(
         }
         when (PlaceSlots.resolveDrop(moved, from, hover)) {
             // Released without a drag in the full grid: the Context Card
-            // takes over from the classic menu. Inside a folder or Edit
-            // Layout the classic menu still opens (arranging flows keep it).
+            // takes over from the classic menu (also while jiggle mode is
+            // on — dismissing the card leaves the grid still editing).
+            // Inside a folder view the classic menu still opens.
             PlaceSlots.DropAction.MENU ->
-                if (!inFolder && !editMode) {
+                if (!inFolder) {
                     cardFolder = null
                     val origin = hits.firstOrNull { it.slotIndex == from && it.item.key == item.key }
                         ?: hits.firstOrNull { it.slotIndex == from }
@@ -1703,7 +1490,6 @@ class WatchView(
         clusterSheet.target = 0f
         if (apps.target < 0.5f) apps.target = 1f
         if (grid.target < 0.5f) grid.target = 1f
-        list.target = 0f
         overview.target = 0f
         userZoom.target = 1f
         constellationZoom.snap(1f)
@@ -2354,9 +2140,8 @@ class WatchView(
         motionAnimating = false
         frameBadgeVisible = false
 
-        val springs = arrayOf(apps, grid, overview, userZoom, constellationZoom, folderIn, widgetIn, clusterSheet, constellationIn, list, stackIn, controlIn, panX, panY, folderPanX, folderPanY, constellationPanX, constellationPanY, stackScroll, cardMenu)
+        val springs = arrayOf(apps, grid, overview, userZoom, constellationZoom, folderIn, widgetIn, clusterSheet, constellationIn, controlIn, panX, panY, folderPanX, folderPanY, constellationPanX, constellationPanY, cardMenu)
         for (s in springs) s.step(dt)
-        stepListFling(dt)
         val physicsAnimating = stepPhysics(dt)
 
         val w = width.toFloat()
@@ -2365,62 +2150,18 @@ class WatchView(
         val bottom = h - bottomInset - 0.02f * w
         val cal = Calendar.getInstance()
 
-        face.is24Hour = android.text.format.DateFormat.is24HourFormat(context)
-        c.drawColor(Color.BLACK)
-
-        val overlayMax = maxOf(apps.value, stackIn.value, controlIn.value)
-        val faceAlpha = (1f - overlayMax).coerceIn(0f, 1f)
-        if (faceAlpha > 0f) {
-            val scale = 1f - 0.12f * overlayMax
-            c.save()
-            c.scale(scale, scale, w / 2, h / 2)
-            face.draw(c, w, h, top, bottom, cal, info, faceAlpha)
-            c.restore()
-        }
-
-        // The Face's coach hint (swipe gestures) draws unscaled, only while
-        // the Face is fully in front.
-        if (apps.value == 0f && stackIn.value == 0f && controlIn.value == 0f) {
-            drawCoachHint(c, w, bottom, faceAlpha)
-        }
-
-        // The bottom dock lives on the Face too (1.12.0), so the four
-        // destinations are one tap away from every main surface. It is
-        // gated on the springs' TARGETS, not their values (1.17.0):
-        // gating on apps.value == 0f made the dock fade out with the
-        // cluster during a Cluster → Face switch and only pop back in
-        // once the spring fully settled — a visible dock-less gap
-        // (Matt: "disappears for about 2 seconds"). On targets, the
-        // Face's dock crossfades in with faceAlpha while the cluster's
-        // dock fades out with apps.value; both bars share one rect, so
-        // the dock never leaves the screen.
-        if (apps.target == 0f && stackIn.target == 0f && controlIn.target == 0f) {
-            drawDock(c, w, bottom, faceAlpha)
-        }
-
-        if (stackIn.value > 0f) {
-            stack.scroll = stackScroll.value
-            stack.draw(c, w, h, top, bottom, cal, stackIn.value)
-        }
-
-        if (controlIn.value > 0f) {
-            controlCenter.draw(c, w, h, top, bottom, cal, info.battery, info.charging, controlIn.value)
-        }
-
         hits.clear()
         val a = apps.value
         if (a > 0f) {
             val fIn = folderIn.value
             val useSeparateFolderView = !bloomFolders
-            val focusAlpha = a * (1f - grid.value) * (1f - list.value) * (if (useSeparateFolderView) 1f - fIn else 1f)
-            val gridAlpha = a * grid.value * (1f - list.value) * (if (useSeparateFolderView) 1f - fIn else 1f)
-            val folderAlpha = if (useSeparateFolderView) a * fIn * (1f - list.value) else 0f
-            val listAlpha = a * list.value
+            val focusAlpha = a * (1f - grid.value) * (if (useSeparateFolderView) 1f - fIn else 1f)
+            val gridAlpha = a * grid.value * (if (useSeparateFolderView) 1f - fIn else 1f)
+            val folderAlpha = if (useSeparateFolderView) a * fIn else 0f
             val zoom = Metrics.ICONS_FROM_SCALE + (1f - Metrics.ICONS_FROM_SCALE) * a
             if (focusAlpha > 0.001f) drawFocus(c, w, h, top, cal, focusAlpha, zoom * (1f - 0.12f * grid.value), a)
             if (gridAlpha > 0.001f) drawGrid(c, w, h, top, cal, gridAlpha, 1.15f - 0.15f * grid.value)
             if (folderAlpha > 0.001f) drawFolderView(c, w, h, top, folderAlpha)
-            if (listAlpha > 0.001f) drawList(c, w, h, top, bottom, listAlpha)
             drawDock(c, w, bottom, a)
             drawCoachHint(c, w, bottom, a)
             drawUndoBar(c, w, bottom, a)
@@ -2430,18 +2171,24 @@ class WatchView(
             if (cardItem != null) drawCardMenu(c, w, h, cal, cardMenu.value)
         }
 
-        val animating = springs.any { !it.settled } || abs(listVelocity) > 1f || dragging || physicsAnimating || motionAnimating
+        // Control Center overlays the Cluster (2.0.0; it used to sit over
+        // the watch Face), so it draws after the cluster block.
+        if (controlIn.value > 0f) {
+            controlCenter.draw(c, w, h, top, bottom, cal, info.battery, info.charging, controlIn.value)
+        }
+
+        val animating = springs.any { !it.settled } || dragging || physicsAnimating || motionAnimating
         if (animating) postInvalidateOnAnimation()
         else {
             lastFrame = 0L
             // The fast pulse loop only earns its battery while a badged
             // bubble is actually on screen (1.8.0); an unread notification
             // on an off-screen bubble falls through to the 1s tick.
-            val hasPulseOrTimer = a > 0f && (timerRunning || frameBadgeVisible)
-            val hasLiveGridBubbles = a > 0f && (honeycombHome || liveWidgets)
+            val hasPulseOrTimer = a > 0f && (timerRunning || frameBadgeVisible || editMode)
             if (hasPulseOrTimer) {
                 postInvalidateDelayed(75L)
-            } else if (faceAlpha > 0f || stackIn.value > 0f || controlIn.value > 0f || hasLiveGridBubbles) {
+            } else {
+                // The 1s tick the hub clock and live bubbles ride on.
                 postInvalidateDelayed(1000L - System.currentTimeMillis() % 1000L)
             }
         }
@@ -3610,10 +3357,8 @@ class WatchView(
 
                 val bw = islandR * 0.78f
                 val bh = dp(34f)
-                drawPodBtn(cx - bw * 0.52f, cy + islandR * 0.20f, bw, bh, "⌚ Watch Face", "CLOCK_FACE", true)
-                drawPodBtn(cx + bw * 0.52f, cy + islandR * 0.20f, bw, bh, "📊 Smart Stack", "CLOCK_STACK")
-                drawPodBtn(cx - bw * 0.52f, cy + islandR * 0.48f, bw, bh, "🎛️ Controls", "CLOCK_CONTROLS")
-                drawPodBtn(cx + bw * 0.52f, cy + islandR * 0.48f, bw, bh, "🧩 App Widgets", "SYS_WIDGETS")
+                drawPodBtn(cx - bw * 0.52f, cy + islandR * 0.20f, bw, bh, "🎛️ Controls", "CLOCK_CONTROLS")
+                drawPodBtn(cx + bw * 0.52f, cy + islandR * 0.20f, bw, bh, "🧩 App Widgets", "SYS_WIDGETS")
             }
 
             WidgetKind.NOW_PLAYING -> {
@@ -3698,8 +3443,7 @@ class WatchView(
 
                 val bw = islandR * 0.74f
                 val bh = dp(32f)
-                drawPodBtn(cx - bw * 0.52f, cy + islandR * 0.50f, bw, bh, "🔋 Battery Info", "VITALS_BATTERY", true)
-                drawPodBtn(cx + bw * 0.52f, cy + islandR * 0.50f, bw, bh, "📊 Smart Stack", "CLOCK_STACK")
+                drawPodBtn(cx, cy + islandR * 0.50f, bw, bh, "🔋 Battery Info", "VITALS_BATTERY", true)
             }
 
             WidgetKind.TIMER -> {
@@ -3807,14 +3551,8 @@ class WatchView(
         // double-tap on empty space resets zoom), so no permanent Overview pill competes
         // with the bubbles. Overview itself is now signalled by the crown-track thumb.
 
-        // Top-right: Cluster Mode selector button
-        clusterPillRect.set(w - dp(14f) - sideW, y, w - dp(14f), y + pillH)
-        fill.color = Color.argb((alpha * 210).toInt(), 44, 44, 48)
-        c.drawRoundRect(clusterPillRect, pillH / 2, pillH / 2, fill)
-        text.textSize = sp(12f)
-        text.color = withAlpha(accent, (alpha * 255).toInt())
-        val clLabel = "⚙ Cluster"
-        c.drawText(clLabel, clusterPillRect.centerX() - text.measureText(clLabel) / 2, clusterPillRect.centerY() + text.textSize * 0.35f, text)
+        // Top-right stays empty since 2.1.0: the Cluster Options button
+        // moved into the dock as the Settings segment.
 
         // Center: Active centered app/folder/widget pill + tap target for #4 Constellation Search
         if (centred != null && ov < 0.5f) {
@@ -3878,7 +3616,7 @@ class WatchView(
         val gap = dp(4f)
         // Sectioned rows: a null option marks a section header (not tappable).
         // Simplified in 1.9.0, slimmed again in 1.11.2 (Matt's call): the
-        // front page is just Topology, Bubble Physics and Edit Layout —
+        // front page is just Topology, Bubble Physics and
         // everything set-and-forget lives behind "More Options". The old
         // App Search row is gone entirely: the pill at the top of the
         // cluster already opens search. Hidden Folders stays visible
@@ -3889,7 +3627,6 @@ class WatchView(
             add(Triple(ClusterOption.CLUSTER_TOPOLOGY, "Cluster Topology", "${clusterTopology.fullTitle} • Tap for all ${ClusterTopology.entries.size} designs"))
             if (sheetExpanded) {
                 add(Triple(ClusterOption.FIXED_NEIGHBORHOODS, "Grid Layout", if (fixedNeighborhoods) "Fixed Compass Neighborhoods" else "Dynamic Usage Spiral"))
-                add(Triple(ClusterOption.HONEYCOMB_HOME, "Home Screen", if (honeycombHome) "Honeycomb Core Hub" else "Watch Face First"))
             }
             add(Triple(null, "BEHAVIOR", ""))
             add(Triple(ClusterOption.BUBBLE_PHYSICS, "Bubble Physics", if (bubblePhysics) "Jello, waves & billiards" else "Off — bubbles sit still"))
@@ -3901,9 +3638,8 @@ class WatchView(
                 add(Triple(ClusterOption.QUICK_SNIPE, "Mini-Icon Tap", if (quickSnipe) "Outer 6 icons launch" else "Tap opens the folder"))
                 add(Triple(ClusterOption.LIVE_WIDGETS, "Live Grid Widgets", if (liveWidgets) "Media, timer, calendar, vitals" else "Apps & folders only"))
             }
-            add(Triple(null, "ACTIONS", ""))
-            add(Triple(ClusterOption.EDIT_LAYOUT, "Edit Layout", "Drag bubbles to place them"))
             if (sheetExpanded) {
+                add(Triple(null, "ACTIONS", ""))
                 add(Triple(ClusterOption.SYSTEM_WIDGETS, "Android System Widgets", "View / add app widgets"))
                 add(Triple(ClusterOption.SET_DEFAULT_HOME, "Default Phone Launcher", "Set Orbital as Home app"))
                 if (pinnedItemKeys.isNotEmpty()) {
@@ -3946,7 +3682,7 @@ class WatchView(
 
         text.textSize = sp(18.5f)
         text.color = Color.argb(a, 255, 255, 255)
-        val title = "Cluster Options"
+        val title = "Settings"
         c.drawText(title, w / 2 - text.measureText(title) / 2, sheetTop + dp(32f), text)
 
         text.textSize = sp(12.5f)
@@ -3981,7 +3717,6 @@ class WatchView(
             // so the two kinds of row no longer look identical.
             val toggleOn: Boolean? = when (opt) {
                 ClusterOption.FIXED_NEIGHBORHOODS -> fixedNeighborhoods
-                ClusterOption.HONEYCOMB_HOME -> honeycombHome
                 ClusterOption.BUBBLE_PHYSICS -> bubblePhysics
                 ClusterOption.PER_LAYOUT_PINS -> perLayoutPins
                 ClusterOption.USAGE_GROWTH -> usageGrowth
@@ -4255,7 +3990,7 @@ class WatchView(
     }
 
     private fun drawCrownTrack(c: Canvas, w: Float, h: Float, top: Float, bottom: Float, alpha: Float) {
-        if (list.value > 0.5f || folderIn.value > 0.5f || clusterSheet.value > 0.2f || gridSearching) return
+        if (folderIn.value > 0.5f || clusterSheet.value > 0.2f || gridSearching) return
         val trackH = dp(78f)
         val trackW = dp(4.5f)
         val right = w - dp(7f)
@@ -4296,119 +4031,14 @@ class WatchView(
             return alphabetical.filter { it.label.contains(q, ignoreCase = true) }
         }
 
-    private fun drawList(c: Canvas, w: Float, h: Float, top: Float, bottom: Float, alpha: Float) {
-        val pad = max(0.045f * w, (w - dp(440f)) / 2f)
-        val rightEdge = w - pad - dp(24f)
-        val rowH = dp(62f)
-        val pitch = dp(Metrics.PHONE_LIST_PITCH_DP)
-        val iconD = dp(Metrics.PHONE_LIST_ICON_DP)
-        val r = rowH / 2
-
-        val sTop = top + dp(6f)
-        val sH = dp(42f)
-        searchBarRect.set(pad, sTop, rightEdge, sTop + sH)
-        fill.color = Color.argb((alpha * 225).toInt(), 38, 38, 42)
-        c.drawRoundRect(searchBarRect, sH / 2, sH / 2, fill)
-        if (searching) {
-            stroke.strokeWidth = dp(1.5f)
-            stroke.color = withAlpha(accent, (alpha * 220).toInt())
-            c.drawRoundRect(searchBarRect, sH / 2, sH / 2, stroke)
-        }
-        text.textSize = sp(14.5f)
-        val prompt = if (searchQuery.isEmpty()) {
-            if (searching) "🔍 Type app name..." else "🔍 Search ${alphabetical.size} apps..."
-        } else {
-            "🔍 $searchQuery"
-        }
-        text.color = if (searchQuery.isEmpty() && !searching) {
-            Color.argb((alpha * 150).toInt(), 180, 180, 185)
-        } else {
-            Color.argb((alpha * 255).toInt(), 255, 255, 255)
-        }
-        c.drawText(prompt, searchBarRect.left + dp(16f), searchBarRect.centerY() + text.textSize * 0.35f, text)
-
-        if (searchQuery.isNotEmpty() || searching) {
-            searchClearRect.set(searchBarRect.right - sH, searchBarRect.top, searchBarRect.right, searchBarRect.bottom)
-            text.color = Color.argb((alpha * 200).toInt(), 190, 190, 195)
-            val xStr = "✕"
-            val xw = text.measureText(xStr)
-            c.drawText(xStr, searchClearRect.centerX() - xw / 2, searchClearRect.centerY() + text.textSize * 0.35f, text)
-        } else {
-            searchClearRect.setEmpty()
-        }
-
-        val listTop = sTop + sH + dp(12f)
-        val listApps = filteredAlphabetical
-        text.textSize = sp(Metrics.PHONE_LIST_TEXT_SP)
-
-        for (i in listApps.indices) {
-            val cy = listTop + rowH / 2 + i * pitch - listScroll
-            if (cy < listTop - rowH || cy > bottom - dp(50f)) continue
-            val edge = min((cy - listTop) / rowH, (bottom - dp(55f) - cy) / rowH).coerceIn(0f, 1f)
-            val s = 0.88f + 0.12f * edge
-            val a = alpha * edge
-            val rw = (rightEdge - pad) * s
-            val rh = rowH * s
-            val left = pad + (rightEdge - pad - rw) / 2
-            rect.set(left, cy - rh / 2, left + rw, cy + rh / 2)
-            fill.color = Color.argb((a * 255).toInt(), 36, 36, 38)
-            c.drawRoundRect(rect, r * s, r * s, fill)
-
-            val app = listApps[i]
-            val id = iconD * s
-            val ix = left + rh / 2
-            drawIcon(c, app.icon, ix, cy, id, a, hasNotification(app), app.key in pinnedItemKeys)
-
-            text.color = Color.argb((a * 255).toInt(), 255, 255, 255)
-            val tx = ix + id / 2 + dp(12f) * s
-            val avail = left + rw - tx - dp(12f)
-            val label = TextUtils.ellipsize(app.label, text, avail, TextUtils.TruncateAt.END).toString()
-            c.drawText(label, tx, cy + text.textSize * 0.35f, text)
-
-            hits += Hit(w / 2, cy, rh / 2, app)
-        }
-
-        drawAlphabetScrubber(c, w, listTop, bottom - dp(76f), alpha)
-    }
-
-    private fun drawAlphabetScrubber(c: Canvas, w: Float, top: Float, bottom: Float, alpha: Float) {
-        val letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#"
-        val availH = bottom - top
-        if (availH <= dp(120f)) return
-        val step = availH / letters.length
-        val x = w - dp(14f)
-        text.textSize = sp(9.5f)
-        for (i in letters.indices) {
-            val ch = letters[i]
-            val y = top + (i + 0.5f) * step
-            val active = scrubbingLetter == ch
-            text.color = if (active) withAlpha(accent, (alpha * 255).toInt()) else Color.argb((alpha * 155).toInt(), 180, 180, 185)
-            val cw = text.measureText(ch.toString())
-            c.drawText(ch.toString(), x - cw / 2, y + text.textSize * 0.35f, text)
-        }
-
-        scrubbingLetter?.let { ch ->
-            val r = dp(28f)
-            val bx = w / 2
-            val by = (top + bottom) / 2
-            fill.color = withAlpha(accent, 235)
-            c.drawCircle(bx, by, r, fill)
-            text.textSize = sp(22f)
-            text.color = Color.BLACK
-            val s = ch.toString()
-            val sw = text.measureText(s)
-            c.drawText(s, bx - sw / 2, by + text.textSize * 0.36f, text)
-        }
-    }
-
     /**
-     * Bottom navigation dock (1.6.0): one floating bar, four segments —
-     * Face / Cluster / List / Widgets — replacing the single List/Grid pill.
-     * (The fourth segment was the Smart Stack until 1.19.0, when Matt
-     * repurposed its slot as a Widgets page.) Tapping Cluster while
-     * already in the cluster recentres the field. Restyled 1.12.0 as a
-     * light bar with a purple pill highlight on the active segment
-     * (inactive segments are icon-only), and it now also shows on the Face.
+     * Bottom navigation dock (1.6.0): one floating bar, three segments
+     * since 2.1.0 — Cluster / Widgets / Settings (the Face and List pages
+     * went in 2.0.0; the Settings segment opens the options sheet and is
+     * never the "active" destination). Tapping Cluster while already in
+     * the cluster recentres the field.
+     * Restyled 1.12.0 as a light bar with a purple pill highlight on the
+     * active segment (inactive segments are icon-only).
      */
     private fun drawDock(c: Canvas, w: Float, bottom: Float, alpha: Float) {
         if (alpha <= 0.01f) {
@@ -4418,10 +4048,10 @@ class WatchView(
         }
         val ph = dp(Metrics.PHONE_PILL_H_DP)
         // Full-width bar (1.13.0, Matt's ask): a small side margin keeps
-        // the floating look; the four segments share the width evenly.
+        // the floating look; the two segments share the width evenly.
         val sideMargin = dp(10f)
-        val segW = (w - sideMargin * 2f) / 4f
-        val pw = segW * 4f
+        val segW = (w - sideMargin * 2f) / 3f
+        val pw = segW * 3f
         val py = bottom - ph - dp(16f)
 
         pill.set(sideMargin, py, sideMargin + pw, py + ph)
@@ -4430,15 +4060,9 @@ class WatchView(
         // white bar, violet accent, inactive segments go icon-only.
         fill.color = Color.argb((alpha * 246).toInt(), 248, 248, 252)
         c.drawRoundRect(pill, dp(24f), dp(24f), fill)
-        val activeSeg = when {
-            widgetsPageOpen -> DOCK_STACK
-            apps.target < 0.5f -> DOCK_FACE
-            list.target >= 0.5f -> DOCK_LIST
-            grid.target >= 0.5f -> DOCK_CLUSTER
-            else -> DOCK_FACE
-        }
-        val labels = arrayOf("Face", "Cluster", "List", "Widgets")
-        for (i in 0 until 4) {
+        val activeSeg = if (widgetsPageOpen) DOCK_WIDGETS else DOCK_CLUSTER
+        val labels = arrayOf("Cluster", "Widgets", "Settings")
+        for (i in 0 until 3) {
             val seg = RectF(pill.left + i * segW, py, pill.left + (i + 1) * segW, py + ph)
             dockSegs[i].set(seg)
             val active = i == activeSeg
@@ -4451,8 +4075,6 @@ class WatchView(
                 else Color.argb((alpha * 255).toInt(), 130, 130, 142)
             // Inactive segments centre their icon in the bar (no label);
             // the active one keeps the icon-over-label layout in its pill.
-            // Sizes rescaled in 1.14.0 to the reference sheet's chunkier
-            // proportions (64dp bar, 22dp icons, 11sp active label).
             val iconY = if (active) py + dp(26f) else seg.centerY()
             drawDockIcon(c, i, seg.centerX(), iconY, dp(22f), iconColor)
             if (active) {
@@ -4473,11 +4095,6 @@ class WatchView(
         stroke.strokeCap = Paint.Cap.ROUND
         fill.color = color
         when (kind) {
-            DOCK_FACE -> {
-                c.drawCircle(cx, cy, s * 0.48f, stroke)
-                c.drawLine(cx, cy, cx, cy - s * 0.28f, stroke)
-                c.drawLine(cx, cy, cx + s * 0.22f, cy + s * 0.12f, stroke)
-            }
             DOCK_CLUSTER -> {
                 val ring = s * 0.31f
                 val dot = s * 0.13f
@@ -4487,14 +4104,18 @@ class WatchView(
                     c.drawCircle(cx + (cos(a) * ring).toFloat(), cy + (sin(a) * ring).toFloat(), dot, fill)
                 }
             }
-            DOCK_LIST -> {
-                for (row in -1..1) {
-                    val y = cy + row * s * 0.32f
-                    c.drawLine(cx - s * 0.24f, y, cx + s * 0.46f, y, stroke)
-                    c.drawCircle(cx - s * 0.40f, y, s * 0.075f, fill)
+            DOCK_SETTINGS -> {
+                // Gear: six spokes around a hub, same line style as the rest.
+                for (k in 0 until 6) {
+                    val a = Math.toRadians(k * 60.0 - 90.0)
+                    val ca = cos(a).toFloat()
+                    val sa = sin(a).toFloat()
+                    c.drawLine(cx + ca * s * 0.30f, cy + sa * s * 0.30f, cx + ca * s * 0.50f, cy + sa * s * 0.50f, stroke)
                 }
+                c.drawCircle(cx, cy, s * 0.30f, stroke)
+                c.drawCircle(cx, cy, s * 0.10f, fill)
             }
-            DOCK_STACK -> {
+            DOCK_WIDGETS -> {
                 // Widgets glyph (1.19.0): a 2x2 grid of rounded tiles,
                 // the first one filled — the classic widget-grid mark.
                 val cell = s * 0.36f
@@ -4775,7 +4396,7 @@ class WatchView(
         // rotates together around the bubble centre. Transient copies (the
         // carried bubble, the drop glide, the Context Card lift) pass
         // jiggle = false and stay steady.
-        val jiggling = jiggle && badge && d > dp(22f)
+        val jiggling = jiggle && (badge || editMode) && d > dp(22f)
         if (jiggling) {
             val phase = (System.identityHashCode(b) and 0xFFFF) / 65535f * 6.2832f
             val ang = sin(System.currentTimeMillis() / 75.0 + phase).toFloat() * 1.7f
@@ -4828,7 +4449,6 @@ class WatchView(
             override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
                 if (!text.isNullOrEmpty()) {
                     searchQuery += text.toString().replace("\n", "")
-                    listScroll = 0f
                     invalidate()
                 }
                 return true
@@ -4837,7 +4457,6 @@ class WatchView(
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
                 if (beforeLength > 0 && searchQuery.isNotEmpty()) {
                     searchQuery = searchQuery.dropLast(beforeLength.coerceAtMost(searchQuery.length))
-                    listScroll = 0f
                     invalidate()
                 }
                 return true
@@ -4856,8 +4475,7 @@ class WatchView(
                 KeyEvent.KEYCODE_DEL -> {
                     if (searchQuery.isNotEmpty()) {
                         searchQuery = searchQuery.dropLast(1)
-                        listScroll = 0f
-                        invalidate()
+                            invalidate()
                     }
                     return true
                 }
@@ -4873,8 +4491,7 @@ class WatchView(
                     val ch = event.unicodeChar
                     if (ch != 0 && !Character.isISOControl(ch)) {
                         searchQuery += ch.toChar()
-                        listScroll = 0f
-                        invalidate()
+                            invalidate()
                         return true
                     }
                 }
@@ -4893,7 +4510,6 @@ class WatchView(
 
     private fun clearSearch() {
         searchQuery = ""
-        listScroll = 0f
         gridSearching = false
         constellationIn.target = 0f
         constellationFilter = "ALL"
@@ -4922,7 +4538,7 @@ class WatchView(
     private var dragging = false
     private var longPressed = false
     private var pinching = false
-    private var modeAtDown = MODE_FACE
+    private var modeAtDown = MODE_APPS
     private var velocity: VelocityTracker? = null
     private val longPress = Runnable {
         longPressed = true
@@ -4930,11 +4546,6 @@ class WatchView(
         when {
             cardMenuOpen -> {}
             clusterSheet.target == 1f -> {}
-            stackIn.target == 1f -> {
-                stack.cardRects.lastOrNull { it.first.contains(downX, downY) }?.let { (_, card) ->
-                    onTogglePinCard(card.id)
-                }
-            }
             apps.target == 1f -> {
                 hitEntryAt(downX, downY)?.let { h ->
                     val fallbackSlot = activeGridItems.indexOfFirst { it.key == h.item.key }
@@ -4946,12 +4557,17 @@ class WatchView(
                             beginPlace(h.item, h.slotIndex, inFolder = true)
                         // In the full grid, a long-press picks the bubble up for
                         // drag-to-place; releasing without a drag opens the menu.
-                        canDragPlace(slot) -> beginPlace(h.item, slot)
+                        canDragPlace(slot) -> {
+                            // 2.2.0: Edit Layout is a gesture now — a long-press
+                            // drops the whole grid into jiggle mode and picks
+                            // the pressed bubble up in the same motion.
+                            enterEditMode(haptic = false)
+                            beginPlace(h.item, slot)
+                        }
                         else -> onLongPressItem(h.item, slot)
                     }
                 }
             }
-            onFace -> onLongPressFace()
         }
     }
 
@@ -4962,7 +4578,7 @@ class WatchView(
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
-            if (apps.target == 1f && list.target == 0f && clusterSheet.target == 0f) {
+            if (apps.target == 1f && clusterSheet.target == 0f) {
                 markHintSeen(HINT_PINCH)
                 pinching = true
                 removeCallbacks(longPress)
@@ -5045,28 +4661,20 @@ class WatchView(
             MotionEvent.ACTION_DOWN -> {
                 downX = e.x; downY = e.y; lastX = e.x; lastY = e.y
                 dragging = false; longPressed = false; pinching = false
-                scrubbingLetter = null
                 orbitalVelocity = 0f
-                grabbedPoolIndex = if (clusterTopology == ClusterTopology.LIQUID_POOL && apps.target > 0.5f && list.target < 0.5f) {
+                grabbedPoolIndex = if (clusterTopology == ClusterTopology.LIQUID_POOL && apps.target > 0.5f) {
                     hitEntryAt(e.x, e.y)?.slotIndex ?: -1
                 } else -1
                 modeAtDown = when {
                     controlIn.target > 0.5f -> MODE_CONTROL
-                    stackIn.target > 0.5f -> MODE_STACK
-                    apps.target > 0.5f -> MODE_APPS
-                    else -> MODE_FACE
+                    else -> MODE_APPS
                 }
                 edgeCrownDragging = modeAtDown == MODE_APPS && clusterSheet.target == 0f && !gridSearching &&
                     e.x > width - dp(34f) && e.y > topInset + dp(60f) && e.y < height - bottomInset - dp(70f)
                 if (edgeCrownDragging) {
                     crownStartZoom = if (overview.target >= 0.5f) 0.48f else userZoom.value
                 }
-                if (edgeCrownDragging && list.target == 1f) {
-                    scrubAlphabetAt(e.y)
-                    return true
-                }
                 velocity?.recycle(); velocity = VelocityTracker.obtain().apply { addMovement(e) }
-                listVelocity = 0f
                 // Edit mode: touching a bubble picks it up immediately — the
                 // whole point is arranging without long-pressing each bubble.
                 if (editMode && modeAtDown == MODE_APPS && !edgeCrownDragging) {
@@ -5100,21 +4708,16 @@ class WatchView(
                     invalidate()
                     return true
                 }
-                if (edgeCrownDragging && list.target == 1f) {
-                    removeCallbacks(longPress)
-                    scrubAlphabetAt(e.y)
-                    return true
-                }
                 velocity?.addMovement(e)
                 if (!dragging && hypot(e.x - downX, e.y - downY) > slop) {
                     dragging = true
                     removeCallbacks(longPress)
-                    if (!edgeCrownDragging && apps.target == 1f && list.target == 0f && grid.target == 0f && clusterSheet.target == 0f) {
+                    if (!edgeCrownDragging && apps.target == 1f && grid.target == 0f && clusterSheet.target == 0f) {
                         grid.target = 1f
                     }
                 }
                 if (dragging && !longPressed && clusterSheet.target == 0f) {
-                    if (edgeCrownDragging && list.target == 0f) {
+                    if (edgeCrownDragging) {
                         scrubCrownZoom(e.y - downY)
                     } else if (controlIn.target == 1f && controlCenter.volumeBarRect.contains(downX, downY)) {
                         val v = ((e.x - controlCenter.volumeBarRect.left) / controlCenter.volumeBarRect.width()).coerceIn(0f, 1f)
@@ -5133,8 +4736,7 @@ class WatchView(
                     invalidate()
                     return true
                 }
-                if (scrubbingLetter != null || edgeCrownDragging) {
-                    scrubbingLetter = null
+                if (edgeCrownDragging) {
                     edgeCrownDragging = false
                     dragging = false
                     invalidate()
@@ -5161,7 +4763,6 @@ class WatchView(
                 removeCallbacks(longPress)
                 dragging = false
                 pinching = false
-                scrubbingLetter = null
                 edgeCrownDragging = false
                 placeItem = null
                 placeHoverSlot = -1
@@ -5172,30 +4773,6 @@ class WatchView(
             }
         }
         return true
-    }
-
-    private fun scrubAlphabetAt(y: Float) {
-        val top = topInset + 0.02f * width + dp(68f)
-        val bottom = height - bottomInset - 0.02f * width - dp(80f)
-        val letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ#"
-        val idx = (((y - top) / (bottom - top)) * letters.length).toInt().coerceIn(0, letters.lastIndex)
-        val ch = letters[idx]
-        if (ch != scrubbingLetter) {
-            scrubbingLetter = ch
-            markHintSeen(HINT_SCRUB)
-            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-            val listApps = filteredAlphabetical
-            val targetIdx = if (ch == '#') {
-                listApps.indexOfFirst { !it.label.firstOrNull()?.uppercaseChar()?.isLetter()!! }
-            } else {
-                listApps.indexOfFirst { (it.label.firstOrNull()?.uppercaseChar() ?: ' ') >= ch }
-            }
-            if (targetIdx >= 0) {
-                val maxScroll = max(0f, listApps.size * dp(Metrics.PHONE_LIST_PITCH_DP) - (height - topInset - bottomInset) * 0.6f)
-                listScroll = (targetIdx * dp(Metrics.PHONE_LIST_PITCH_DP)).coerceIn(0f, maxScroll)
-            }
-            invalidate()
-        }
     }
 
     private fun scrubCrownZoom(totalDy: Float) {
@@ -5220,16 +4797,8 @@ class WatchView(
             MODE_CONTROL -> {
                 if (totalDy < 0) controlIn.snap((1f + totalDy / (0.4f * height)).coerceIn(0f, 1f))
             }
-            MODE_STACK -> {
-                val pitch = (Metrics.CARD_H + Metrics.CARD_GAP) * w
-                stackScroll.snap((stackScroll.value - dy / pitch).coerceIn(-0.6f, stack.maxScroll + 0.3f))
-            }
             MODE_APPS -> {
                 when {
-                    list.target == 1f -> {
-                        hideKeyboard()
-                        listScroll -= dy
-                    }
                     gridSearching -> {
                         hideKeyboard()
                         val bound = unit * 0.85f
@@ -5349,15 +4918,6 @@ class WatchView(
                     }
                 }
             }
-            else -> {
-                if (totalDy < 0) {
-                    controlIn.snap(0f)
-                    stackIn.snap((-totalDy / (0.6f * height)).coerceIn(0f, 1f))
-                } else if (totalDy > 0) {
-                    stackIn.snap(0f)
-                    controlIn.snap((totalDy / (0.5f * height)).coerceIn(0f, 1f))
-                }
-            }
         }
         invalidate()
     }
@@ -5367,20 +4927,11 @@ class WatchView(
         when (modeAtDown) {
             MODE_CONTROL -> {
                 if (totalDy < -0.1f * height || vy < -1200f) {
-                    if (honeycombHome) openFullHoneycomb() else toFace()
+                    openFullHoneycomb()
                 } else controlIn.target = 1f
-            }
-            MODE_STACK -> {
-                if (stackScroll.value < -0.3f) {
-                    if (honeycombHome) openFullHoneycomb() else toFace()
-                    return
-                }
-                val pitch = (Metrics.CARD_H + Metrics.CARD_GAP) * w
-                stackScroll.target = (stackScroll.value - vy * 0.25f / pitch).roundToInt().toFloat().coerceIn(0f, stack.maxScroll)
             }
             MODE_APPS -> {
                 when {
-                    list.target == 1f -> listVelocity = -vy
                     gridSearching -> {
                         val bound = unit * 0.65f
                         constellationPanX.target = (constellationPanX.value + vx * 0.18f).coerceIn(-bound, bound)
@@ -5388,13 +4939,6 @@ class WatchView(
                     }
                     folderIn.target == 1f -> snapFolderGrid(folderPanX.value + vx * 0.3f, folderPanY.value + vy * 0.3f)
                     else -> snapGrid(panX.value + vx * 0.3f, panY.value + vy * 0.3f)
-                }
-            }
-            else -> {
-                when {
-                    totalDy < -0.12f * height || vy < -1500f -> openStack()
-                    totalDy > 0.12f * height || vy > 1500f -> openControlCenter()
-                    else -> { stackIn.target = 0f; controlIn.target = 0f }
                 }
             }
         }
@@ -5453,19 +4997,6 @@ class WatchView(
         folderPanY.target = -tmp[1]
     }
 
-    private fun stepListFling(dt: Float) {
-        val listApps = filteredAlphabetical
-        val maxScroll = max(0f, listApps.size * dp(Metrics.PHONE_LIST_PITCH_DP) - (height - topInset - bottomInset) * 0.55f)
-        if (abs(listVelocity) > 1f) {
-            listScroll += listVelocity * dt
-            listVelocity *= (1f - 3.5f * dt).coerceAtLeast(0f)
-        }
-        if (!dragging) {
-            if (listScroll < 0f) { listScroll *= (1f - 12f * dt).coerceAtLeast(0f); listVelocity = 0f }
-            if (listScroll > maxScroll) { listScroll = maxScroll + (listScroll - maxScroll) * (1f - 12f * dt).coerceAtLeast(0f); listVelocity = 0f }
-        }
-    }
-
     private fun tap(x: Float, y: Float) {
         // The Context Card is the topmost layer: a row tap runs its action
         // (the card closes either way); a tap anywhere else dismisses it.
@@ -5504,7 +5035,7 @@ class WatchView(
             return
         }
 
-        // 0. Cluster Options Sheet taps
+        // 0. Settings Sheet taps
         if (clusterSheet.target == 1f) {
             if (topologyPickerOpen) {
                 topologyRowRects.lastOrNull { it.first.contains(x, y) }?.let { (_, topo) ->
@@ -5533,10 +5064,6 @@ class WatchView(
                     }
                     ClusterOption.CONSTELLATION_SEARCH -> {
                         startConstellationSearch()
-                    }
-                    ClusterOption.EDIT_LAYOUT -> {
-                        clusterSheet.target = 0f
-                        enterEditMode()
                     }
                     ClusterOption.CLUSTER_TOPOLOGY -> {
                         topologyPickerOpen = true
@@ -5572,44 +5099,25 @@ class WatchView(
                 onControlAction(ControlAction.VOLUME_UP, v)
                 return
             }
-            if (honeycombHome) openFullHoneycomb() else toFace()
-            return
-        }
-
-        // 2. Smart Stack taps
-        if (stackIn.target == 1f) {
-            stack.appRects.lastOrNull { it.first.contains(x, y) }?.let { (r, app) ->
-                onLaunch(app, RectF(r))
-                return
-            }
-            stack.actionRects.lastOrNull { it.first.contains(x, y) }?.let { (_, act) ->
-                performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                onCardAction(act)
-                return
-            }
-            if (honeycombHome) openFullHoneycomb() else toFace()
+            openFullHoneycomb()
             return
         }
 
         // 3. Apps View (Honeycomb / Constellation Search / Folder / List)
         if (apps.target == 1f) {
             if (!pill.isEmpty && pill.contains(x, y)) {
-                // Bottom dock (1.6.0): four destinations, one tap each.
+                // Bottom dock (1.6.0): two destinations since 2.0.0 —
+                // Cluster and Widgets. While the Widgets page overlay is
+                // up the dock stays live beneath it: tapping Widgets again
+                // stays, tapping Cluster closes the page and navigates.
                 val seg = dockSegs.indexOfFirst { it.contains(x, y) }
+                if (widgetsPageOpen && seg == DOCK_WIDGETS) return
+                if (widgetsPageOpen) onWidgetsPageClosed()
                 clearSearch()
                 when (seg) {
-                    DOCK_FACE -> {
-                        if (folderIn.target == 1f) closeFolder()
-                        toFace()
-                    }
                     DOCK_CLUSTER -> {
                         if (folderIn.target == 1f) closeFolder()
                         when {
-                            list.target >= 0.5f -> {
-                                list.target = 0f
-                                grid.target = 1f
-                                preferListChanged(false)
-                            }
                             grid.target < 0.5f -> grid.target = 1f
                             else -> {
                                 // Already in the cluster: recentre the field.
@@ -5619,16 +5127,13 @@ class WatchView(
                             }
                         }
                     }
-                    DOCK_LIST -> {
-                        if (folderIn.target == 1f) closeFolder()
-                        if (list.target < 0.5f) {
-                            list.target = 1f
-                            preferListChanged(true)
-                        }
-                    }
-                    DOCK_STACK -> {
+                    DOCK_WIDGETS -> {
                         if (folderIn.target == 1f) closeFolder()
                         onWidgetsPage()
+                    }
+                    DOCK_SETTINGS -> {
+                        if (folderIn.target == 1f) closeFolder()
+                        openClusterSheet()
                     }
                 }
                 performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
@@ -5690,16 +5195,6 @@ class WatchView(
                 }
                 return
             }
-            if (list.target >= 0.5f) {
-                if (!searchClearRect.isEmpty && searchClearRect.contains(x, y)) {
-                    clearSearch()
-                    return
-                }
-                if (!searchBarRect.isEmpty && searchBarRect.contains(x, y)) {
-                    startSearch()
-                    return
-                }
-            }
             if (widgetIn.target >= 0.5f) {
                 if (!folderHeaderRect.isEmpty && folderHeaderRect.contains(x, y)) {
                     closeWidgetPod()
@@ -5744,11 +5239,7 @@ class WatchView(
                 }
                 return
             }
-            if (list.target < 0.5f) {
-                if (!clusterPillRect.isEmpty && clusterPillRect.contains(x, y)) {
-                    openClusterSheet()
-                    return
-                }
+            run {
                 if (!centerSearchPillRect.isEmpty && centerSearchPillRect.contains(x, y)) {
                     startConstellationSearch()
                     return
@@ -5768,8 +5259,6 @@ class WatchView(
                     val clockWidget = activeGridItems.filterIsInstance<WidgetBubble>().firstOrNull { it.kind == WidgetKind.CORE_CLOCK }
                     if (clockWidget != null) {
                         openWidgetPod(clockWidget)
-                    } else {
-                        toFace()
                     }
                     return
                 }
@@ -5790,7 +5279,7 @@ class WatchView(
                     return
                 }
                 lastEmptyTapTime = now
-                if (grid.target < 0.5f && list.target < 0.5f) {
+                if (grid.target < 0.5f) {
                     grid.target = 1f
                     performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
                     invalidate()
@@ -5840,54 +5329,11 @@ class WatchView(
             return
         }
 
-        // 4. On the Watch Face
-        // The dock lives on the Face too (1.12.0): same four destinations.
-        if (!pill.isEmpty && pill.contains(x, y)) {
-            val seg = dockSegs.indexOfFirst { it.contains(x, y) }
-            performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-            if (widgetsPageOpen) {
-                // The Widgets page overlay is up (1.19.0) and the dock
-                // stays live beneath it: tapping Widgets again stays,
-                // Face just closes the page, the rest close and navigate.
-                if (seg == DOCK_STACK) return
-                onWidgetsPageClosed()
-                if (seg == DOCK_FACE) return
-            }
-            when (seg) {
-                DOCK_FACE -> Unit // already here
-                DOCK_CLUSTER -> if (honeycombHome) openFullHoneycomb() else { openApps(); grid.target = 1f }
-                DOCK_LIST -> {
-                    openApps()
-                    list.target = 1f
-                    preferListChanged(true)
-                }
-                DOCK_STACK -> onWidgetsPage()
-            }
-            return
-        }
-        if (face.topRects[0].contains(x, y)) {
-            performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-            onCardAction(CardAction.OPEN_BATTERY)
-            return
-        }
-        if (face.topRects[1].contains(x, y)) {
-            performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-            onCardAction(CardAction.OPEN_CALENDAR)
-            return
-        }
-        if (face.topRects[2].contains(x, y)) {
-            performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-            onCardAction(CardAction.OPEN_ALARMS)
-            return
-        }
-        if (honeycombHome) openFullHoneycomb() else openApps()
     }
 
     private fun handleWidgetPodAction(actionId: String) {
         performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
         when (actionId) {
-            "CLOCK_FACE" -> toFace()
-            "CLOCK_STACK" -> openStack()
             "CLOCK_CONTROLS" -> openControlCenter()
             "SYS_WIDGETS" -> {
                 closeWidgetPod()
@@ -5967,16 +5413,13 @@ class WatchView(
         return null
     }
 
-    var preferListChanged: (Boolean) -> Unit = {}
 
     private fun hitEntryAt(x: Float, y: Float): Hit? = hits.lastOrNull { hypot(x - it.x, y - it.y) <= it.r }
 
     private companion object {
-        const val HINT_FACE_SWIPE = "faceswipe"
         const val HINT_PINCH = "pinch"
         const val HINT_CROWN = "crown"
         const val HINT_PIN = "pin"
-        const val HINT_SCRUB = "scrub"
         const val CARD_PIN = 0
         const val CARD_UNPIN = 1
         const val CARD_INFO = 2
@@ -5988,16 +5431,13 @@ class WatchView(
         const val CARD_DELETE_FOLDER = 8
         const val CARD_LAUNCH = 9
         const val CARD_REMOVE_FROM_FOLDER = 10
-        const val DOCK_FACE = 0
-        const val DOCK_CLUSTER = 1
-        const val DOCK_LIST = 2
-        const val DOCK_STACK = 3
+        const val DOCK_CLUSTER = 0
+        const val DOCK_WIDGETS = 1
+        const val DOCK_SETTINGS = 2
         /** Bubbles riding the Chrono Bezel's outer carousel ring at once. */
         const val BEZEL_OUTER_CAP = 18
-        const val MODE_FACE = 0
-        const val MODE_APPS = 1
-        const val MODE_STACK = 2
-        const val MODE_CONTROL = 3
+        const val MODE_APPS = 0
+        const val MODE_CONTROL = 1
         val FOCUS_RING_ORDER = listOf(Hex(0, -1), Hex(1, -1), Hex(1, 0), Hex(0, 1), Hex(-1, 1), Hex(-1, 0))
     }
 }

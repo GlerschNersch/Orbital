@@ -1,5 +1,34 @@
 # Changelog
 
+## 2.2.0 — 2026-10-26
+
+- **Edit Layout is a gesture now.** Long-press any app bubble
+  in the full grid and the whole grid starts to jiggle — drag
+  bubbles to place them, tap "✓ Done" (or Back) when finished.
+  A plain long-press-release still opens the Context Card, over
+  the jiggling grid. The Edit Layout entry is gone from the
+  Settings sheet and the long-press menus.
+
+## 2.1.0 — 2026-10-26
+
+- **Settings moves into the dock.** The "⚙ Cluster" pill at the
+  top-right of the Cluster is gone; the dock gains a third
+  segment, Settings, which opens the same options sheet — now
+  titled "Settings". The long-press menus point there too
+  ("⚙ Settings...").
+
+## 2.0.0 — 2026-10-26
+
+- **The Face and List pages are gone — the Cluster is home.**
+  Orbital now has two destinations: the Cluster and the Widgets
+  page, and the bottom dock shrinks to those two segments. The
+  app opens straight into the honeycomb, Home recentres it, and
+  Back unwinds overlays and then falls through to the system.
+  The Control Center (which used to sit over the Face) now
+  overlays the Cluster, and the Clock & Status pod keeps its
+  Controls and App Widgets buttons. The dormant Smart Stack,
+  unreachable since 1.19.0, is removed along the way.
+
 ## 1.22.0 — 2026-10-26
 
 - **Widgets page polish** (from a test pass over the page):

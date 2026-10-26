@@ -15,11 +15,9 @@ import android.view.accessibility.AccessibilityNodeProvider
  * Exposes the currently interactive elements as virtual accessibility views
  * through a framework [AccessibilityNodeProvider] (no extra dependencies):
  *
- *  - app grid / list / search / folder / overview bubbles, built from the same
+ *  - app grid / search / folder / overview bubbles, built from the same
  *    per-frame hit circles the touch handler consumes, so a node exists for
- *    exactly what a sighted user can tap, with the same bounds;
- *  - the watch face's favourite-app dock;
- *  - Smart Stack cards.
+ *    exactly what a sighted user can tap, with the same bounds.
  *
  * Activating a node calls back into the view's real tap handler at the node's
  * centre, so accessibility users get identical behaviour (launch, open
