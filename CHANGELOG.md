@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.0.1 — 2026-10-26
+
+Application ID renamed `dev.watchreborn` -> `dev.orbital` (Matt's call, made while it is still free: the ID is permanent from the first Play upload). Only the store/install identity changes — the code namespace and packages stay `dev.watchreborn`, so nothing in the source moves. Android treats the renamed app as a new app: it installs alongside the old one with fresh data (usage history, settings and notification access start over), and the old `dev.watchreborn` build can be uninstalled once the new one is confirmed.
+
 ## 3.0.0 — 2026-10-26
 
 The Control Center is gone (Matt's call): Android's own pull-down Quick Settings already covers Wi-Fi, Bluetooth, flashlight and sound, so Orbital's duplicate panel — and the Control Cluster widget and Quick Control pod that opened it — are removed entirely. The Clock pod keeps its App Widgets button, now centred. With the panel goes its Lock tile, and with that the TurnOff accessibility service, its prominent-disclosure dialog, the service XML and the `EXPAND_STATUS_BAR` / `ACCESS_WIFI_STATE` / `BLUETOOTH` permissions — Orbital now declares a single permission (`ACTIVITY_RECOGNITION`, for the step widget) and no accessibility service, so the Play accessibility declaration is no longer needed. Category Clustering stays frozen at the stored setting (off) with its toggle retired, same treatment as Live Grid Widgets in 2.5.0. The privacy policy and store-listing pack were updated to match.

@@ -78,5 +78,5 @@ The only remaining declared permission is ACTIVITY_RECOGNITION (above).
 2. If the account is a *personal* account: production requires a closed test
    with **12+ opted-in testers for 14 consecutive days** first. Start this as
    early as possible — it is the critical path.
-3. Decision still open: applicationId — currently `dev.watchreborn`;
-   renaming is free now and impossible after first upload.
+3. Application ID — DECIDED 2026-10-26: `dev.orbital` (renamed in 3.0.1,
+   before first upload; the code namespace stays `dev.watchreborn`).

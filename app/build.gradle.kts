@@ -8,12 +8,12 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "dev.watchreborn"
+        applicationId = "dev.orbital"
         // OnBackInvokedCallback and the Android 13 themed-icon APIs.
         minSdk = 33
         targetSdk = 36
-        versionCode = 54
-        versionName = "3.0.0"
+        versionCode = 55
+        versionName = "3.0.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
