@@ -1124,6 +1124,54 @@ class WatchView(
     private var islandDragFreeAx = 0f
     private var islandDragFreeAy = 0f
     private var islandSnapZone = SnapMath.Zone.NONE
+    /** 3.6.1: the last drawn grid frame's camera, stashed so the
+     *  island-drag handler can invert it (canvas px -> anchor)
+     *  with exactly the values the frame was drawn with. */
+    private var lastGridEffZoom = 1f
+    private var lastGridOv = 0f
+
+    /** 3.6.1: invert the island draw transform — a canvas px
+     *  point back to an anchor — using the last drawn frame's
+     *  camera ([lastBasePitch] / [lastGridEffZoom] / [lastGridOv],
+     *  stashed by drawGrid). The forward map is radial: the
+     *  fisheye pull scales both axes by one factor k(d), so the
+     *  inverse solves the pulled distance by fixed-point
+     *  iteration (Fisheye.pulled is monotonic; five passes are
+     *  far past convergence). Force Field islands are unwarped —
+     *  factor 1 there. Null until a frame has been drawn. */
+    private fun screenToIslandAnchor(px: Float, py: Float): FloatArray? {
+        val u = unit
+        val bp = lastBasePitch
+        val ez = lastGridEffZoom
+        if (u <= 0f || bp <= 0f || ez <= 0f) return null
+        val ov = lastGridOv
+        val w = width.toFloat()
+        val h = height.toFloat()
+        val sx = max(1f, w / u)
+        val sy = max(1f, (h / u) / Metrics.WATCH_ASPECT)
+        val dxz = (px - w / 2f) / (u * ez)
+        val dyz = (py - h / 2f) / (u * ez)
+        val isForce = clusterTopology == ClusterTopology.FORCE_FIELD
+        var k = 1f
+        if (!isForce) {
+            val rz = hypot(dxz / sx, dyz / sy)
+            if (rz > 1e-5f) {
+                var d = rz
+                repeat(5) {
+                    val pullK = if (d > 1e-5f) Fisheye.pulled(d) / d else 1f
+                    k = pullK * (1f - ov) + ov
+                    if (k > 1e-5f) d = rz / k
+                }
+            }
+        }
+        if (k <= 1e-5f) return null
+        val dxI = dxz / k
+        val dyI = dyz / k
+        return floatArrayOf(
+            (dxI * u - panX.value * (1f - ov)) / bp,
+            (dyI * u - panY.value * (1f - ov)) / bp,
+        )
+    }
     private var islandPxPerUnit = 0f
     private var islandsShownLastFrame = false
     private val islandPath = Path()
@@ -3300,6 +3348,8 @@ class WatchView(
         // physically overlapped, worst around the new centre app.
         val basePitch = Metrics.GRID_PITCH * u * (1f + 0.32f * ov) * 1.10f
         lastBasePitch = basePitch
+        lastGridEffZoom = effZoom
+        lastGridOv = ov
 
         val isRiver = clusterTopology == ClusterTopology.RIVER
         val isOrbitals = clusterTopology == ClusterTopology.ORBITALS
@@ -3585,35 +3635,37 @@ class WatchView(
             }
             islandsShownLastFrame = islandsShownNow
             if ((isForce || isHoneycomb || isGravity) && islands.isNotEmpty()) {
-                // 3.6.0 Part C: while an island drag sits in a snap
-                // zone, wash + outline the zone (quadrant or half
-                // of the field). The dragged tile itself rides the
-                // snapped anchor (the drag writes it live), so the
-                // existing drop ghost centres inside the zone.
+                // 3.6.1: while an island drag sits in a snap
+                // zone, wash + outline the zone as a true slice
+                // of the CANVAS — the cluster area between the
+                // header pill and the dock (this frame's [top]
+                // and the matching bottom), in plain view px,
+                // tiled edge-to-edge at the canvas midlines. The
+                // dragged tile rides the snapped anchor (the drag
+                // writes it live), so the drop ghost centres
+                // inside the zone. Sibling zones of the same
+                // layout get a faint outline so the tiling reads.
+                // 3.6.0 pushed the anchor-space field rect through
+                // the fisheye, which collapsed it into a floating
+                // capsule around the tile.
                 if (islandDragId != null && islandSnapZone != SnapMath.Zone.NONE) {
-                    val pitchRest = Metrics.GRID_PITCH * u * 1.10f
-                    val zr = SnapMath.zoneRect(
-                        islandSnapZone, (w / 2f) / pitchRest, (h / 2f) / pitchRest,
-                    )
+                    val cTop = top
+                    val cBottom = h - bottomInset - 0.02f * w
+                    stroke.strokeWidth = dp(1.4f)
+                    stroke.color = withAlpha(accent, (aInt * 0.30f).toInt())
+                    for (sib in SnapMath.siblingZones(islandSnapZone)) {
+                        val sr = SnapMath.zoneRect(sib, 0f, cTop, w, cBottom) ?: continue
+                        islandInset.set(sr[0], sr[1], sr[2], sr[3])
+                        c.drawRoundRect(islandInset, dp(12f), dp(12f), stroke)
+                    }
+                    val zr = SnapMath.zoneRect(islandSnapZone, 0f, cTop, w, cBottom)
                     if (zr != null) {
-                        val zcxA = (zr[0] + zr[2]) / 2f
-                        val zcyA = (zr[1] + zr[3]) / 2f
-                        val zdx = (zcxA * basePitch + panX.value * (1f - ov)) / u
-                        val zdy = (zcyA * basePitch + panY.value * (1f - ov)) / u
-                        val zd = hypot(zdx / sx, zdy / sy)
-                        val zk = if (!isForce && zd > 1e-4f) {
-                            (Fisheye.pulled(zd) / zd) * (1f - ov) + ov
-                        } else 1f
-                        val zcx = cx + zdx * zk * u * effZoom
-                        val zcy = cy + zdy * zk * u * effZoom
-                        val zhw = (zr[2] - zr[0]) / 2f * basePitch * effZoom
-                        val zhh = (zr[3] - zr[1]) / 2f * basePitch * effZoom
-                        islandInset.set(zcx - zhw, zcy - zhh, zcx + zhw, zcy + zhh)
+                        islandInset.set(zr[0], zr[1], zr[2], zr[3])
                         fill.color = withAlpha(accent, (aInt * 0.08f).toInt())
-                        c.drawRoundRect(islandInset, dp(24f), dp(24f), fill)
+                        c.drawRoundRect(islandInset, dp(12f), dp(12f), fill)
                         stroke.strokeWidth = dp(2f)
                         stroke.color = withAlpha(accent, (aInt * 0.55f).toInt())
-                        c.drawRoundRect(islandInset, dp(24f), dp(24f), stroke)
+                        c.drawRoundRect(islandInset, dp(12f), dp(12f), stroke)
                     }
                 }
                 for (slot in islands) {
@@ -6054,21 +6106,25 @@ class WatchView(
                         islandDragFreeAx += (e.x - lastX) / dragScale
                         islandDragFreeAy += (e.y - lastY) / dragScale
                         if (hypot(e.x - downX, e.y - downY) > slop) islandDragMoved = true
-                        // 3.6.0 Part C: quadrant snap placement —
-                        // classify the POINTER's anchor-space
-                        // position against the usable field; while
-                        // a zone is engaged the slot rides the
-                        // snapped anchor live, so the lattice
-                        // solver, the Force Field walls and the
-                        // drop ghost all preview the landing spot.
-                        // The island's scale is never touched.
-                        val snapPitch = Metrics.GRID_PITCH * unit * 1.10f
-                        val fieldHx = (width / 2f) / snapPitch
-                        val fieldHy = (height / 2f) / snapPitch
+                        // 3.6.1: snap is a SCREEN-space gesture
+                        // against the ENTIRE CANVAS (the cluster
+                        // area between the header pill and the
+                        // dock): classify the POINTER in view px.
+                        // While a zone is engaged the slot rides
+                        // the landing anchor live — the zone's
+                        // canvas centre inverted through the
+                        // camera transform and fit-clamped — so
+                        // the lattice solver, the Force Field
+                        // walls and the drop ghost all preview
+                        // the landing spot. The island's scale is
+                        // never touched. (3.6.0 classified the
+                        // tile's anchor against the world field,
+                        // so at working zoom zones engaged late
+                        // and in the wrong places.)
+                        val canvasTop = topInset + 0.02f * width
+                        val canvasBottom = height - bottomInset - 0.02f * width
                         val zone = SnapMath.classify(
-                            islandDragStartAx + (e.x - downX) / dragScale,
-                            islandDragStartAy + (e.y - downY) / dragScale,
-                            fieldHx, fieldHy,
+                            e.x, e.y, 0f, canvasTop, width.toFloat(), canvasBottom,
                         )
                         if (zone != islandSnapZone) {
                             islandSnapZone = zone
@@ -6076,12 +6132,19 @@ class WatchView(
                                 performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                             }
                         }
-                        val snapped = if (zone != SnapMath.Zone.NONE) {
-                            SnapMath.snappedAnchor(zone, fieldHx, fieldHy, slot.halfW, slot.halfH)
+                        val landCentre = if (zone != SnapMath.Zone.NONE) {
+                            SnapMath.zoneCenter(zone, 0f, canvasTop, width.toFloat(), canvasBottom)
                         } else null
-                        if (snapped != null) {
-                            slot.anchorX = snapped[0]
-                            slot.anchorY = snapped[1]
+                        val landAnchor = landCentre?.let { screenToIslandAnchor(it[0], it[1]) }
+                        if (landAnchor != null) {
+                            val snapPitch = Metrics.GRID_PITCH * unit * 1.10f
+                            val clamped = SnapMath.clampToField(
+                                landAnchor[0], landAnchor[1],
+                                (width / 2f) / snapPitch, (height / 2f) / snapPitch,
+                                slot.halfW, slot.halfH,
+                            )
+                            slot.anchorX = clamped[0]
+                            slot.anchorY = clamped[1]
                         } else {
                             slot.anchorX = islandDragFreeAx
                             slot.anchorY = islandDragFreeAy

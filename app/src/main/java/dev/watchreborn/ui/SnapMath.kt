@@ -1,28 +1,27 @@
 package dev.watchreborn.ui
 
-import kotlin.math.abs
-
 /**
- * Quadrant snap placement for islands (3.6.0, Part C — Matt's
- * Windows Snap Layouts analogy, corrected 2026-10-27: the snap is
- * POSITIONAL, not a size change). While an island is dragged in
- * edit mode, the drag position relative to the usable field (the
- * fit-first field extents, in anchor units) engages a snap zone:
+ * Island snap PLACEMENT (3.6.0 Part C, reworked 3.6.1): in edit
+ * mode, dragging an island toward a corner or edge of the screen
+ * engages a snap zone — corners are quadrants, a single axis past
+ * the threshold is that side's half — previewed as a zone wash
+ * with the tile's drop ghost centred in it; on release the tile
+ * keeps the zone-centre anchor, fit-first clamped. A centre drag
+ * engages nothing and the drop stays free, exactly as before.
+ * The island's scale (3.2.5 resize) is never touched.
  *
- *   - beyond [ENGAGE_FRACTION] of the half-extent on BOTH axes ->
- *     that corner's QUADRANT
- *   - beyond it on ONE axis -> that side's HALF
- *   - otherwise -> free placement (pre-3.6.0 behaviour)
- *
- * Releasing over a zone sets the island's anchor so the TILE
- * CENTRE sits at the ZONE CENTRE, clamped fit-first so the whole
- * tile stays in-field, and persists through the normal
- * island_<id>_ax/ay path. The island's scale is never touched —
- * sizing stays with the 3.2.5 grip / presets.
- *
- * Anchor space: x grows right, y grows DOWN (positive anchorY is
- * the lower half of the field, as in IslandLayout.positionName).
- * Pure math; the view supplies the field half-extents.
+ * 3.6.1: snapping is a SCREEN-space gesture against the ENTIRE
+ * CANVAS — the full cluster area between the header pill and the
+ * dock, in view pixels at the current camera. Classification,
+ * zone rects and zone centres all live in that canvas space, so a
+ * quadrant is a true quarter of what the user sees at ANY zoom.
+ * Only the landing converts back to anchor space (the view
+ * inverts its camera transform, then [clampToField] applies the
+ * fit-first clamp). 3.6.0 classified the tile's anchor against
+ * the world field: at working zoom the field extends far past
+ * the viewport, so zones engaged late and in the wrong places,
+ * and the preview — the field rect pushed through the fisheye —
+ * collapsed into a floating capsule around the tile.
  */
 object SnapMath {
 
@@ -32,68 +31,112 @@ object SnapMath {
         HALF_LEFT, HALF_RIGHT, HALF_TOP, HALF_BOTTOM,
     }
 
-    /** How far toward an edge (as a fraction of the field
-     *  half-extent) the drag must reach before a zone engages. */
+    /** Past this fraction of the canvas half-extent (per axis,
+     *  measured from the canvas centre) a zone engages. 0.55 keeps
+     *  the middle of the canvas a free-drop region while a
+     *  deliberate push toward a corner or edge engages decisively,
+     *  well before the finger reaches the glass edge. */
     const val ENGAGE_FRACTION = 0.55f
 
-    /** The fit-first margin (anchor units) kept between the tile
-     *  and the field edge — mirrors the placement heal. */
+    /** Fit-first margin, in hex-pitch units: a snapped (or any
+     *  healed) anchor keeps the whole tile this far inside the
+     *  placeable field. Mirrors the load-time heal's margin in
+     *  MainActivity (3.2.2) — one number, two consumers. */
     const val FIT_MARGIN = 0.12f
 
-    /** Which zone a drag point falls in. [ax]/[ay] are the drag
-     *  position in anchor units; [fieldHalfX]/[fieldHalfY] the
-     *  usable field's half-extents in the same units. */
-    fun classify(ax: Float, ay: Float, fieldHalfX: Float, fieldHalfY: Float): Zone {
-        if (fieldHalfX <= 0f || fieldHalfY <= 0f) return Zone.NONE
-        val overX = abs(ax) > fieldHalfX * ENGAGE_FRACTION
-        val overY = abs(ay) > fieldHalfY * ENGAGE_FRACTION
+    /** Classify a pointer position (view px) against the canvas
+     *  rect: both axes past the engage fraction = the corner's
+     *  quadrant; one axis = that side's half; neither = NONE. */
+    fun classify(
+        px: Float, py: Float,
+        left: Float, top: Float, right: Float, bottom: Float,
+    ): Zone {
+        val hw = (right - left) / 2f
+        val hh = (bottom - top) / 2f
+        if (hw <= 0f || hh <= 0f) return Zone.NONE
+        val dx = (px - (left + hw)) / hw
+        val dy = (py - (top + hh)) / hh
+        val xPast = kotlin.math.abs(dx) > ENGAGE_FRACTION
+        val yPast = kotlin.math.abs(dy) > ENGAGE_FRACTION
         return when {
-            overX && overY ->
-                if (ax < 0f) (if (ay < 0f) Zone.QUADRANT_TL else Zone.QUADRANT_BL)
-                else (if (ay < 0f) Zone.QUADRANT_TR else Zone.QUADRANT_BR)
-            overX -> if (ax < 0f) Zone.HALF_LEFT else Zone.HALF_RIGHT
-            overY -> if (ay < 0f) Zone.HALF_TOP else Zone.HALF_BOTTOM
+            xPast && yPast -> when {
+                dx < 0f && dy < 0f -> Zone.QUADRANT_TL
+                dx > 0f && dy < 0f -> Zone.QUADRANT_TR
+                dx < 0f -> Zone.QUADRANT_BL
+                else -> Zone.QUADRANT_BR
+            }
+            xPast -> if (dx < 0f) Zone.HALF_LEFT else Zone.HALF_RIGHT
+            yPast -> if (dy < 0f) Zone.HALF_TOP else Zone.HALF_BOTTOM
             else -> Zone.NONE
         }
     }
 
-    /** The zone's rectangle in anchor units as [left, top, right,
-     *  bottom], or null for NONE. */
-    fun zoneRect(zone: Zone, fieldHalfX: Float, fieldHalfY: Float): FloatArray? = when (zone) {
-        Zone.NONE -> null
-        Zone.QUADRANT_TL -> floatArrayOf(-fieldHalfX, -fieldHalfY, 0f, 0f)
-        Zone.QUADRANT_TR -> floatArrayOf(0f, -fieldHalfY, fieldHalfX, 0f)
-        Zone.QUADRANT_BL -> floatArrayOf(-fieldHalfX, 0f, 0f, fieldHalfY)
-        Zone.QUADRANT_BR -> floatArrayOf(0f, 0f, fieldHalfX, fieldHalfY)
-        Zone.HALF_LEFT -> floatArrayOf(-fieldHalfX, -fieldHalfY, 0f, fieldHalfY)
-        Zone.HALF_RIGHT -> floatArrayOf(0f, -fieldHalfY, fieldHalfX, fieldHalfY)
-        Zone.HALF_TOP -> floatArrayOf(-fieldHalfX, -fieldHalfY, fieldHalfX, 0f)
-        Zone.HALF_BOTTOM -> floatArrayOf(-fieldHalfX, 0f, fieldHalfX, fieldHalfY)
+    /** The zone's rect within the canvas, as [left, top, right,
+     *  bottom] in the same px space as the inputs. Zones tile the
+     *  canvas edge-to-edge, split at the canvas midlines — a
+     *  quadrant is exactly one quarter of the canvas, a half
+     *  exactly one half. Null for NONE. */
+    fun zoneRect(
+        zone: Zone,
+        left: Float, top: Float, right: Float, bottom: Float,
+    ): FloatArray? {
+        if (zone == Zone.NONE) return null
+        val cx = (left + right) / 2f
+        val cy = (top + bottom) / 2f
+        return when (zone) {
+            Zone.QUADRANT_TL -> floatArrayOf(left, top, cx, cy)
+            Zone.QUADRANT_TR -> floatArrayOf(cx, top, right, cy)
+            Zone.QUADRANT_BL -> floatArrayOf(left, cy, cx, bottom)
+            Zone.QUADRANT_BR -> floatArrayOf(cx, cy, right, bottom)
+            Zone.HALF_LEFT -> floatArrayOf(left, top, cx, bottom)
+            Zone.HALF_RIGHT -> floatArrayOf(cx, top, right, bottom)
+            Zone.HALF_TOP -> floatArrayOf(left, top, right, cy)
+            Zone.HALF_BOTTOM -> floatArrayOf(left, cy, right, bottom)
+            Zone.NONE -> null
+        }
     }
 
-    /** The zone's centre in anchor units, or null for NONE. */
-    fun zoneCenter(zone: Zone, fieldHalfX: Float, fieldHalfY: Float): FloatArray? {
-        val r = zoneRect(zone, fieldHalfX, fieldHalfY) ?: return null
+    /** The zone's centre in canvas px — where the tile lands. */
+    fun zoneCenter(
+        zone: Zone,
+        left: Float, top: Float, right: Float, bottom: Float,
+    ): FloatArray? {
+        val r = zoneRect(zone, left, top, right, bottom) ?: return null
         return floatArrayOf((r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f)
     }
 
-    /** The anchor a drop in [zone] lands on: the tile centre at
-     *  the zone centre, then the fit-first clamp so the whole
-     *  tile (half extents [halfW]/[halfH]) stays inside the field
-     *  with [FIT_MARGIN] to spare. Null for NONE (free drop). */
-    fun snappedAnchor(
-        zone: Zone,
-        fieldHalfX: Float,
-        fieldHalfY: Float,
-        halfW: Float,
-        halfH: Float,
-    ): FloatArray? {
-        val c = zoneCenter(zone, fieldHalfX, fieldHalfY) ?: return null
+    /** The other zones of the engaged zone's layout: the three
+     *  sibling quadrants, or the opposite half. The drag preview
+     *  outlines them faintly so the canvas tiling reads (the
+     *  Windows Snap Layouts geometry); empty for NONE. */
+    fun siblingZones(zone: Zone): List<Zone> = when (zone) {
+        Zone.QUADRANT_TL -> listOf(Zone.QUADRANT_TR, Zone.QUADRANT_BL, Zone.QUADRANT_BR)
+        Zone.QUADRANT_TR -> listOf(Zone.QUADRANT_TL, Zone.QUADRANT_BL, Zone.QUADRANT_BR)
+        Zone.QUADRANT_BL -> listOf(Zone.QUADRANT_TL, Zone.QUADRANT_TR, Zone.QUADRANT_BR)
+        Zone.QUADRANT_BR -> listOf(Zone.QUADRANT_TL, Zone.QUADRANT_TR, Zone.QUADRANT_BL)
+        Zone.HALF_LEFT -> listOf(Zone.HALF_RIGHT)
+        Zone.HALF_RIGHT -> listOf(Zone.HALF_LEFT)
+        Zone.HALF_TOP -> listOf(Zone.HALF_BOTTOM)
+        Zone.HALF_BOTTOM -> listOf(Zone.HALF_TOP)
+        Zone.NONE -> emptyList()
+    }
+
+    /** Fit-first clamp of an anchor into the placeable field: the
+     *  tile's centre may range only where the whole tile (plus
+     *  [FIT_MARGIN]) stays inside the field. A point outside is
+     *  pulled to the NEAREST placeable point — the clamp never
+     *  re-centres, it only trims what the tile's size forbids. An
+     *  axis whose tile is wider than the field pins to 0. */
+    fun clampToField(
+        ax: Float, ay: Float,
+        fieldHalfX: Float, fieldHalfY: Float,
+        halfW: Float, halfH: Float,
+    ): FloatArray {
         val limX = (fieldHalfX - halfW - FIT_MARGIN).coerceAtLeast(0f)
         val limY = (fieldHalfY - halfH - FIT_MARGIN).coerceAtLeast(0f)
         return floatArrayOf(
-            c[0].coerceIn(-limX, limX),
-            c[1].coerceIn(-limY, limY),
+            ax.coerceIn(-limX, limX),
+            ay.coerceIn(-limY, limY),
         )
     }
 }

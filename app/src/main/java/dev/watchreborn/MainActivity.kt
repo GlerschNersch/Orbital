@@ -2350,7 +2350,18 @@ class MainActivity : Activity(), SensorEventListener {
         // back into view on the next load.) Corrected anchors are
         // written back to prefs so the fix sticks.
         val dm = resources.displayMetrics
-        val hexPxC = (dm.widthPixels * Metrics.GRID_PITCH * 1.10f).coerceAtLeast(1f)
+        // 3.6.1: the heal's pitch must be the VIEW's pitch —
+        // its unit is min(width, 340dp), not the raw display
+        // width. The width-based pitch made the heal's field
+        // ~20% narrower than the field the view snaps and clamps
+        // to, so a snapped anchor was pulled back toward the
+        // centre column on every load (for a wide tile its x
+        // limit collapsed to 0). Same unit formula as iconPx.
+        val unitPxC = minOf(
+            dm.widthPixels.toFloat(),
+            Metrics.WATCH_WIDTH_DP * dm.density,
+        )
+        val hexPxC = (unitPxC * Metrics.GRID_PITCH * 1.10f).coerceAtLeast(1f)
         fun limXFor(slot: WatchView.IslandSlot) =
             ((dm.widthPixels / 2f) / hexPxC - slot.halfW - 0.12f).coerceAtLeast(0f)
         fun limYFor(slot: WatchView.IslandSlot) =

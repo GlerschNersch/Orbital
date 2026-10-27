@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.6.1 — 2026-10-27
+- **Bug fix: island snap zones now work against the entire
+  canvas.** 3.6.0 classified the dragged tile's anchor against
+  the fit-first field and pushed the zone rect through the
+  fisheye, so at working zoom the zones engaged late and in the
+  wrong places, the preview collapsed into a floating capsule
+  around the tile instead of the quadrant it named, and a
+  snapped position was pulled back toward the centre column on
+  the next load (the load-time heal measured the field with a
+  wider pitch than the view). Now the pointer is classified in
+  screen space against the full cluster canvas — the area
+  between the header pill and the dock — so a quadrant is a
+  true quarter of what you see at any zoom; the preview draws
+  that canvas-relative rectangle with its sibling zones faintly
+  outlined; the drop lands the tile on the zone's centre,
+  converted back through the camera transform and fit-clamped
+  as before; and the heal uses the view's own pitch, so a
+  snapped position survives relaunch.
+
 ## 3.6.0 — 2026-10-27
 - **Built-in native widgets.** The widget picker gains a Built-in
   section: Clock, Calendar, Timer, Vitals and Now Playing — the

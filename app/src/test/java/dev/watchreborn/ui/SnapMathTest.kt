@@ -5,92 +5,154 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** 3.6.0: quadrant snap placement (pure). Field 10 x 8 anchor
- *  units (half-extents 5 x 4) unless stated. */
+/**
+ * 3.6.1: snap classification lives in canvas px (the full cluster
+ * area between header and dock). The canvas used below is
+ * (0, 100) → (1080, 2300): centre (540, 1200), half extents
+ * (540, 1100), engage thresholds at ±0.55 of the half extents —
+ * x past 243 / 837, y past 595 / 1805.
+ */
 class SnapMathTest {
 
-    private val fx = 5f
-    private val fy = 4f
+    private fun classify(px: Float, py: Float) =
+        SnapMath.classify(px, py, 0f, 100f, 1080f, 2300f)
 
     @Test
     fun centreIsFree() {
-        assertEquals(SnapMath.Zone.NONE, SnapMath.classify(0f, 0f, fx, fy))
-        assertEquals(SnapMath.Zone.NONE, SnapMath.classify(2.7f, 2.1f, fx, fy))
-        assertEquals(SnapMath.Zone.NONE, SnapMath.classify(-2.7f, -2.1f, fx, fy))
+        assertEquals(SnapMath.Zone.NONE, classify(540f, 1200f))
+        assertEquals(SnapMath.Zone.NONE, classify(500f, 1100f))
+        // Just inside both thresholds stays free.
+        assertEquals(SnapMath.Zone.NONE, classify(244f, 596f))
     }
 
     @Test
     fun cornersAreQuadrants() {
-        assertEquals(SnapMath.Zone.QUADRANT_TL, SnapMath.classify(-4f, -3f, fx, fy))
-        assertEquals(SnapMath.Zone.QUADRANT_TR, SnapMath.classify(4f, -3f, fx, fy))
-        assertEquals(SnapMath.Zone.QUADRANT_BL, SnapMath.classify(-4f, 3f, fx, fy))
-        assertEquals(SnapMath.Zone.QUADRANT_BR, SnapMath.classify(4f, 3f, fx, fy))
+        assertEquals(SnapMath.Zone.QUADRANT_TL, classify(100f, 200f))
+        assertEquals(SnapMath.Zone.QUADRANT_TR, classify(1000f, 200f))
+        assertEquals(SnapMath.Zone.QUADRANT_BL, classify(100f, 2200f))
+        assertEquals(SnapMath.Zone.QUADRANT_BR, classify(1000f, 2200f))
+        // The glass corners themselves engage — full stop.
+        assertEquals(SnapMath.Zone.QUADRANT_TL, classify(0f, 100f))
+        assertEquals(SnapMath.Zone.QUADRANT_BR, classify(1080f, 2300f))
     }
 
     @Test
     fun singleAxisIsHalf() {
-        assertEquals(SnapMath.Zone.HALF_LEFT, SnapMath.classify(-4f, 0.5f, fx, fy))
-        assertEquals(SnapMath.Zone.HALF_RIGHT, SnapMath.classify(4f, -0.5f, fx, fy))
-        assertEquals(SnapMath.Zone.HALF_TOP, SnapMath.classify(0.5f, -3f, fx, fy))
-        assertEquals(SnapMath.Zone.HALF_BOTTOM, SnapMath.classify(-0.5f, 3f, fx, fy))
+        assertEquals(SnapMath.Zone.HALF_LEFT, classify(100f, 1200f))
+        assertEquals(SnapMath.Zone.HALF_RIGHT, classify(1000f, 1200f))
+        assertEquals(SnapMath.Zone.HALF_TOP, classify(540f, 200f))
+        assertEquals(SnapMath.Zone.HALF_BOTTOM, classify(540f, 2200f))
     }
 
     @Test
     fun thresholdIsStrict() {
-        // Exactly at 55% of the half-extent does NOT engage.
-        val tx = fx * SnapMath.ENGAGE_FRACTION
-        val ty = fy * SnapMath.ENGAGE_FRACTION
-        assertEquals(SnapMath.Zone.NONE, SnapMath.classify(tx, ty, fx, fy))
-        assertEquals(SnapMath.Zone.QUADRANT_BR, SnapMath.classify(tx + 0.01f, ty + 0.01f, fx, fy))
+        // Exactly 0.55 of the half extent is NOT past (strict >):
+        // x = 540 − 0.55·540 = 243, y = 1200 − 0.55·1100 = 595.
+        assertEquals(SnapMath.Zone.NONE, classify(243f, 595f))
+        assertEquals(SnapMath.Zone.HALF_LEFT, classify(242f, 1200f))
+        assertEquals(SnapMath.Zone.QUADRANT_TL, classify(242f, 594f))
     }
 
     @Test
-    fun degenerateFieldNeverSnaps() {
-        assertEquals(SnapMath.Zone.NONE, SnapMath.classify(9f, 9f, 0f, fy))
-        assertEquals(SnapMath.Zone.NONE, SnapMath.classify(9f, 9f, fx, -1f))
-    }
-
-    @Test
-    fun zoneRectsAndCentres() {
-        assertNull(SnapMath.zoneRect(SnapMath.Zone.NONE, fx, fy))
-        assertTrue(
-            SnapMath.zoneRect(SnapMath.Zone.QUADRANT_TL, fx, fy)!!
-                .contentEquals(floatArrayOf(-5f, -4f, 0f, 0f)),
+    fun degenerateCanvasNeverEngages() {
+        assertEquals(
+            SnapMath.Zone.NONE,
+            SnapMath.classify(10f, 10f, 100f, 100f, 100f, 500f),
         )
-        assertTrue(
-            SnapMath.zoneRect(SnapMath.Zone.HALF_BOTTOM, fx, fy)!!
-                .contentEquals(floatArrayOf(-5f, 0f, 5f, 4f)),
-        )
-        assertTrue(
-            SnapMath.zoneCenter(SnapMath.Zone.QUADRANT_BR, fx, fy)!!
-                .contentEquals(floatArrayOf(2.5f, 2f)),
-        )
-        assertTrue(
-            SnapMath.zoneCenter(SnapMath.Zone.HALF_LEFT, fx, fy)!!
-                .contentEquals(floatArrayOf(-2.5f, 0f)),
+        assertEquals(
+            SnapMath.Zone.NONE,
+            SnapMath.classify(10f, 10f, 0f, 300f, 500f, 300f),
         )
     }
 
     @Test
-    fun snappedAnchorCentresTileInZone() {
-        // Small tile: no clamping needed, centre = zone centre.
-        val a = SnapMath.snappedAnchor(SnapMath.Zone.QUADRANT_TL, fx, fy, 1f, 0.6f)!!
-        assertEquals(-2.5f, a[0], 0.001f)
-        assertEquals(-2f, a[1], 0.001f)
+    fun zoneRectsTileTheCanvas() {
+        val l = 0f; val t = 100f; val r = 1080f; val b = 2300f
+        assertRect(
+            floatArrayOf(0f, 100f, 540f, 1200f),
+            SnapMath.zoneRect(SnapMath.Zone.QUADRANT_TL, l, t, r, b),
+        )
+        assertRect(
+            floatArrayOf(540f, 1200f, 1080f, 2300f),
+            SnapMath.zoneRect(SnapMath.Zone.QUADRANT_BR, l, t, r, b),
+        )
+        assertRect(
+            floatArrayOf(0f, 100f, 540f, 2300f),
+            SnapMath.zoneRect(SnapMath.Zone.HALF_LEFT, l, t, r, b),
+        )
+        assertRect(
+            floatArrayOf(0f, 1200f, 1080f, 2300f),
+            SnapMath.zoneRect(SnapMath.Zone.HALF_BOTTOM, l, t, r, b),
+        )
+        assertNull(SnapMath.zoneRect(SnapMath.Zone.NONE, l, t, r, b))
+        // Quadrants abut at the midlines with no gaps: TL's right
+        // edge is TR's left edge, TL's bottom is BL's top.
+        val tl = SnapMath.zoneRect(SnapMath.Zone.QUADRANT_TL, l, t, r, b)!!
+        val tr = SnapMath.zoneRect(SnapMath.Zone.QUADRANT_TR, l, t, r, b)!!
+        val bl = SnapMath.zoneRect(SnapMath.Zone.QUADRANT_BL, l, t, r, b)!!
+        assertEquals(tl[2], tr[0], 0f)
+        assertEquals(tl[3], bl[1], 0f)
     }
 
     @Test
-    fun snappedAnchorClampsFitFirst() {
-        // A tile nearly as wide/tall as a quadrant: its centre
-        // must pull back so the whole tile stays in-field.
-        val a = SnapMath.snappedAnchor(SnapMath.Zone.QUADRANT_TR, fx, fy, 2.4f, 2.1f)!!
-        assertEquals(fx - 2.4f - SnapMath.FIT_MARGIN, a[0], 0.001f)
-        assertEquals(-(fy - 2.1f - SnapMath.FIT_MARGIN), a[1], 0.001f)
-        // Half snap with a tall tile: x centres in the half,
-        // y clamps to the field.
-        val b = SnapMath.snappedAnchor(SnapMath.Zone.HALF_RIGHT, fx, fy, 1f, 3.5f)!!
-        assertEquals(2.5f, b[0], 0.001f)
-        assertEquals(0f, b[1], 0.001f)
-        assertNull(SnapMath.snappedAnchor(SnapMath.Zone.NONE, fx, fy, 1f, 1f))
+    fun zoneCentres() {
+        val l = 0f; val t = 100f; val r = 1080f; val b = 2300f
+        assertRect(
+            floatArrayOf(270f, 650f),
+            SnapMath.zoneCenter(SnapMath.Zone.QUADRANT_TL, l, t, r, b),
+        )
+        assertRect(
+            floatArrayOf(810f, 1200f),
+            SnapMath.zoneCenter(SnapMath.Zone.HALF_RIGHT, l, t, r, b),
+        )
+        assertNull(SnapMath.zoneCenter(SnapMath.Zone.NONE, l, t, r, b))
+    }
+
+    @Test
+    fun siblingsCompleteTheLayout() {
+        assertEquals(
+            setOf(
+                SnapMath.Zone.QUADRANT_TR,
+                SnapMath.Zone.QUADRANT_BL,
+                SnapMath.Zone.QUADRANT_BR,
+            ),
+            SnapMath.siblingZones(SnapMath.Zone.QUADRANT_TL).toSet(),
+        )
+        assertEquals(
+            listOf(SnapMath.Zone.HALF_RIGHT),
+            SnapMath.siblingZones(SnapMath.Zone.HALF_LEFT),
+        )
+        assertTrue(SnapMath.siblingZones(SnapMath.Zone.NONE).isEmpty())
+    }
+
+    @Test
+    fun clampKeepsPlaceablePoints() {
+        // The Vitals-sized tile from the emulator seed: half extents
+        // (1.2097, 0.6048) against the view field (2.007, 4.461) —
+        // limits (0.677, 3.736); a point inside passes through.
+        val out = SnapMath.clampToField(0.5f, -2.0f, 2.007f, 4.461f, 1.2097f, 0.6048f)
+        assertEquals(0.5f, out[0], 1e-4f)
+        assertEquals(-2.0f, out[1], 1e-4f)
+    }
+
+    @Test
+    fun clampPullsToNearestPlaceablePoint() {
+        // A canvas-quadrant centre can sit outside the placeable
+        // field (wide tile, or an overview camera): the clamp trims
+        // to the nearest placeable point, never re-centres.
+        val out = SnapMath.clampToField(1.0035f, -2.2305f, 2.007f, 4.461f, 1.2097f, 0.6048f)
+        assertEquals(0.6773f, out[0], 1e-3f)
+        assertEquals(-2.2305f, out[1], 1e-4f)
+        // A tile wider than the field pins that axis to 0.
+        val wide = SnapMath.clampToField(0.9f, 0f, 2.007f, 4.461f, 2.5f, 0.5f)
+        assertEquals(0f, wide[0], 0f)
+    }
+
+    private fun assertRect(expected: FloatArray, actual: FloatArray?) {
+        assertTrue(actual != null)
+        assertEquals(expected.size, actual!!.size)
+        for (i in expected.indices) {
+            assertEquals("index $i", expected[i], actual[i], 1e-4f)
+        }
     }
 }
