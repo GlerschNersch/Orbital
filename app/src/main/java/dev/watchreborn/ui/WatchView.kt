@@ -2,6 +2,8 @@ package dev.watchreborn.ui
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.LauncherApps
+import android.content.pm.ShortcutInfo
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -9,6 +11,7 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
 import android.os.SystemClock
 import android.text.InputType
 import android.text.TextPaint
@@ -26,6 +29,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import dev.watchreborn.NowPlaying
+import dev.watchreborn.Shortcuts
 import dev.watchreborn.NowPlayingListener
 import dev.watchreborn.NotifPeek
 import dev.watchreborn.apps.App
@@ -66,6 +70,7 @@ enum class ClusterOption {
     PER_LAYOUT_PINS,
     USAGE_GROWTH,
     CATEGORY_CLUSTERING,
+    WALLPAPER_TINT,
     BLOOM_MODE,
     CONSTELLATION_SEARCH,
     FIXED_NEIGHBORHOODS,
@@ -425,8 +430,28 @@ class WatchView(
 
     private val cardRows = ArrayList<CardRow>()
 
+    /** Launcher shortcuts for the card's app (3.2.5), queried when the
+     *  card opens through [Shortcuts.forApp] — which returns nothing
+     *  unless Orbital holds shortcut-host permission (granted to the
+     *  default launcher), so on a phone where Orbital isn't Home yet
+     *  the section simply never appears. Icons are resolved alongside
+     *  so the draw pass never touches the package manager. */
+    private var cardShortcuts: List<ShortcutInfo> = emptyList()
+    private var cardShortcutIcons: List<Drawable?> = emptyList()
+    private val launcherApps: LauncherApps? by lazy {
+        runCatching { context.getSystemService(LauncherApps::class.java) }.getOrNull()
+    }
+
     private fun openCardMenu(item: GridItem, slot: Int, originX: Float, originY: Float, originR: Float) {
         cardItem = item
+        cardShortcuts = if (item is App) {
+            launcherApps?.let { Shortcuts.forApp(it, item.component, item.user) } ?: emptyList()
+        } else emptyList()
+        cardShortcutIcons = cardShortcuts.map { sc ->
+            runCatching {
+                launcherApps?.getShortcutIconDrawable(sc, context.resources.displayMetrics.densityDpi)
+            }.getOrNull()
+        }
         cardSlot = slot
         cardOriginX = originX
         cardOriginY = originY
@@ -632,6 +657,12 @@ class WatchView(
             invalidate()
         }
 
+    /** 3.2.5: while true, MainActivity leans [accent] toward the
+     *  wallpaper's primary colour (and keeps it leaned as the
+     *  wallpaper changes). The view itself only ever reads [accent]. */
+    var wallpaperTint: Boolean = true
+        set(v) { field = v; invalidate() }
+
     var autoFolders: Boolean = false
         set(v) {
             field = v
@@ -767,10 +798,20 @@ class WatchView(
         val id: Int,
         var anchorX: Float,
         var anchorY: Float,
-        val halfW: Float,
-        val halfH: Float,
+        halfW: Float,
+        halfH: Float,
         val label: String,
     ) {
+        /** Provider-derived half extents, before the user's resize. */
+        val baseHalfW = halfW
+        val baseHalfH = halfH
+        /** 3.2.5 island resize: a persisted per-island scale. Every
+         *  consumer reads [halfW]/[halfH], so this one multiplication
+         *  carries the resize into the draw loop, the slot solver,
+         *  the Force Field walls and the overview fit alike. */
+        var scale: Float = 1f
+        val halfW: Float get() = baseHalfW * scale
+        val halfH: Float get() = baseHalfH * scale
         var bitmap: android.graphics.Bitmap? = null
         val rect = RectF()
         /** Screen px per pitch unit at the last draw; converts drag
@@ -783,6 +824,31 @@ class WatchView(
     var onIslandTap: (Int) -> Unit = {}
     var onIslandMoved: (Int, Float, Float) -> Unit = { _, _, _ -> }
     var onIslandEditTap: (Int) -> Unit = {}
+    var onIslandResized: (Int, Float) -> Unit = { _, _ -> }
+    private var islandResizeId: Int? = null
+    private var islandResizeMoved = false
+    private var islandResizeStartScale = 1f
+    private var islandResizeStartDist = 0f
+    private var islandResizeCx = 0f
+    private var islandResizeCy = 0f
+    private val islandGripCenter = FloatArray(2)
+
+    /** The resize grip (3.2.5) sits on the tile's bottom-right
+     *  corner; draw and hit-test share this one placement. */
+    private fun gripCenterFor(slot: IslandSlot): FloatArray {
+        islandGripCenter[0] = slot.rect.right - dp(13f)
+        islandGripCenter[1] = slot.rect.bottom - dp(13f)
+        return islandGripCenter
+    }
+
+    private fun islandGripAt(x: Float, y: Float): IslandSlot? {
+        if (!islandsSupportedHere()) return null
+        val r = dp(18f)
+        return islands.lastOrNull { slot ->
+            !slot.rect.isEmpty &&
+                hypot(x - (slot.rect.right - dp(13f)), y - (slot.rect.bottom - dp(13f))) <= r
+        }
+    }
     private var islandDragId: Int? = null
     private var islandDragMoved = false
     private var islandPxPerUnit = 0f
@@ -1670,6 +1736,8 @@ class WatchView(
         CARD_DELETE_FOLDER -> "Delete Folder"
         CARD_LAUNCH -> "Open App"
         CARD_REMOVE_FROM_FOLDER -> "Remove from ${cardFolder?.label ?: "Folder"}"
+        in CARD_SHORTCUT_BASE until CARD_SHORTCUT_BASE + 4 ->
+            cardShortcuts.getOrNull(kind - CARD_SHORTCUT_BASE)?.shortLabel?.toString() ?: "Shortcut"
         else -> ""
     }
 
@@ -1692,6 +1760,13 @@ class WatchView(
     /** Runs one Context Card row. The card is already closing. */
     private fun runCardAction(kind: Int, item: GridItem, slot: Int) {
         performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+        // 3.2.5: a shortcut row launches the shortcut itself; the
+        // card is already closing (tap() closed it before dispatch).
+        if (kind >= CARD_SHORTCUT_BASE) {
+            val sc = cardShortcuts.getOrNull(kind - CARD_SHORTCUT_BASE)
+            if (sc != null) runCatching { launcherApps?.startShortcut(sc, null, null) }
+            return
+        }
         when (kind) {
             CARD_PIN -> if (slot >= 0) onPlaceItem(item, slot)
             CARD_UNPIN -> onUnpinItem(item)
@@ -1759,11 +1834,17 @@ class WatchView(
             drawGridItem(c, item, cardOriginX, cardOriginY, liftDia, a, cal, jiggle = false)
         }
 
-        // Card geometry: fixed width, one row per action.
+        // Card geometry: fixed width, one row per action. 3.2.5: an
+        // app whose shortcut query returned results gets a SHORTCUTS
+        // section on top (a slim header plus one row per shortcut);
+        // when the query came back empty the card is byte-for-byte
+        // the layout it always was.
         val kinds = cardKindsFor(item)
+        val scuts = if (item is App) cardShortcuts else emptyList()
         val rowH = dp(52f)
+        val headerH = if (scuts.isNotEmpty()) dp(27f) else 0f
         val cardW = minOf(w - dp(32f), dp(258f))
-        val cardH = rowH * kinds.size
+        val cardH = headerH + rowH * (kinds.size + scuts.size)
         val gap = dp(14f)
         var cardTop = if (cardOriginY + cardOriginR + gap + cardH <= h - bottomInset - dp(16f))
             cardOriginY + cardOriginR + gap
@@ -1783,18 +1864,60 @@ class WatchView(
         c.drawRoundRect(cardRect, dp(24f), dp(24f), stroke)
 
         // Rows: label left, glyph right (iOS style), hairline dividers,
-        // staggered fade-in; Remove App is the red last row.
+        // staggered fade-in; Remove App is the red last row. 3.2.5: the
+        // shortcut rows lead — section header, then icon + short label.
         cardRows.clear()
-        for ((i, kind) in kinds.withIndex()) {
+        var rowIdx = 0
+        var nextRowTop = cardTop
+        if (scuts.isNotEmpty()) {
+            text.textSize = sp(11f)
+            text.color = Color.argb((a * 170).toInt(), 168, 172, 182)
+            c.drawText("SHORTCUTS", cardLeft + dp(18f), cardTop + dp(18f), text)
+            nextRowTop += headerH
+        }
+        for ((si, sc) in scuts.withIndex()) {
             val pt = if (cardMenu.target > 0f)
-                ((now - cardOpenedMs - 40L - i * 35L) / 150f).coerceIn(0f, 1f)
+                ((now - cardOpenedMs - 40L - rowIdx * 35L) / 150f).coerceIn(0f, 1f)
             else 1f
             if (pt < 1f) motionAnimating = true
             val ra = a * Motion.easeOutCubic(pt)
-            val rowTop = cardTop + i * rowH
+            val rowRect = RectF(cardLeft, nextRowTop, cardLeft + cardW, nextRowTop + rowH)
+            cardRows += CardRow(CARD_SHORTCUT_BASE + si, rowRect)
+            if (rowIdx > 0) {
+                stroke.strokeWidth = dp(0.8f)
+                stroke.color = Color.argb((ra * 38).toInt(), 255, 255, 255)
+                c.drawLine(cardLeft + dp(16f), nextRowTop, cardLeft + cardW - dp(16f), nextRowTop, stroke)
+            }
+            val iconSize = dp(25f)
+            val icon = cardShortcutIcons.getOrNull(si)
+            if (icon != null) {
+                icon.alpha = (ra * 255).toInt().coerceIn(0, 255)
+                val ix = cardLeft + dp(15f)
+                val iy = rowRect.centerY() - iconSize / 2f
+                icon.setBounds(ix.toInt(), iy.toInt(), (ix + iconSize).toInt(), (iy + iconSize).toInt())
+                icon.draw(c)
+            } else {
+                fill.color = Color.argb((ra * 160).toInt(), 130, 138, 150)
+                c.drawCircle(cardLeft + dp(27f), rowRect.centerY(), dp(4f), fill)
+            }
+            text.textSize = sp(15f)
+            text.color = Color.argb((ra * 255).toInt(), 245, 245, 248)
+            val rawLab = sc.shortLabel?.toString() ?: sc.longLabel?.toString() ?: sc.id
+            val lab = TextUtils.ellipsize(rawLab, text, cardW - dp(64f), TextUtils.TruncateAt.END).toString()
+            c.drawText(lab, cardLeft + dp(52f), rowRect.centerY() + text.textSize * 0.36f, text)
+            nextRowTop += rowH
+            rowIdx++
+        }
+        for (kind in kinds) {
+            val pt = if (cardMenu.target > 0f)
+                ((now - cardOpenedMs - 40L - rowIdx * 35L) / 150f).coerceIn(0f, 1f)
+            else 1f
+            if (pt < 1f) motionAnimating = true
+            val ra = a * Motion.easeOutCubic(pt)
+            val rowTop = nextRowTop
             val rowRect = RectF(cardLeft, rowTop, cardLeft + cardW, rowTop + rowH)
             cardRows += CardRow(kind, rowRect)
-            if (i > 0) {
+            if (rowIdx > 0) {
                 stroke.strokeWidth = dp(0.8f)
                 stroke.color = Color.argb((ra * 38).toInt(), 255, 255, 255)
                 c.drawLine(cardLeft + dp(16f), rowTop, cardLeft + cardW - dp(16f), rowTop, stroke)
@@ -1809,6 +1932,8 @@ class WatchView(
             val g = cardGlyph(kind, item)
             text.color = if (danger) ink else Color.argb((ra * 210).toInt(), 235, 235, 240)
             c.drawText(g, cardLeft + cardW - dp(18f) - text.measureText(g), rowRect.centerY() + text.textSize * 0.36f, text)
+            nextRowTop += rowH
+            rowIdx++
         }
     }
 
@@ -3169,10 +3294,12 @@ class WatchView(
                         c.drawRoundRect(islandInset, rr, rr, stroke)
                     }
                     // 3.2.4: while this island is being dragged, ghost
-                    // the drop spot — an accent rim inflated past the
+                    // the landing spot — an accent rim inflated past the
                     // tile at its current anchor, so where it will
                     // land on release reads before letting go.
-                    if (islandDragId == slot.id && islandDragMoved) {
+                    if ((islandDragId == slot.id && islandDragMoved) ||
+                        (islandResizeId == slot.id && islandResizeMoved)
+                    ) {
                         val grow = dp(7f)
                         islandInset.set(slot.rect.left - grow, slot.rect.top - grow, slot.rect.right + grow, slot.rect.bottom + grow)
                         fill.color = withAlpha(accent, (aInt * 0.10f).toInt())
@@ -3180,6 +3307,26 @@ class WatchView(
                         stroke.strokeWidth = dp(2.6f)
                         stroke.color = withAlpha(accent, (aInt * 0.95f).toInt())
                         c.drawRoundRect(islandInset, rr + grow, rr + grow, stroke)
+                    }
+                    // 3.2.5: the edit-mode resize grip — a dark badge
+                    // with an accent diagonal on the tile's bottom-
+                    // right corner, the cluster cousin of the Widgets
+                    // page grip. Dragging it scales the island; a tap
+                    // cycles preset scales.
+                    if (editMode) {
+                        val gc = gripCenterFor(slot)
+                        val gr = dp(11f)
+                        fill.color = Color.argb((aInt * 0.92f).toInt(), 24, 28, 36)
+                        c.drawCircle(gc[0], gc[1], gr, fill)
+                        stroke.strokeWidth = dp(1.6f)
+                        stroke.color = withAlpha(accent, (aInt * 0.95f).toInt())
+                        c.drawCircle(gc[0], gc[1], gr, stroke)
+                        val gd = gr * 0.48f
+                        c.drawLine(gc[0] - gd, gc[1] + gd, gc[0] + gd, gc[1] - gd, stroke)
+                        c.drawLine(gc[0] + gd * 0.25f, gc[1] - gd, gc[0] + gd, gc[1] - gd, stroke)
+                        c.drawLine(gc[0] + gd, gc[1] - gd, gc[0] + gd, gc[1] - gd * 0.25f, stroke)
+                        c.drawLine(gc[0] - gd, gc[1] + gd, gc[0] - gd * 0.25f, gc[1] + gd, stroke)
+                        c.drawLine(gc[0] - gd, gc[1] + gd, gc[0] - gd, gc[1] + gd * 0.25f, stroke)
                     }
                 }
             }
@@ -4145,6 +4292,7 @@ class WatchView(
                 add(Triple(ClusterOption.PER_LAYOUT_PINS, "Per-Layout Pins", if (perLayoutPins) "Separate pins per layout" else "One pin set everywhere"))
                 add(Triple(ClusterOption.USAGE_GROWTH, "Usage Growth", if (usageGrowth) "Bubbles grow with use" else "Uniform bubble sizes"))
                 add(Triple(ClusterOption.CATEGORY_CLUSTERING, "Category Clustering", if (autoFolders) "Apps grouped into category folders" else "All apps loose"))
+                add(Triple(ClusterOption.WALLPAPER_TINT, "Wallpaper Tint", if (wallpaperTint) "Accent leans into your wallpaper" else "Accent stays as picked"))
             }
             if (sheetExpanded) {
                 add(Triple(null, "ACTIONS", ""))
@@ -4250,6 +4398,7 @@ class WatchView(
                 ClusterOption.PER_LAYOUT_PINS -> perLayoutPins
                 ClusterOption.USAGE_GROWTH -> usageGrowth
                 ClusterOption.CATEGORY_CLUSTERING -> autoFolders
+                ClusterOption.WALLPAPER_TINT -> wallpaperTint
                 ClusterOption.BLOOM_MODE -> bloomFolders
                 else -> null
             }
@@ -4657,6 +4806,17 @@ class WatchView(
                 c.drawCircle(cx + s * 0.14f, cy - s * 0.24f, q, stroke)
                 c.drawCircle(cx - s * 0.04f, cy + s * 0.18f, q, stroke)
                 c.drawCircle(cx + s * 0.28f, cy + s * 0.14f, q * 0.7f, stroke)
+            }
+            ClusterOption.WALLPAPER_TINT -> {
+                // A droplet: wallpaper colour, dripping onto the accent.
+                path.moveTo(cx, cy - s * 0.42f)
+                path.quadTo(cx + s * 0.34f, cy + s * 0.05f, cx + s * 0.30f, cy + s * 0.16f)
+                path.quadTo(cx + s * 0.24f, cy + s * 0.42f, cx, cy + s * 0.42f)
+                path.quadTo(cx - s * 0.24f, cy + s * 0.42f, cx - s * 0.30f, cy + s * 0.16f)
+                path.quadTo(cx - s * 0.34f, cy + s * 0.05f, cx, cy - s * 0.42f)
+                c.drawPath(path, stroke)
+                fill.color = color
+                c.drawCircle(cx - s * 0.07f, cy + s * 0.14f, s * 0.07f, fill)
             }
             ClusterOption.USAGE_GROWTH -> {
                 path.moveTo(cx - s * 0.42f, cy + s * 0.28f)
@@ -5339,8 +5499,28 @@ class WatchView(
                     val seg = dockSegs.firstOrNull { !it.isEmpty && it.contains(e.x, e.y) }
                     if (seg != null) { pressedRect = RectF(seg); pressedRadius = dp(24f) }
                 }
+                // The Context Card is the topmost layer: while it is
+                // open, touches belong to the card, so none of the
+                // edit-mode pickups below may start through it — a
+                // card row can overlay an island or a bubble, and the
+                // tap must reach tap()'s card handling on the way up.
+                // 3.2.5: in edit mode the island's corner grip starts
+                // a resize — checked before the body drag so the
+                // corner belongs to the grip, not the move.
+                if (!cardMenuOpen && editMode && modeAtDown == MODE_APPS && clusterSheet.target == 0f) {
+                    islandGripAt(e.x, e.y)?.let { slot ->
+                        islandResizeId = slot.id
+                        islandResizeMoved = false
+                        islandResizeStartScale = slot.scale
+                        islandResizeCx = slot.rect.centerX()
+                        islandResizeCy = slot.rect.centerY()
+                        islandResizeStartDist =
+                            hypot(e.x - islandResizeCx, e.y - islandResizeCy).coerceAtLeast(1f)
+                        return true
+                    }
+                }
                 // 3.2.0: in edit mode an island drag starts on the island.
-                if (editMode && modeAtDown == MODE_APPS && clusterSheet.target == 0f) {
+                if (!cardMenuOpen && editMode && modeAtDown == MODE_APPS && clusterSheet.target == 0f) {
                     islandAt(e.x, e.y)?.let {
                         islandDragId = it.id
                         islandDragMoved = false
@@ -5349,7 +5529,7 @@ class WatchView(
                 }
                 // Edit mode: touching a bubble picks it up immediately — the
                 // whole point is arranging without long-pressing each bubble.
-                if (editMode && modeAtDown == MODE_APPS && !edgeCrownDragging) {
+                if (!cardMenuOpen && editMode && modeAtDown == MODE_APPS && !edgeCrownDragging) {
                     hitEntryAt(e.x, e.y)?.let { h ->
                         val slot = if (h.slotIndex >= 0) h.slotIndex else activeGridItems.indexOfFirst { it.key == h.item.key }
                         if (canDragPlace(slot)) {
@@ -5363,6 +5543,21 @@ class WatchView(
             MotionEvent.ACTION_MOVE -> {
                 if (cardMenuOpen) return true
                 if (pinching) return true
+                if (islandResizeId != null) {
+                    val slot = islands.firstOrNull { it.id == islandResizeId }
+                    if (slot != null) {
+                        val dist = hypot(e.x - islandResizeCx, e.y - islandResizeCy)
+                        val next = IslandLayout.clampScale(
+                            islandResizeStartScale * dist / islandResizeStartDist
+                        )
+                        if (abs(next - islandResizeStartScale) > 0.03f) islandResizeMoved = true
+                        if (next != slot.scale) {
+                            slot.scale = next
+                            invalidate()
+                        }
+                    }
+                    return true
+                }
                 if (islandDragId != null) {
                     val slot = islands.firstOrNull { it.id == islandDragId }
                     val dragScale = slot?.dragScale?.takeIf { it > 0f } ?: islandPxPerUnit
@@ -5419,6 +5614,26 @@ class WatchView(
                     invalidate()
                     return true
                 }
+                if (islandResizeId != null) {
+                    val slot = islands.firstOrNull { it.id == islandResizeId }
+                    val id = islandResizeId
+                    islandResizeId = null
+                    dragging = false
+                    if (slot != null && id != null) {
+                        if (islandResizeMoved) {
+                            onIslandResized(id, slot.scale)
+                        } else {
+                            // A bare tap on the grip cycles preset
+                            // scales — the non-drag alternative, the
+                            // same pattern as the Widgets page handle.
+                            slot.scale = IslandLayout.nextPresetScale(slot.scale)
+                            performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                            onIslandResized(id, slot.scale)
+                        }
+                    }
+                    invalidate()
+                    return true
+                }
                 if (islandDragId != null) {
                     val slot = islands.firstOrNull { it.id == islandDragId }
                     val id = islandDragId
@@ -5461,6 +5676,10 @@ class WatchView(
                 pinching = false
                 edgeCrownDragging = false
                 islandDragId = null
+                if (islandResizeId != null) {
+                    islands.firstOrNull { it.id == islandResizeId }?.scale = islandResizeStartScale
+                    islandResizeId = null
+                }
                 placeItem = null
                 placeHoverSlot = -1
                 placeMoved = false
@@ -6056,6 +6275,8 @@ class WatchView(
         const val CARD_DELETE_FOLDER = 8
         const val CARD_LAUNCH = 9
         const val CARD_REMOVE_FROM_FOLDER = 10
+        /** Shortcut rows are CARD_SHORTCUT_BASE + shortcut index (0..3). */
+        const val CARD_SHORTCUT_BASE = 100
         const val DOCK_CLUSTER = 0
         const val DOCK_WIDGETS = 1
         const val DOCK_SETTINGS = 2

@@ -69,6 +69,8 @@ import dev.watchreborn.apps.WidgetKind
 import dev.watchreborn.ui.CardAction
 import dev.watchreborn.ui.ClusterOption
 import dev.watchreborn.ui.ClusterTopology
+import dev.watchreborn.ui.IslandLayout
+import dev.watchreborn.ui.TintMath
 import dev.watchreborn.ui.FaceInfo
 import dev.watchreborn.ui.Metrics
 import dev.watchreborn.ui.WatchView
@@ -91,6 +93,7 @@ class MainActivity : Activity(), SensorEventListener {
     private var islandContainer: FrameLayout? = null
     private val islandViews = mutableMapOf<Int, AppWidgetHostView>()
     private val islandSlots = mutableMapOf<Int, WatchView.IslandSlot>()
+    private var wallpaperListener: android.app.WallpaperManager.OnColorsChangedListener? = null
     private var islandPod: FrameLayout? = null
     private var islandPodId: Int? = null
     private var addTargetIsland = false
@@ -151,7 +154,8 @@ class MainActivity : Activity(), SensorEventListener {
             onQuickUninstall = ::quickUninstall,
             onTopoViewSaved = ::handleTopoViewSaved,
         )
-        view.accent = prefs.getInt(KEY_ACCENT, ACCENTS[0].second)
+        view.wallpaperTint = prefs.getBoolean(KEY_WALLPAPER_TINT, true)
+        refreshAccent()
         view.autoFolders = prefs.getBoolean(KEY_FOLDERS, false) // 3.0.3: fresh installs start all-loose (Matt); a stored pref still wins
         view.bloomFolders = prefs.getBoolean(KEY_BLOOM, true)
         view.fixedNeighborhoods = prefs.getBoolean(KEY_FIXED_NEIGHBORHOODS, true)
@@ -186,6 +190,7 @@ class MainActivity : Activity(), SensorEventListener {
             prefs.edit().putFloat(islandKey(id, "ax"), ax).putFloat(islandKey(id, "ay"), ay).apply()
         }
         view.onIslandEditTap = { id -> showIslandMenu(id) }
+        view.onIslandResized = { id, scale -> applyIslandScale(id, scale) }
         IslandAwareHostView.widgetUpdateHook = { id ->
             if (id in islandViews) scheduleIslandSnapshot(id)
         }
@@ -234,6 +239,13 @@ class MainActivity : Activity(), SensorEventListener {
         }
 
         launcherApps.registerCallback(appsChanged)
+        // 3.2.5: when the wallpaper changes, its colours do too — retint live.
+        val wpListener = android.app.WallpaperManager.OnColorsChangedListener { _, _ -> refreshAccent() }
+        wallpaperListener = wpListener
+        runCatching {
+            android.app.WallpaperManager.getInstance(this)
+                .addOnColorsChangedListener(wpListener, android.os.Handler(android.os.Looper.getMainLooper()))
+        }
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         loadIslands()
         reload()
@@ -556,6 +568,10 @@ class MainActivity : Activity(), SensorEventListener {
         nowPlaying.stop()
         runCatching { sensorManager?.unregisterListener(this) }
         launcherApps.unregisterCallback(appsChanged)
+        wallpaperListener?.let { l ->
+            runCatching { android.app.WallpaperManager.getInstance(this).removeOnColorsChangedListener(l) }
+            wallpaperListener = null
+        }
         unregisterReceiver(batteryReceiver)
         loader.shutdownNow()
         super.onDestroy()
@@ -652,6 +668,42 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     /** Persists one design's pan/zoom as it's left (see 1.11.0/1.11.1). */
+    /** 3.2.5: the effective accent — the picked colour, leaned
+     *  toward the system wallpaper's primary colour while Wallpaper
+     *  Tint is on. Falls back to the plain pick whenever wallpaper
+     *  colours are unavailable. */
+    private fun refreshAccent() {
+        val base = prefs.getInt(KEY_ACCENT, ACCENTS[0].second)
+        val primary = if (view.wallpaperTint) runCatching {
+            android.app.WallpaperManager.getInstance(this)
+                .getWallpaperColors(android.app.WallpaperManager.FLAG_SYSTEM)
+                ?.primaryColor?.toArgb()
+        }.getOrNull() else null
+        view.accent = if (primary != null) TintMath.blend(base, primary) else base
+    }
+
+    /** 3.2.5: an island was resized on the cluster — persist the
+     *  scale, resize the hosted widget so its snapshot re-renders at
+     *  the new size, and re-run fit-first placement so a grown tile
+     *  can't hang off the field. */
+    private fun applyIslandScale(id: Int, scale: Float) {
+        val clamped = IslandLayout.clampScale(scale)
+        prefs.edit().putFloat(islandKey(id, "scale"), clamped).apply()
+        islandSlots[id]?.let { it.scale = clamped }
+        val info = appWidgetManager.getAppWidgetInfo(id)
+        val hv = islandViews[id]
+        if (info != null && hv != null) {
+            val (baseW, baseH) = islandTileDp(info)
+            val wDp = (baseW * clamped).toInt().coerceIn(108, 756)
+            val hDp = (baseH * clamped).toInt().coerceIn(66, 540)
+            val dens = resources.displayMetrics.density
+            hv.layoutParams = FrameLayout.LayoutParams((wDp * dens).toInt(), (hDp * dens).toInt())
+            sendIslandSize(id, wDp, hDp)
+            hv.post { snapshotIsland(id) }
+        }
+        pushIslandsToView()
+    }
+
     private fun handleTopoViewSaved(topo: ClusterTopology, x: Float, y: Float, zoom: Float) {
         prefs.edit()
             .putFloat("topoview:${topo.name}:x", x)
@@ -695,6 +747,12 @@ class MainActivity : Activity(), SensorEventListener {
                 val next = !view.autoFolders
                 prefs.edit().putBoolean(KEY_FOLDERS, next).apply()
                 view.autoFolders = next
+            }
+            ClusterOption.WALLPAPER_TINT -> {
+                val next = !view.wallpaperTint
+                prefs.edit().putBoolean(KEY_WALLPAPER_TINT, next).apply()
+                view.wallpaperTint = next
+                refreshAccent()
             }
             ClusterOption.CONSTELLATION_SEARCH -> {
                 view.startConstellationSearch()
@@ -1711,7 +1769,11 @@ class MainActivity : Activity(), SensorEventListener {
     private fun createIslandView(id: Int, info: AppWidgetProviderInfo) {
         val bin = islandContainer ?: return
         val hv = appWidgetHost.createView(this, id, info)
-        val (wDp, hDp) = islandTileDp(info)
+        val (baseW, baseH) = islandTileDp(info)
+        // 3.2.5: a resized island keeps its scale across restarts.
+        val scale0 = IslandLayout.clampScale(prefs.getFloat(islandKey(id, "scale"), 1f))
+        val wDp = (baseW * scale0).toInt().coerceIn(108, 756)
+        val hDp = (baseH * scale0).toInt().coerceIn(66, 540)
         val dens = resources.displayMetrics.density
         hv.layoutParams = FrameLayout.LayoutParams((wDp * dens).toInt(), (hDp * dens).toInt())
         bin.addView(hv)
@@ -1734,7 +1796,9 @@ class MainActivity : Activity(), SensorEventListener {
                     halfW = ((wDp * dens) / hexPx / 2f).coerceIn(0.75f, 1.60f),
                     halfH = ((hDp * dens) / hexPx / 2f).coerceIn(0.45f, 1.20f),
                     label = info?.loadLabel(packageManager)?.toString() ?: "Widget",
-                )
+                ).also { slot ->
+                    slot.scale = IslandLayout.clampScale(prefs.getFloat(islandKey(id, "scale"), 1f))
+                }
             }
         }
         // 3.2.2 fit-first placement: an island's anchor is pulled in
@@ -1855,7 +1919,11 @@ class MainActivity : Activity(), SensorEventListener {
         val hv = islandViews[id] ?: return
         val info = appWidgetManager.getAppWidgetInfo(id) ?: return
         closeIslandPod()
-        val (wDp, hDp) = islandTileDp(info)
+        // 3.2.5: the pod's "tile size" is the tile as resized.
+        val (tileW, tileH) = islandTileDp(info)
+        val podScale = islandSlots[id]?.scale ?: 1f
+        val wDp = (tileW * podScale).toInt().coerceIn(108, 756)
+        val hDp = (tileH * podScale).toInt().coerceIn(66, 540)
         val dens = resources.displayMetrics.density
         val screenWDp = (resources.displayMetrics.widthPixels / dens).toInt()
         val podW = minOf(wDp * 2, screenWDp - 32).coerceAtLeast(120)
@@ -1935,7 +2003,12 @@ class MainActivity : Activity(), SensorEventListener {
                 if (hv != null && bin != null && card != null && hv.parent === card) {
                     card.removeView(hv)
                     val info = appWidgetManager.getAppWidgetInfo(id)
-                    val (wDp, hDp) = if (info != null) islandTileDp(info) else (300 to 160)
+                    val (baseW2, baseH2) = if (info != null) islandTileDp(info) else (300 to 160)
+                    // 3.2.5: the resize scale survives the pod round-trip.
+                    val sc = islandSlots[id]?.scale
+                        ?: IslandLayout.clampScale(prefs.getFloat(islandKey(id, "scale"), 1f))
+                    val wDp = (baseW2 * sc).toInt().coerceIn(108, 756)
+                    val hDp = (baseH2 * sc).toInt().coerceIn(66, 540)
                     val dens = resources.displayMetrics.density
                     hv.layoutParams = FrameLayout.LayoutParams((wDp * dens).toInt(), (hDp * dens).toInt())
                     bin.addView(hv)
@@ -1997,7 +2070,8 @@ class MainActivity : Activity(), SensorEventListener {
         islandSlots.remove(id)?.bitmap?.recycle()
         runCatching { appWidgetHost.deleteAppWidgetId(id) }
         saveIslandIds(savedIslandIds() - id)
-        prefs.edit().remove(islandKey(id, "ax")).remove(islandKey(id, "ay")).apply()
+        prefs.edit().remove(islandKey(id, "ax")).remove(islandKey(id, "ay"))
+            .remove(islandKey(id, "scale")).apply()
         pushIslandsToView()
         Toast.makeText(this, "Island removed", Toast.LENGTH_SHORT).show()
     }
@@ -2037,6 +2111,7 @@ class MainActivity : Activity(), SensorEventListener {
         const val KEY_CLUSTER_TOPOLOGY = "cluster_topology"
         const val KEY_PER_LAYOUT_PINS = "per_layout_pins"
         const val KEY_USAGE_GROWTH = "usage_growth"
+        const val KEY_WALLPAPER_TINT = "wallpaper_tint"
         const val KEY_HINTS_SEEN = "hints_seen"
         const val KEY_APPWIDGET_IDS = "appwidget_ids"
         const val KEY_ISLAND_IDS = "island_ids"

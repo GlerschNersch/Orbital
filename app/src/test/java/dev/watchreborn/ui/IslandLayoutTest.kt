@@ -131,6 +131,26 @@ class IslandLayoutTest {
         assertEquals("lower right", IslandLayout.positionName(0.76f, 0.76f))
     }
 
+    @Test fun clampScaleKeepsTheResizeRange() {
+        assertEquals(1.0f, IslandLayout.clampScale(1.0f), 0.001f)
+        assertEquals(0.6f, IslandLayout.clampScale(0.2f), 0.001f)
+        assertEquals(1.8f, IslandLayout.clampScale(4.0f), 0.001f)
+        assertEquals(0.6f, IslandLayout.clampScale(0.6f), 0.001f)
+        assertEquals(1.8f, IslandLayout.clampScale(1.8f), 0.001f)
+        // A corrupt persisted value heals to neutral instead of NaN-ing the field.
+        assertEquals(1.0f, IslandLayout.clampScale(Float.NaN), 0.001f)
+    }
+
+    @Test fun nextPresetScaleCyclesUpwardAndWraps() {
+        assertEquals(0.8f, IslandLayout.nextPresetScale(0.6f), 0.001f)
+        assertEquals(1.0f, IslandLayout.nextPresetScale(0.8f), 0.001f)
+        assertEquals(1.3f, IslandLayout.nextPresetScale(1.0f), 0.001f)
+        assertEquals(1.6f, IslandLayout.nextPresetScale(1.3f), 0.001f)
+        assertEquals(0.8f, IslandLayout.nextPresetScale(1.6f), 0.001f)
+        // A free-dragged scale advances to the next preset above it.
+        assertEquals(1.3f, IslandLayout.nextPresetScale(1.12f), 0.001f)
+    }
+
     @Test fun gravityScaleKeepsAssignmentsUniqueAndClear() {
         val homes = Hex.spiral(91)
         val radii = FloatArray(91) { i -> if (i == 0) 0.80f else 0.58f }

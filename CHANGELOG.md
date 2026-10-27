@@ -1,5 +1,31 @@
 # Changelog
 
+## 3.2.5 — 2026-10-27
+- **App shortcuts in the Context Card.** When the card opens for an
+  app, the app's own launcher shortcuts now lead the card in a
+  SHORTCUTS section — real shortcut icon and label, tap to launch.
+  Android grants shortcut access to the default Home app, so the
+  section appears once Orbital is set as Home; until then the card
+  is exactly what it was, with no dead rows.
+- **Wallpaper Tint.** New Settings → More Options → Behavior switch
+  (on by default): the cluster accent leans toward the system
+  wallpaper's primary colour, so bubble rims, the header pill,
+  island rims and switches feel cut from the same cloth as the home
+  screen — and it re-tints live when the wallpaper changes. Switch
+  it off and the accent is exactly the picked colour again.
+- **Island resize on the cluster.** In edit mode every widget island
+  gets a corner grip: drag it to scale the island (0.6×–1.8×), or
+  tap it to cycle preset sizes (0.8 / 1.0 / 1.3 / 1.6). The scale is
+  per-island and persists, the hosted widget itself re-renders at
+  the new size, and fit-first placement re-runs so a grown tile
+  never hangs off the field — bubbles, solver and overview all see
+  the resized tile.
+- **Context Card touch fix** (found verifying the shortcuts
+  section): with the card open, a tap on a row that happened to
+  overlay an island or a bubble could start an edit-mode drag
+  *through* the card instead of running the row. While the card is
+  open, touches now belong to the card.
+
 ## 3.2.4 — 2026-10-27
 - **Islands speak TalkBack.** Widget islands now appear in the
   accessibility tree — before this they had no node at all, so a

@@ -149,4 +149,25 @@ object IslandLayout {
             else -> "$v $h"
         }
     }
+
+    // ── Island resize (3.2.5) ─────────────────────────────────────
+    // A resized island persists one scale factor; the slot's half
+    // extents are the base extents times this scale, so every
+    // consumer (draw, solver, walls, overview fit) sees the resize.
+
+    const val MIN_ISLAND_SCALE = 0.6f
+    const val MAX_ISLAND_SCALE = 1.8f
+
+    /** Grip-tap presets, ascending; the cycle wraps to the first. */
+    val ISLAND_SCALE_PRESETS = floatArrayOf(0.8f, 1.0f, 1.3f, 1.6f)
+
+    fun clampScale(scale: Float): Float =
+        if (scale.isNaN()) 1f else scale.coerceIn(MIN_ISLAND_SCALE, MAX_ISLAND_SCALE)
+
+    /** The next preset above [current] (with a small dead zone so a
+     *  scale already sitting on a preset advances), wrapping around. */
+    fun nextPresetScale(current: Float): Float {
+        for (p in ISLAND_SCALE_PRESETS) if (p > current + 0.05f) return p
+        return ISLAND_SCALE_PRESETS.first()
+    }
 }
