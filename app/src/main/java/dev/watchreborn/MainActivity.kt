@@ -785,8 +785,17 @@ class MainActivity : Activity(), SensorEventListener {
             }
             ControlAction.LOCK -> {
                 if (!TurnOffService.perform(AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN)) {
-                    Toast.makeText(this, "Enable Orbital in Accessibility to lock screen", Toast.LENGTH_SHORT).show()
-                    runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                    // Prominent disclosure (Play Accessibility policy): say
+                    // plainly what the single-purpose service does BEFORE
+                    // sending the user to enable it.
+                    android.app.AlertDialog.Builder(this)
+                        .setTitle("Lock the screen with Orbital?")
+                        .setMessage("Orbital's Lock button uses an accessibility service for one thing only: locking the screen when you tap it. The service cannot read your screen, does not watch what you do, and collects nothing.\n\nOn the next screen, switch on \u201cOrbital\u201d to allow it.")
+                        .setPositiveButton("Accessibility settings") { _, _ ->
+                            runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                        }
+                        .setNegativeButton("Not now", null)
+                        .show()
                 }
             }
             ControlAction.NOTIFICATIONS -> {

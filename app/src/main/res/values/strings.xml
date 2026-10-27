@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Orbital</string>
-    <string name="turn_off_desc">Allows Orbital Control Center to lock the screen.</string>
+    <string name="turn_off_desc">Lets Orbital\'s Control Center lock the screen when you tap Lock. Orbital does not read screen content or collect any data with this service.</string>
 </resources>

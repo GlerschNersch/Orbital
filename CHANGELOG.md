@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.9.3 — 2026-10-26
+
+Accessibility disclosure for the Play submission (Matt's call: TurnOff stays in the Play build, declaration filed). Tapping Lock in Control Center without the service enabled now shows a prominent disclosure first — the accessibility service exists for one thing only (locking the screen on tap), cannot read screen content, watches nothing, collects nothing — and only then opens Accessibility Settings. The service's own description shown on Android's enable screen says the same in full. Previously a short toast sent users straight to Settings.
+
 ## 2.9.2 — 2026-10-26
 
 Google Play prep (code side). A real app icon at last: the stock Android system icon is replaced by an adaptive icon of the bubble cluster itself — a blue centre bubble ringed by six coloured bubbles on near-black, with a monochrome layer for themed icons — plus a matching 512×512 store icon under `store-assets/`. Permission trim: `REQUEST_DELETE_PACKAGES` removed — uninstall has always used the system `ACTION_DELETE` confirmation and never the PackageInstaller API, so the sensitive permission was dead weight (every other declared permission is genuinely used: status-bar expansion, Wi-Fi/Bluetooth state for Control Center, step counter). Release builds now minify and shrink resources (bundle 816 KB → 293 KB), with the minified build smoke-tested on the emulator — cluster, Widgets, Settings, and the notification peek all working — before shipping.
