@@ -71,7 +71,6 @@ import dev.watchreborn.ui.ClusterOption
 import dev.watchreborn.ui.ClusterTopology
 import dev.watchreborn.ui.IslandLayout
 import dev.watchreborn.ui.LayoutBackup
-import dev.watchreborn.ui.TintMath
 import dev.watchreborn.ui.FaceInfo
 import dev.watchreborn.ui.Metrics
 import dev.watchreborn.ui.WatchView
@@ -94,7 +93,6 @@ class MainActivity : Activity(), SensorEventListener {
     private var islandContainer: FrameLayout? = null
     private val islandViews = mutableMapOf<Int, AppWidgetHostView>()
     private val islandSlots = mutableMapOf<Int, WatchView.IslandSlot>()
-    private var wallpaperListener: android.app.WallpaperManager.OnColorsChangedListener? = null
     private var islandPod: FrameLayout? = null
     private var islandPodId: Int? = null
     private var addTargetIsland = false
@@ -155,7 +153,6 @@ class MainActivity : Activity(), SensorEventListener {
             onQuickUninstall = ::quickUninstall,
             onTopoViewSaved = ::handleTopoViewSaved,
         )
-        view.wallpaperTint = prefs.getBoolean(KEY_WALLPAPER_TINT, true)
         refreshAccent()
         view.autoFolders = prefs.getBoolean(KEY_FOLDERS, false) // 3.0.3: fresh installs start all-loose (Matt); a stored pref still wins
         view.bloomFolders = prefs.getBoolean(KEY_BLOOM, true)
@@ -240,13 +237,6 @@ class MainActivity : Activity(), SensorEventListener {
         }
 
         launcherApps.registerCallback(appsChanged)
-        // 3.2.5: when the wallpaper changes, its colours do too — retint live.
-        val wpListener = android.app.WallpaperManager.OnColorsChangedListener { _, _ -> refreshAccent() }
-        wallpaperListener = wpListener
-        runCatching {
-            android.app.WallpaperManager.getInstance(this)
-                .addOnColorsChangedListener(wpListener, android.os.Handler(android.os.Looper.getMainLooper()))
-        }
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         loadIslands()
         reload()
@@ -569,10 +559,6 @@ class MainActivity : Activity(), SensorEventListener {
         nowPlaying.stop()
         runCatching { sensorManager?.unregisterListener(this) }
         launcherApps.unregisterCallback(appsChanged)
-        wallpaperListener?.let { l ->
-            runCatching { android.app.WallpaperManager.getInstance(this).removeOnColorsChangedListener(l) }
-            wallpaperListener = null
-        }
         unregisterReceiver(batteryReceiver)
         loader.shutdownNow()
         super.onDestroy()
@@ -669,18 +655,11 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     /** Persists one design's pan/zoom as it's left (see 1.11.0/1.11.1). */
-    /** 3.2.5: the effective accent — the picked colour, leaned
-     *  toward the system wallpaper's primary colour while Wallpaper
-     *  Tint is on. Falls back to the plain pick whenever wallpaper
-     *  colours are unavailable. */
+    /** The accent is the picked colour, full stop. (Wallpaper
+     *  Tint, added in 3.2.5, was removed in 3.4.0 at Matt's call:
+     *  the accent no longer leans toward the wallpaper.) */
     private fun refreshAccent() {
-        val base = prefs.getInt(KEY_ACCENT, ACCENTS[0].second)
-        val primary = if (view.wallpaperTint) runCatching {
-            android.app.WallpaperManager.getInstance(this)
-                .getWallpaperColors(android.app.WallpaperManager.FLAG_SYSTEM)
-                ?.primaryColor?.toArgb()
-        }.getOrNull() else null
-        view.accent = if (primary != null) TintMath.blend(base, primary) else base
+        view.accent = prefs.getInt(KEY_ACCENT, ACCENTS[0].second)
     }
 
     /** 3.2.5: an island was resized on the cluster — persist the
@@ -748,12 +727,6 @@ class MainActivity : Activity(), SensorEventListener {
                 val next = !view.autoFolders
                 prefs.edit().putBoolean(KEY_FOLDERS, next).apply()
                 view.autoFolders = next
-            }
-            ClusterOption.WALLPAPER_TINT -> {
-                val next = !view.wallpaperTint
-                prefs.edit().putBoolean(KEY_WALLPAPER_TINT, next).apply()
-                view.wallpaperTint = next
-                refreshAccent()
             }
             ClusterOption.CONSTELLATION_SEARCH -> {
                 view.startConstellationSearch()
@@ -2237,7 +2210,6 @@ class MainActivity : Activity(), SensorEventListener {
         const val KEY_CLUSTER_TOPOLOGY = "cluster_topology"
         const val KEY_PER_LAYOUT_PINS = "per_layout_pins"
         const val KEY_USAGE_GROWTH = "usage_growth"
-        const val KEY_WALLPAPER_TINT = "wallpaper_tint"
         const val KEY_HINTS_SEEN = "hints_seen"
         const val KEY_APPWIDGET_IDS = "appwidget_ids"
         const val KEY_ISLAND_IDS = "island_ids"

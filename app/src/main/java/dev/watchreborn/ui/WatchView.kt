@@ -70,7 +70,6 @@ enum class ClusterOption {
     PER_LAYOUT_PINS,
     USAGE_GROWTH,
     CATEGORY_CLUSTERING,
-    WALLPAPER_TINT,
     BLOOM_MODE,
     CONSTELLATION_SEARCH,
     FIXED_NEIGHBORHOODS,
@@ -491,6 +490,240 @@ class WatchView(
     private val glidePosFolder = HashMap<String, FloatArray>()
     private val glideTmp = FloatArray(2)
 
+    // ── 3.4.0 Topology morph ────────────────────────────────────
+    // A topology switch used to teleport every bubble: the position
+    // glide above snaps any jump past ~4.5 pitches, and a layout
+    // switch moves most bubbles much further than that. The morph
+    // captures where every item currently sits, where the new
+    // layout wants it, and flies the set over one ~650 ms envelope
+    // with a centre-out stagger and a spring-eased overshoot
+    // (MorphMath). Positions are captured and flown in
+    // pitch-normalised world units (world px / the frame's
+    // basePitch), so pan, zoom and the fisheye keep applying on
+    // top exactly as they do for the glide. Physics destinations
+    // (Force Field, Liquid Pool) are seeded at the captured starts
+    // instead of tweened — their own springs and collisions
+    // finish the trip.
+    private var morphActive = false
+    private var morphStartMs = 0L
+    private var morphCount = 0
+    private var morphStartX = FloatArray(0)
+    private var morphStartY = FloatArray(0)
+    private var morphTargetX = FloatArray(0)
+    private var morphTargetY = FloatArray(0)
+    private var morphDelayMs = FloatArray(0)
+    private var morphKeys = arrayOfNulls<String>(0)
+    /** The basePitch the captured starts were normalised by; pool
+     *  bodies live in raw px, so seeding one needs the way back. */
+    private var morphPitchRef = 1f
+    /** The basePitch of the most recent drawGrid pass. */
+    private var lastBasePitch = 0f
+    private val morphIslandFrom = HashMap<Int, RectF>()
+    private val morphIslandDelayMs = HashMap<Int, Float>()
+    private val morphTmp = FloatArray(2)
+
+    private fun ensureMorphCapacity(count: Int) {
+        if (morphStartX.size >= count) return
+        val cap = count + 16
+        morphStartX = morphStartX.copyOf(cap)
+        morphStartY = morphStartY.copyOf(cap)
+        morphTargetX = morphTargetX.copyOf(cap)
+        morphTargetY = morphTargetY.copyOf(cap)
+        morphDelayMs = morphDelayMs.copyOf(cap)
+        morphKeys = morphKeys.copyOf(cap)
+    }
+
+    /** Eased flight value of morph item [i] at [elapsedMs]: 0
+     *  before its stagger delay, exactly 1 once its flight is done. */
+    private fun morphEaseAt(i: Int, elapsedMs: Float): Float {
+        val p = MorphMath.progress(elapsedMs, morphDelayMs[i])
+        return if (p >= 1f) 1f else MorphMath.ease(p)
+    }
+
+    /**
+     * Captures the current rendered position of every item into the
+     * morph start arrays, in pitch-normalised world units. Sources,
+     * best first: an in-flight morph's own interpolation (a second
+     * switch mid-flight re-launches from where the bubbles are, not
+     * from either layout), Force Field's live bodies, the pool's
+     * live bodies, then the position glide's map (what the last
+     * frame actually drew), and finally the outgoing layout's own
+     * math. Must run while [clusterTopology] is still [fromTopo]:
+     * the island solver keys off it.
+     */
+    private fun captureMorphStarts(items: List<GridItem>, fromTopo: ClusterTopology) {
+        val n = items.size
+        ensureMorphCapacity(n)
+        morphCount = n
+        val pRef = lastBasePitch.takeIf { it > 0f } ?: (Metrics.GRID_PITCH * unit * 1.10f)
+        morphPitchRef = pRef
+        val elapsed = (SystemClock.uptimeMillis() - morphStartMs).toFloat()
+        when (fromTopo) {
+            ClusterTopology.FORCE_FIELD -> {
+                ensureForceCapacity(n)
+                for (i in 0 until n) {
+                    if (!ffSeeded[i]) seedForceSlot(i)
+                    morphStartX[i] = ffPosX[i]
+                    morphStartY[i] = ffPosY[i]
+                }
+            }
+            ClusterTopology.LIQUID_POOL -> {
+                ensurePoolCapacity(n, Metrics.GRID_PITCH * unit)
+                for (i in 0 until n) {
+                    morphStartX[i] = poolPosX[i] / pRef
+                    morphStartY[i] = poolPosY[i] / pRef
+                }
+            }
+            else -> {
+                val assigned = if ((fromTopo == ClusterTopology.HONEYCOMB ||
+                        fromTopo == ClusterTopology.GRAVITY) && islands.isNotEmpty()
+                ) islandAssignedHexes(items) else null
+                for (i in 0 until n) {
+                    if (morphActive && i < morphKeys.size && morphKeys[i] == items[i].key) {
+                        val e = morphEaseAt(i, elapsed)
+                        morphStartX[i] = morphStartX[i] + (morphTargetX[i] - morphStartX[i]) * e
+                        morphStartY[i] = morphStartY[i] + (morphTargetY[i] - morphStartY[i]) * e
+                    } else {
+                        val g = glidePosGrid[items[i].key]
+                        if (g != null) {
+                            morphStartX[i] = g[0] / pRef
+                            morphStartY[i] = g[1] / pRef
+                        } else {
+                            computeTopologyWorldPos(fromTopo, i, n, 1f, morphTmp)
+                            if (assigned != null && i in assigned.indices) {
+                                pointyCenter(
+                                    assigned[i],
+                                    if (fromTopo == ClusterTopology.GRAVITY) 1.10f else 1f,
+                                    morphTmp,
+                                )
+                            }
+                            morphStartX[i] = morphTmp[0]
+                            morphStartY[i] = morphTmp[1]
+                        }
+                    }
+                }
+            }
+        }
+        for (i in 0 until n) morphKeys[i] = items[i].key
+    }
+
+    /** Captures each island's last drawn rect for the tile glide
+     *  (screen space: the old rect is what the user actually saw). */
+    private fun captureMorphIslands() {
+        morphIslandFrom.clear()
+        morphIslandDelayMs.clear()
+        if (islands.isEmpty() || width == 0 || height == 0) return
+        val cxS = width / 2f
+        val cyS = height / 2f
+        val maxD = hypot(cxS, cyS).coerceAtLeast(1f)
+        for (slot in islands) {
+            if (slot.rect.isEmpty) continue
+            morphIslandFrom[slot.id] = RectF(slot.rect)
+            val dNorm = hypot(slot.rect.centerX() - cxS, slot.rect.centerY() - cyS) / maxD
+            morphIslandDelayMs[slot.id] = MorphMath.delayFor(dNorm)
+        }
+    }
+
+    /**
+     * Second half of a topology switch, run once [clusterTopology]
+     * is the new layout, with the starts captured. Physics
+     * destinations are seeded at the starts (zero velocity) and
+     * settle under their own simulation; every other destination
+     * computes targets and arms the morph. Returns true when any
+     * motion was set in flight — the caller then closes the
+     * Settings sheet so the flight can actually be seen.
+     */
+    private fun beginMorph(items: List<GridItem>, toTopo: ClusterTopology): Boolean {
+        val n = items.size
+        when (toTopo) {
+            ClusterTopology.FORCE_FIELD -> {
+                ensureForceCapacity(n)
+                for (i in 0 until n) {
+                    ffPosX[i] = morphStartX[i]
+                    ffPosY[i] = morphStartY[i]
+                    ffVelX[i] = 0f
+                    ffVelY[i] = 0f
+                    ffSeeded[i] = true
+                }
+                morphActive = false
+                return true
+            }
+            ClusterTopology.LIQUID_POOL -> {
+                ensurePoolCapacity(n, Metrics.GRID_PITCH * unit)
+                for (i in 0 until n) {
+                    poolPosX[i] = morphStartX[i] * morphPitchRef
+                    poolPosY[i] = morphStartY[i] * morphPitchRef
+                    poolVelX[i] = 0f
+                    poolVelY[i] = 0f
+                }
+                morphActive = false
+                return true
+            }
+            else -> {
+                val assigned = if ((toTopo == ClusterTopology.HONEYCOMB ||
+                        toTopo == ClusterTopology.GRAVITY) && islands.isNotEmpty()
+                ) islandAssignedHexes(items) else null
+                var maxD = 0f
+                for (i in 0 until n) {
+                    computeTopologyWorldPos(toTopo, i, n, 1f, morphTmp)
+                    if (assigned != null && i in assigned.indices) {
+                        pointyCenter(
+                            assigned[i],
+                            if (toTopo == ClusterTopology.GRAVITY) 1.10f else 1f,
+                            morphTmp,
+                        )
+                    }
+                    morphTargetX[i] = morphTmp[0]
+                    morphTargetY[i] = morphTmp[1]
+                    val d = hypot(morphTmp[0], morphTmp[1])
+                    if (d > maxD) maxD = d
+                }
+                var anyFly = false
+                for (i in 0 until n) {
+                    morphDelayMs[i] = MorphMath.delayFor(
+                        if (maxD > 1e-3f) hypot(morphTargetX[i], morphTargetY[i]) / maxD else 0f,
+                    )
+                    if (!MorphMath.shouldSkip(
+                            MorphMath.distance(morphStartX[i], morphStartY[i], morphTargetX[i], morphTargetY[i])
+                        )
+                    ) anyFly = true
+                }
+                morphActive = anyFly
+                return anyFly || morphIslandFrom.isNotEmpty()
+            }
+        }
+    }
+
+    /** True when the live item set no longer matches the capture. */
+    private fun morphItemSetChanged(items: List<GridItem>): Boolean {
+        if (items.size != morphCount) return true
+        for (i in items.indices) if (morphKeys[i] != items[i].key) return true
+        return false
+    }
+
+    /**
+     * Lands a morph where it was headed: every item's glide entry
+     * jumps to its target and the normal glide takes over from
+     * there. Called on ACTION_DOWN (a touch must never fight a
+     * half-flown field) and when the item set changes mid-flight.
+     */
+    private fun finishMorph() {
+        if (morphActive) {
+            val items = activeGridItems
+            val p = lastBasePitch.takeIf { it > 0f } ?: morphPitchRef
+            val n = minOf(items.size, morphCount)
+            for (i in 0 until n) {
+                if (morphKeys[i] != items[i].key) continue
+                val g = glidePosGrid.getOrPut(items[i].key) { floatArrayOf(0f, 0f) }
+                g[0] = morphTargetX[i] * p
+                g[1] = morphTargetY[i] * p
+            }
+            morphActive = false
+        }
+        morphIslandFrom.clear()
+        morphIslandDelayMs.clear()
+    }
+
     /** Carried-bubble spring state: the bubble lags the finger slightly and pops to 1.12x. */
     private var placeDrawX: Float = 0f
     private var placeDrawY: Float = 0f
@@ -658,12 +891,6 @@ class WatchView(
             field = v
             invalidate()
         }
-
-    /** 3.2.5: while true, MainActivity leans [accent] toward the
-     *  wallpaper's primary colour (and keeps it leaned as the
-     *  wallpaper changes). The view itself only ever reads [accent]. */
-    var wallpaperTint: Boolean = true
-        set(v) { field = v; invalidate() }
 
     var autoFolders: Boolean = false
         set(v) {
@@ -2111,6 +2338,30 @@ class WatchView(
 
     /** Applies a layout chosen in the topology picker and reports it for persistence. */
     fun selectTopology(topo: ClusterTopology) {
+        val oldTopo = clusterTopology
+        val items = activeGridItems
+        // 3.4.0: a genuine switch (different layout, motion allowed,
+        // items on screen to capture) flies the field to the new
+        // layout instead of teleporting it. Nebula sits out on both
+        // sides: its galaxy renderer doesn't place items at topology
+        // world positions at all, so there is nothing truthful to
+        // capture from or land on — it keeps its own transition.
+        // Folder rebuilds and item changes never reach this function,
+        // so a morph can only ever start here, on a real switch.
+        val morphWanted = topo != oldTopo && !reducedMotion && items.isNotEmpty() && width > 0 &&
+            oldTopo != ClusterTopology.NEBULA && topo != ClusterTopology.NEBULA
+        if (morphWanted) {
+            captureMorphStarts(items, oldTopo)
+            if (islandsSupportedHere() &&
+                (topo == ClusterTopology.FORCE_FIELD || topo == ClusterTopology.HONEYCOMB ||
+                    topo == ClusterTopology.GRAVITY)
+            ) {
+                captureMorphIslands()
+            } else {
+                morphIslandFrom.clear()
+                morphIslandDelayMs.clear()
+            }
+        }
         // Save where the outgoing design was left; restore the incoming
         // design's remembered spot, or centre it on a first visit (each
         // design's world has different extents, so carrying one pan/zoom
@@ -2130,7 +2381,21 @@ class WatchView(
             panY.target = 0f
             userZoom.target = if (topo == ClusterTopology.NEBULA) 0.72f else 1f
         }
+        var morphing = false
+        if (morphWanted) {
+            morphStartMs = SystemClock.uptimeMillis()
+            morphing = beginMorph(items, topo)
+            if (!morphing) {
+                morphIslandFrom.clear()
+                morphIslandDelayMs.clear()
+            }
+        }
         topologyPickerOpen = false
+        // 3.4.0: when a flight (or a physics settle) is in motion,
+        // step out of the Settings page so it can be seen; with no
+        // motion (same layout re-picked, reduced motion, everything
+        // already home) the page stays, exactly as before.
+        if (morphing) clusterSheet.target = 0f
         onTopologySelected(topo)
         performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
         invalidate()
@@ -2971,6 +3236,7 @@ class WatchView(
         // headroom, so heavily-used neighbours (growth up to 1.5x)
         // physically overlapped, worst around the new centre app.
         val basePitch = Metrics.GRID_PITCH * u * (1f + 0.32f * ov) * 1.10f
+        lastBasePitch = basePitch
 
         val isRiver = clusterTopology == ClusterTopology.RIVER
         val isOrbitals = clusterTopology == ClusterTopology.ORBITALS
@@ -2990,6 +3256,14 @@ class WatchView(
         val assignedHexes = if ((isHoneycomb || isGravity) && islands.isNotEmpty())
             islandAssignedHexes(items) else null
 
+        // 3.4.0: this frame's morph clock. If the item set changed
+        // under the flight (filing, a folder rebuild) or reduced
+        // motion arrived, land the morph now — it was captured
+        // against a set (and a motion contract) that no longer holds.
+        if (morphActive && (reducedMotion || morphItemSetChanged(items))) finishMorph()
+        val morphElapsedMs = if (morphActive)
+            (SystemClock.uptimeMillis() - morphStartMs).toFloat() else 0f
+
         for (i in items.indices) {
             val item = items[i]
             if ((bFolder != null || bWidget != null) && i == bloomAnchorIndex && bVal > 0.15f) continue
@@ -3006,10 +3280,24 @@ class WatchView(
             // layout switch), its world position springs to the new slot instead
             // of teleporting. Pan/zoom/fisheye still apply on top. Liquid Pool
             // has its own simulated motion and opts out.
+            // 3.4.0: while a topology morph is in flight, this item
+            // flies its captured start -> target instead, and the
+            // glide map is kept glued to the flight so the plain
+            // glide resumes seamlessly from wherever the morph ends.
             if (!isPool && !isForce) {
-                glideToward(glidePosGrid, item.key, worldX, worldY, basePitch * 4.5f)
-                worldX = glideTmp[0]
-                worldY = glideTmp[1]
+                if (morphActive && i < morphCount && morphKeys[i] == item.key) {
+                    val e = morphEaseAt(i, morphElapsedMs)
+                    worldX = (morphStartX[i] + (morphTargetX[i] - morphStartX[i]) * e) * basePitch
+                    worldY = (morphStartY[i] + (morphTargetY[i] - morphStartY[i]) * e) * basePitch
+                    val g = glidePosGrid.getOrPut(item.key) { floatArrayOf(worldX, worldY) }
+                    g[0] = worldX
+                    g[1] = worldY
+                    if (morphElapsedMs < MorphMath.TOTAL_MS) motionAnimating = true
+                } else {
+                    glideToward(glidePosGrid, item.key, worldX, worldY, basePitch * 4.5f)
+                    worldX = glideTmp[0]
+                    worldY = glideTmp[1]
+                }
             }
 
             // Apply Jello / Wake Wave spring displacement & tilt parallax when physics is enabled
@@ -3097,6 +3385,8 @@ class WatchView(
                 else if (rawGrowth > 1f) 1f + (rawGrowth - 1f) * 0.55f else rawGrowth
             bubbleDia[i] = Metrics.GRID_CENTER_D * u * size * effZoom * scaleMod * growth * gulpFactor(item.key)
         }
+
+        if (morphActive && morphElapsedMs >= MorphMath.TOTAL_MS) morphActive = false
 
         val itemAlpha = alpha * (1f - 0.68f * bVal) * (1f - cVal)
         if (itemAlpha > 0.01f) {
@@ -3246,16 +3536,42 @@ class WatchView(
                     val pullK = if (!isForce && dI > 1e-4f) Fisheye.pulled(dI) / dI else 1f
                     val kI = pullK * (1f - ov) + 1f * ov
                     val sizeK = if (!isForce) Fisheye.size(dI) * (1f - ov) + 0.88f * ov else 1f - 0.12f * ov
-                    val icx = cx + dxI * kI * u * effZoom
-                    val icy = cy + dyI * kI * u * effZoom
+                    var icx = cx + dxI * kI * u * effZoom
+                    var icy = cy + dyI * kI * u * effZoom
                     // 3.2.2 entrance: a fresh island scales/fades in
                     // over 400ms instead of popping into existence.
                     val eAge = (android.os.SystemClock.uptimeMillis() - slot.bornAt).coerceIn(0L, 400L)
                     val eT = eAge / 400f
                     val eEase = 1f - (1f - eT) * (1f - eT)
                     if (eT < 1f) postInvalidateOnAnimation()
-                    val hw = slot.halfW * basePitch * effZoom * sizeK * (0.82f + 0.18f * eEase)
-                    val hh = slot.halfH * basePitch * effZoom * sizeK * (0.82f + 0.18f * eEase)
+                    var hw = slot.halfW * basePitch * effZoom * sizeK * (0.82f + 0.18f * eEase)
+                    var hh = slot.halfH * basePitch * effZoom * sizeK * (0.82f + 0.18f * eEase)
+                    // 3.4.0: on a topology switch the tile glides from
+                    // the rect it was last drawn at to its natural rect
+                    // in the new layout — the two genuinely differ
+                    // (Force Field's tile is unwarped; the lattice
+                    // layouts fisheye it) — on the morph's clock and
+                    // the island's own stagger.
+                    val morphFrom = morphIslandFrom[slot.id]
+                    if (morphFrom != null) {
+                        val ip = MorphMath.progress(
+                            (android.os.SystemClock.uptimeMillis() - morphStartMs).toFloat(),
+                            morphIslandDelayMs[slot.id] ?: 0f,
+                        )
+                        if (ip >= 1f) {
+                            morphIslandFrom.remove(slot.id)
+                            morphIslandDelayMs.remove(slot.id)
+                        } else {
+                            val ie = MorphMath.ease(ip)
+                            val fromHw = morphFrom.width() / 2f
+                            val fromHh = morphFrom.height() / 2f
+                            icx = morphFrom.centerX() + (icx - morphFrom.centerX()) * ie
+                            icy = morphFrom.centerY() + (icy - morphFrom.centerY()) * ie
+                            hw = fromHw + (hw - fromHw) * ie
+                            hh = fromHh + (hh - fromHh) * ie
+                            motionAnimating = true
+                        }
+                    }
                     slot.dragScale = basePitch * effZoom * sizeK * kI
                     islandPxPerUnit = slot.dragScale
                     if (hw <= 2f || hh <= 2f) { slot.rect.setEmpty(); continue }
@@ -4294,7 +4610,6 @@ class WatchView(
                 add(Triple(ClusterOption.PER_LAYOUT_PINS, "Per-Layout Pins", if (perLayoutPins) "Separate pins per layout" else "One pin set everywhere"))
                 add(Triple(ClusterOption.USAGE_GROWTH, "Usage Growth", if (usageGrowth) "Bubbles grow with use" else "Uniform bubble sizes"))
                 add(Triple(ClusterOption.CATEGORY_CLUSTERING, "Category Clustering", if (autoFolders) "Apps grouped into category folders" else "All apps loose"))
-                add(Triple(ClusterOption.WALLPAPER_TINT, "Wallpaper Tint", if (wallpaperTint) "Accent leans into your wallpaper" else "Accent stays as picked"))
             }
             if (sheetExpanded) {
                 add(Triple(null, "ACTIONS", ""))
@@ -4402,7 +4717,6 @@ class WatchView(
                 ClusterOption.PER_LAYOUT_PINS -> perLayoutPins
                 ClusterOption.USAGE_GROWTH -> usageGrowth
                 ClusterOption.CATEGORY_CLUSTERING -> autoFolders
-                ClusterOption.WALLPAPER_TINT -> wallpaperTint
                 ClusterOption.BLOOM_MODE -> bloomFolders
                 else -> null
             }
@@ -4812,17 +5126,6 @@ class WatchView(
                 c.drawCircle(cx + s * 0.14f, cy - s * 0.24f, q, stroke)
                 c.drawCircle(cx - s * 0.04f, cy + s * 0.18f, q, stroke)
                 c.drawCircle(cx + s * 0.28f, cy + s * 0.14f, q * 0.7f, stroke)
-            }
-            ClusterOption.WALLPAPER_TINT -> {
-                // A droplet: wallpaper colour, dripping onto the accent.
-                path.moveTo(cx, cy - s * 0.42f)
-                path.quadTo(cx + s * 0.34f, cy + s * 0.05f, cx + s * 0.30f, cy + s * 0.16f)
-                path.quadTo(cx + s * 0.24f, cy + s * 0.42f, cx, cy + s * 0.42f)
-                path.quadTo(cx - s * 0.24f, cy + s * 0.42f, cx - s * 0.30f, cy + s * 0.16f)
-                path.quadTo(cx - s * 0.34f, cy + s * 0.05f, cx, cy - s * 0.42f)
-                c.drawPath(path, stroke)
-                fill.color = color
-                c.drawCircle(cx - s * 0.07f, cy + s * 0.14f, s * 0.07f, fill)
             }
             ClusterOption.USAGE_GROWTH -> {
                 path.moveTo(cx - s * 0.42f, cy + s * 0.28f)
@@ -5505,6 +5808,12 @@ class WatchView(
         scaleDetector.onTouchEvent(e)
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                // 3.4.0: a touch lands any in-flight morph at its
+                // destination instead of fighting it — the field is
+                // never left between layouts, and the touch itself
+                // (pan, pickup, launch) proceeds against the final
+                // positions.
+                if (morphActive || morphIslandFrom.isNotEmpty()) finishMorph()
                 downX = e.x; downY = e.y; lastX = e.x; lastY = e.y
                 dragging = false; longPressed = false; pinching = false
                 orbitalVelocity = 0f

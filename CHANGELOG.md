@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.4.0 — 2026-10-27
+- **Topology morph transitions.** Switching layouts no longer
+  teleports the field: every bubble flies from where it sits to
+  its slot in the new layout over ~650 ms — centre bubbles first,
+  the rim trailing — on a spring-eased curve with a slight
+  overshoot (new pure MorphMath, unit-tested). Widget islands
+  glide between their old and new tiles when both layouts show
+  them. Switching into Force Field or Liquid Pool instead seeds
+  the physics bodies where the bubbles are and lets the field
+  settle on its own springs. A touch lands the flight at its
+  destination, a second switch mid-flight re-launches from the
+  interpolated positions, and the Settings page steps aside so
+  the flight is visible. Reduced motion keeps the instant swap;
+  Nebula, whose galaxy renderer doesn't place apps at lattice
+  positions, keeps its own transition.
+- **Wallpaper Tint removed.** The accent is once again exactly
+  the colour picked in Settings, always — the 3.2.5 tint switch,
+  its wallpaper-colour listener and TintMath are gone. (Context
+  Card shortcuts and island resize from 3.2.5 are untouched.)
+
 ## 3.3.0 — 2026-10-27
 - **Layout backup & restore.** Settings → More Options → Actions
   gains two rows: **Back Up Layout** writes the whole Orbital setup
