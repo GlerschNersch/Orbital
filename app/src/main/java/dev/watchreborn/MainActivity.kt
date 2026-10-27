@@ -1,6 +1,5 @@
 package dev.watchreborn
 
-import android.accessibilityservice.AccessibilityService
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.ActivityManager
@@ -11,7 +10,6 @@ import android.app.role.RoleManager
 import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
-import android.bluetooth.BluetoothManager
 import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.ContentUris
@@ -28,16 +26,11 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.net.Uri
-import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Environment
-import android.os.Handler
-import android.os.Looper
 import android.os.Process
 import android.os.StatFs
 import android.os.UserHandle
@@ -71,7 +64,6 @@ import dev.watchreborn.apps.WidgetKind
 import dev.watchreborn.ui.CardAction
 import dev.watchreborn.ui.ClusterOption
 import dev.watchreborn.ui.ClusterTopology
-import dev.watchreborn.ui.ControlAction
 import dev.watchreborn.ui.FaceInfo
 import dev.watchreborn.ui.Metrics
 import dev.watchreborn.ui.WatchView
@@ -84,7 +76,6 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var nowPlaying: NowPlaying
     private val loader = Executors.newSingleThreadExecutor()
     private val launcherApps by lazy { getSystemService(LauncherApps::class.java) }
-    private val cameraManager by lazy { getSystemService(CameraManager::class.java) }
     private val audioManager by lazy { getSystemService(AudioManager::class.java) }
     private val sensorManager by lazy { getSystemService(SensorManager::class.java) }
     private val appWidgetManager by lazy { AppWidgetManager.getInstance(this) }
@@ -95,9 +86,6 @@ class MainActivity : Activity(), SensorEventListener {
     private var apps: List<App> = emptyList()
     private var battery = -1
     private var charging = false
-    private var torchCameraId: String? = null
-    private var torchOn = false
-    private var screenFlashlight = false
 
     private val iconPx: Int
         get() {
@@ -124,15 +112,6 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
-    private val torchCallback = object : CameraManager.TorchCallback() {
-        override fun onTorchModeChanged(cameraId: String, enabled: Boolean) {
-            if (cameraId == torchCameraId) {
-                torchOn = enabled
-                syncControlState()
-            }
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         repo = AppRepo(this)
@@ -140,7 +119,6 @@ class MainActivity : Activity(), SensorEventListener {
             context = this,
             onLaunch = ::launch,
             onLongPressItem = ::itemOptions,
-            onControlAction = ::handleControlAction,
             onCardAction = ::handleCardAction,
             onClusterOptionChanged = ::handleClusterOptionChanged,
             onTopologySelected = ::handleTopologySelected,
@@ -219,8 +197,6 @@ class MainActivity : Activity(), SensorEventListener {
         }
         nowPlaying.start()
 
-        findTorchCamera()
-        runCatching { cameraManager.registerTorchCallback(torchCallback, Handler(Looper.getMainLooper())) }
         runCatching {
             sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)?.let {
                 sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
@@ -246,7 +222,6 @@ class MainActivity : Activity(), SensorEventListener {
         super.onResume()
         view.refreshMotionScale() // 2.7.0 (audit #1)
         refreshInfo()
-        syncControlState()
         if (apps.isNotEmpty()) pushAppsToView(apps)
     }
 
@@ -543,7 +518,6 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onDestroy() {
         nowPlaying.stop()
-        runCatching { cameraManager.unregisterTorchCallback(torchCallback) }
         runCatching { sensorManager?.unregisterListener(this) }
         launcherApps.unregisterCallback(appsChanged)
         unregisterReceiver(batteryReceiver)
@@ -637,38 +611,6 @@ class MainActivity : Activity(), SensorEventListener {
         view.nowPlayingTrack = nowPlaying.track
     }
 
-    private fun findTorchCamera() {
-        torchCameraId = runCatching {
-            cameraManager.cameraIdList.firstOrNull { id ->
-                cameraManager.getCameraCharacteristics(id).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
-            }
-        }.getOrNull()
-    }
-
-    private fun syncControlState() {
-        val wifiOn = runCatching {
-            applicationContext.getSystemService(WifiManager::class.java)?.isWifiEnabled == true
-        }.getOrDefault(false)
-        val btOn = runCatching {
-            getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled == true
-        }.getOrDefault(false)
-        val ringer = runCatching { audioManager.ringerMode }.getOrDefault(AudioManager.RINGER_MODE_NORMAL)
-        val maxVol = runCatching { audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1) }.getOrDefault(15)
-        val curVol = runCatching { audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) }.getOrDefault(7)
-
-        view.controlCenter.state = view.controlCenter.state.copy(
-            wifiOn = wifiOn,
-            bluetoothOn = btOn,
-            torchOn = torchOn,
-            screenFlashlight = screenFlashlight,
-            ringerMode = ringer,
-            autoFolders = view.autoFolders,
-            notifCount = NowPlayingListener.activePackages.size,
-            volume = (curVol.toFloat() / maxVol).coerceIn(0f, 1f),
-        )
-        view.invalidate()
-    }
-
     private fun handleTopologySelected(topo: ClusterTopology) {
         prefs.edit().putString(KEY_CLUSTER_TOPOLOGY, topo.name).apply()
     }
@@ -739,94 +681,6 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
-    private fun handleControlAction(action: ControlAction, value: Float?) {
-        when (action) {
-            ControlAction.WIFI -> {
-                val panel = Intent(Settings.Panel.ACTION_WIFI)
-                if (runCatching { startActivity(panel) }.isFailure) {
-                    runCatching { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
-                }
-            }
-            ControlAction.BLUETOOTH -> {
-                runCatching { startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
-            }
-            ControlAction.TORCH -> {
-                if (screenFlashlight) {
-                    screenFlashlight = false
-                    setWindowBrightness(-1f)
-                    syncControlState()
-                    return
-                }
-                val camId = torchCameraId
-                if (camId != null && runCatching { cameraManager.setTorchMode(camId, !torchOn) }.isSuccess) {
-                    return
-                }
-                // Fallback to bright watchOS screen-flashlight overlay
-                screenFlashlight = !screenFlashlight
-                setWindowBrightness(if (screenFlashlight) 1f else -1f)
-                syncControlState()
-            }
-            ControlAction.RINGER -> {
-                val nextMode = if (audioManager.ringerMode == AudioManager.RINGER_MODE_NORMAL) {
-                    AudioManager.RINGER_MODE_VIBRATE
-                } else {
-                    AudioManager.RINGER_MODE_NORMAL
-                }
-                if (runCatching { audioManager.ringerMode = nextMode }.isFailure) {
-                    runCatching { startActivity(Intent(Settings.Panel.ACTION_VOLUME)) }
-                }
-                syncControlState()
-            }
-            ControlAction.FOLDERS -> {
-                val next = !view.autoFolders
-                prefs.edit().putBoolean(KEY_FOLDERS, next).apply()
-                view.autoFolders = next
-                syncControlState()
-            }
-            ControlAction.LOCK -> {
-                if (!TurnOffService.perform(AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN)) {
-                    // Prominent disclosure (Play Accessibility policy): say
-                    // plainly what the single-purpose service does BEFORE
-                    // sending the user to enable it.
-                    android.app.AlertDialog.Builder(this)
-                        .setTitle("Lock the screen with Orbital?")
-                        .setMessage("Orbital's Lock button uses an accessibility service for one thing only: locking the screen when you tap it. The service cannot read your screen, does not watch what you do, and collects nothing.\n\nOn the next screen, switch on \u201cOrbital\u201d to allow it.")
-                        .setPositiveButton("Accessibility settings") { _, _ ->
-                            runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
-                        }
-                        .setNegativeButton("Not now", null)
-                        .show()
-                }
-            }
-            ControlAction.NOTIFICATIONS -> {
-                view.openFullHoneycomb()
-                expandNotifications()
-            }
-            ControlAction.SET_HOME -> {
-                chooseHome()
-            }
-            ControlAction.VOLUME_DOWN -> {
-                runCatching { audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_LOWER, 0) }
-                syncControlState()
-            }
-            ControlAction.VOLUME_UP -> {
-                if (value != null) {
-                    val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
-                    val target = (value * maxVol).roundToInt().coerceIn(0, maxVol)
-                    runCatching { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0) }
-                } else {
-                    runCatching { audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, 0) }
-                }
-                syncControlState()
-            }
-        }
-    }
-
-    private fun setWindowBrightness(brightness: Float) {
-        val lp = window.attributes
-        lp.screenBrightness = brightness
-        window.attributes = lp
-    }
 
     private fun handleCardAction(action: CardAction) {
         when (action) {
@@ -912,16 +766,13 @@ class MainActivity : Activity(), SensorEventListener {
                 menu.menu.add(1, 319, 4, "⚡ Open Blooming Widget Pod")
                 when (item.kind) {
                     WidgetKind.CORE_CLOCK -> {
-                        menu.menu.add(1, 322, 7, "🎛️ Open Control Center")
+                        // No extra actions since 3.0.0 (the Control Center it opened is gone).
                     }
                     WidgetKind.NOW_PLAYING -> {
                         menu.menu.add(1, 330, 5, "⏯ Play / Pause")
                         menu.menu.add(1, 331, 6, "⏭ Next Track")
                         menu.menu.add(1, 332, 7, "⏮ Previous Track")
                         menu.menu.add(1, 333, 8, "🎵 Open Media App")
-                    }
-                    WidgetKind.CONTROLS -> {
-                        menu.menu.add(1, 322, 5, "🎛️ Open Control Center")
                     }
                     WidgetKind.VITALS -> {
                         menu.menu.add(1, 340, 6, "🔋 Battery & Vitals Settings")
@@ -955,7 +806,6 @@ class MainActivity : Activity(), SensorEventListener {
                             Toast.makeText(this, "Pinned ${item.label} to Center Core", Toast.LENGTH_SHORT).show()
                         }
                         319 -> view.openWidgetPod(item)
-                        322 -> view.openControlCenter()
                         330 -> handleCardAction(CardAction.MEDIA_PLAY_PAUSE)
                         331 -> handleCardAction(CardAction.MEDIA_NEXT)
                         332 -> handleCardAction(CardAction.MEDIA_PREV)
@@ -1085,12 +935,6 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     @SuppressLint("WrongConstant")
-    private fun expandNotifications() {
-        runCatching {
-            val sb = getSystemService("statusbar")
-            sb.javaClass.getMethod("expandNotificationsPanel").invoke(sb)
-        }.onFailure { Log.w(TAG, "Can't open notifications", it) }
-    }
 
     private fun savedWidgetIds(): List<Int> {
         return prefs.getStringSet(KEY_APPWIDGET_IDS, emptySet()).orEmpty()

@@ -52,14 +52,13 @@ class App(
 enum class WidgetKind(val key: String, val label: String, val tint: Int) {
     CORE_CLOCK("widget:core_clock", "Clock & Status", 0xFFA6E36E.toInt()),
     NOW_PLAYING("widget:now_playing", "Now Playing", 0xFFFF375F.toInt()),
-    CONTROLS("widget:controls", "Control Cluster", 0xFF64D2FF.toInt()),
     VITALS("widget:vitals", "Vitals & Rings", 0xFF30D158.toInt()),
     TIMER("widget:timer", "Quick Timer", 0xFFFF9F0A.toInt()),
     CALENDAR("widget:calendar", "Calendar & Up Next", 0xFFFF453A.toInt()),
 }
 
 /**
- * A live canvas-rendered honeycomb bubble (#1 Center Core Clock Hub or #5 Live Media / Controls / Vitals).
+ * A live canvas-rendered honeycomb bubble (#1 Center Core Clock Hub or #5 Live Media / Vitals).
  */
 class WidgetBubble(
     val kind: WidgetKind,
@@ -379,7 +378,6 @@ class AppRepo(private val context: Context) {
                 addAll(byUse)
                 if (liveWidgets) {
                     widgets[WidgetKind.NOW_PLAYING]?.let(::add)
-                    widgets[WidgetKind.CONTROLS]?.let(::add)
                     widgets[WidgetKind.VITALS]?.let(::add)
                     widgets[WidgetKind.TIMER]?.let(::add)
                     widgets[WidgetKind.CALENDAR]?.let(::add)
@@ -442,7 +440,6 @@ class AppRepo(private val context: Context) {
             addAll(primary)
             if (liveWidgets) {
                 widgets[WidgetKind.NOW_PLAYING]?.let(::add)
-                widgets[WidgetKind.CONTROLS]?.let(::add)
                 widgets[WidgetKind.VITALS]?.let(::add)
                 widgets[WidgetKind.TIMER]?.let(::add)
                 widgets[WidgetKind.CALENDAR]?.let(::add)
@@ -475,7 +472,6 @@ class AppRepo(private val context: Context) {
                 addAll(free.take(coreTake))
                 if (liveWidgets) {
                     widgets[WidgetKind.NOW_PLAYING]?.let(::add)
-                    widgets[WidgetKind.CONTROLS]?.let(::add)
                     widgets[WidgetKind.VITALS]?.let(::add)
                     widgets[WidgetKind.TIMER]?.let(::add)
                     widgets[WidgetKind.CALENDAR]?.let(::add)

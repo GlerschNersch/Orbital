@@ -28,7 +28,6 @@ Prepared 2026-10-26. Everything here is ready to paste into Play Console.
 >
 > • A Widgets page that hosts real Android widgets (clock, weather, calendar…)
 > • Folders, pins, and drag-to-rearrange with long-press edit mode
-> • A Control Center with the toggles you actually use
 > • Multiple cluster topologies, from Classic Honeycomb to Liquid Pool
 > • Full TalkBack support, reduced-motion support, and one-thumb ergonomics
 >
@@ -41,7 +40,7 @@ Prepared 2026-10-26. Everything here is ready to paste into Play Console.
 - `icon-512.png` — store icon (512×512)
 - `feature-graphic-1024x500.png` — feature graphic
 - Screenshots: take from the live app (phone, 16:9 or taller). Good set:
-  cluster at rest, notification peek, Widgets page, Settings, Control Center,
+  cluster at rest, notification peek, Widgets page, Settings,
   folder bloom. Minimum 2, aim for 5–6.
 
 ## Play Console declarations (draft answers)
@@ -62,27 +61,22 @@ permission. Access is optional and user-granted; the launcher works without it."
 counter for display in Orbital's step widget. Readings are shown, not stored or
 transmitted."
 
-**Accessibility API (TurnOffService) — PENDING Matt's decision** (keep in the
-Play build and file this declaration, or ship Play without the feature):
-"Orbital's accessibility service performs exactly one action: locking the screen
-and turning it off when the user invokes Orbital's 'Turn off screen' control. It
-declares no event types of interest beyond its own invocation, never reads window
-content, and collects nothing. It is disabled unless the user enables it in
-Android accessibility settings." — Note: Play policy names launchers among
-non-accessibility-tool categories, so approval is genuinely uncertain.
+**Accessibility API:** None. Orbital declares no accessibility service.
+(The TurnOff screen-lock service and the Control Center it lived in were removed
+in 3.0.0 — Android's own Quick Settings shade covers the toggles, so the Play
+accessibility declaration is no longer needed.)
 
 **Permissions declaration form:** REQUEST_DELETE_PACKAGES was removed in 2.9.2
-(uninstall uses the system ACTION_DELETE flow). Remaining declared permissions:
-EXPAND_STATUS_BAR, ACCESS_WIFI_STATE, BLUETOOTH (Control Center state),
-ACTIVITY_RECOGNITION (above).
+(uninstall uses the system ACTION_DELETE flow); EXPAND_STATUS_BAR,
+ACCESS_WIFI_STATE and BLUETOOTH were removed in 3.0.0 with the Control Center.
+The only remaining declared permission is ACTIVITY_RECOGNITION (above).
 
 ## Console steps that need Matt personally
 
-1. Create the Play Console developer account ($25, identity verification) —
-   must be done by Matt himself.
+1. Play Console developer account — DONE: identity verified 2026-05-26,
+   developer name "Vincus" (confirmed from Gmail 2026-10-26).
 2. If the account is a *personal* account: production requires a closed test
    with **12+ opted-in testers for 14 consecutive days** first. Start this as
    early as possible — it is the critical path.
-3. Decisions still open: (a) TurnOff accessibility in the Play build,
-   (b) applicationId — currently `dev.watchreborn`; renaming is free now and
-   impossible after first upload.
+3. Decision still open: applicationId — currently `dev.watchreborn`;
+   renaming is free now and impossible after first upload.

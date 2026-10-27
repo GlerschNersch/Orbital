@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.0.0 — 2026-10-26
+
+The Control Center is gone (Matt's call): Android's own pull-down Quick Settings already covers Wi-Fi, Bluetooth, flashlight and sound, so Orbital's duplicate panel — and the Control Cluster widget and Quick Control pod that opened it — are removed entirely. The Clock pod keeps its App Widgets button, now centred. With the panel goes its Lock tile, and with that the TurnOff accessibility service, its prominent-disclosure dialog, the service XML and the `EXPAND_STATUS_BAR` / `ACCESS_WIFI_STATE` / `BLUETOOTH` permissions — Orbital now declares a single permission (`ACTIVITY_RECOGNITION`, for the step widget) and no accessibility service, so the Play accessibility declaration is no longer needed. Category Clustering stays frozen at the stored setting (off) with its toggle retired, same treatment as Live Grid Widgets in 2.5.0. The privacy policy and store-listing pack were updated to match.
+
 ## 2.9.3 — 2026-10-26
 
 Accessibility disclosure for the Play submission (Matt's call: TurnOff stays in the Play build, declaration filed). Tapping Lock in Control Center without the service enabled now shows a prominent disclosure first — the accessibility service exists for one thing only (locking the screen on tap), cannot read screen content, watches nothing, collects nothing — and only then opens Accessibility Settings. The service's own description shown on Android's enable screen says the same in full. Previously a short toast sent users straight to Settings.

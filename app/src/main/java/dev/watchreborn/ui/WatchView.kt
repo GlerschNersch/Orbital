@@ -9,7 +9,6 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
-import android.media.AudioManager
 import android.os.SystemClock
 import android.text.InputType
 import android.text.TextPaint
@@ -88,10 +87,8 @@ enum class CardAction {
  * The whole launcher on one canvas (2.0.0 — the Cluster is home; the
  * watch Face, List View and Smart Stack pages are gone):
  * - App Views: Focus Cluster, Full Honeycomb Grid (with #1 Core Clock Hub Home, #2 Blooming Clusters,
- *   #3 Quick-Snipe Mini-Icons, #4 Constellation Search, #5 Live Media/Control/Vitals Widget Bubbles,
+ *   #3 Quick-Snipe Mini-Icons, #4 Constellation Search, #5 Live Media/Vitals Widget Bubbles,
  *   #6 Fixed Compass Neighborhoods & Hex Slot Pinning, Pinch Overview, and Edge Digital Crown zoom)
- * - Control Center (Wi-Fi, Bluetooth, Flashlight, Sound/Vibrate, Auto Folders, Lock Screen, Volume slider, Notifications),
- *   drawn over the Cluster
  * - The Widgets page is a native overlay owned by the activity; the dock
  *   (Cluster / Widgets) stays live beneath it
  */
@@ -100,7 +97,6 @@ class WatchView(
     context: Context,
     private val onLaunch: (App, RectF) -> Unit,
     private val onLongPressItem: (GridItem, Int) -> Unit,
-    private val onControlAction: (ControlAction, Float?) -> Unit,
     private val onCardAction: (CardAction) -> Unit,
     private val onClusterOptionChanged: (ClusterOption) -> Unit,
     private val onTopologySelected: (ClusterTopology) -> Unit,
@@ -185,21 +181,6 @@ class WatchView(
                     rect.centerX(), rect.centerY(),
                 )
             } + dockNodes(DOCK_SETTINGS)
-        }
-        // Control Center tiles (1.9.1): the same action rects the touch
-        // handler uses, deduped per action (last rect wins, as in tap()).
-        if (controlIn.value > 0.5f) {
-            val byAction = LinkedHashMap<ControlAction, RectF>()
-            for ((rect, act) in controlCenter.actionRects) {
-                if (!rect.isEmpty) byAction[act] = rect
-            }
-            return byAction.map { (act, rect) ->
-                WatchAccessibilityProvider.Node(
-                    "control:" + act.name, controlCenter.spokenLabel(act),
-                    Rect(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt()),
-                    rect.centerX(), rect.centerY(),
-                )
-            }
         }
         // Widget pod buttons (1.9.1): labels captured by the pod draw, plus
         // the header pill that closes the pod.
@@ -287,7 +268,7 @@ class WatchView(
      * bubble again to put it back.
      */
     private fun a11yLongActivate(node: WatchAccessibilityProvider.Node) {
-        if (clusterSheet.target > 0f || cardMenuOpen || controlIn.value > 0.5f || widgetIn.target > 0f) return
+        if (clusterSheet.target > 0f || cardMenuOpen || widgetIn.target > 0f) return
         val item = activeGridItems.firstOrNull { it.key == node.key } ?: return
         val carry = a11yCarryItem
         when {
@@ -323,7 +304,6 @@ class WatchView(
         return super.onHoverEvent(event)
     }
 
-    val controlCenter = ControlCenter()
     var info = FaceInfo()
     var nowPlayingTrack: NowPlaying.Track? = null
     var ramUsedRatio: Float = 0.5f
@@ -614,14 +594,12 @@ class WatchView(
     var accent: Int = Color.rgb(166, 227, 110)
         set(v) {
             field = v
-            controlCenter.accent = v
             invalidate()
         }
 
     var autoFolders: Boolean = true
         set(v) {
             field = v
-            controlCenter.state = controlCenter.state.copy(autoFolders = v)
             rebuildGridHexes()
             invalidate()
         }
@@ -706,9 +684,6 @@ class WatchView(
     private val clusterSheet = Spring(0f)
     /** 0 = coiled in folders, 1 = unraveled into full-screen Star Constellation (#4). */
     private val constellationIn = Spring(0f)
-    /** 0 = face, 1 = Control Center. */
-    private val controlIn = Spring(0f)
-
     private val panX = Spring(0f, 0.35f)
     private val panY = Spring(0f, 0.35f)
 
@@ -858,7 +833,7 @@ class WatchView(
         }
         // The Cluster is home (2.0.0): Home closes whatever overlay is up,
         // returns from the Focus view, or recentres a panned field.
-        if (controlIn.target > 0f || folderIn.target > 0f || widgetIn.target > 0f ||
+        if (folderIn.target > 0f || widgetIn.target > 0f ||
             overview.target > 0f || clusterSheet.target > 0f || grid.target < 0.5f
         ) {
             openFullHoneycomb()
@@ -879,12 +854,6 @@ class WatchView(
             topologyPickerOpen = topologyPickerOpen && clusterSheet.target > 0f,
             sheetOpen = clusterSheet.target > 0f,
             editMode = editMode,
-            torchOffViaBack = controlIn.target > 0f && controlCenter.state.screenFlashlight,
-            // A layer that is visibly open counts even if its target was already
-            // reset mid-animation: Back once slipped past a target-only check,
-            // returned "not consumed", and the activity finished because
-            // Orbital is not the default home app.
-            controlOpen = controlIn.target > 0f || controlIn.value > 0.5f,
             widgetOpen = widgetIn.target == 1f,
             folderOpen = folderIn.target == 1f,
             overviewOpen = overview.target == 1f,
@@ -914,14 +883,6 @@ class WatchView(
                 exitEditMode()
                 true
             }
-            NavLayer.TORCH_OFF -> {
-                onControlAction(ControlAction.TORCH, null)
-                true
-            }
-            NavLayer.CONTROL -> {
-                openFullHoneycomb()
-                true
-            }
             NavLayer.WIDGET_POD -> {
                 closeWidgetPod()
                 true
@@ -949,7 +910,6 @@ class WatchView(
         hideKeyboard()
         gridSearching = false
         constellationIn.snap(0f)
-        controlIn.target = 0f
         clusterSheet.snap(0f)
         grid.snap(1f)
         overview.snap(0f)
@@ -967,7 +927,6 @@ class WatchView(
         hideKeyboard()
         gridSearching = false
         constellationIn.target = 0f
-        controlIn.target = 0f
         clusterSheet.target = 0f
         overview.target = 0f
         userZoom.target = 1f
@@ -979,16 +938,6 @@ class WatchView(
         panY.target = 0f
         apps.target = 1f
         grid.target = 1f
-        performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-        invalidate()
-    }
-
-    fun openControlCenter() {
-        hideKeyboard()
-        gridSearching = false
-        constellationIn.target = 0f
-        widgetIn.target = 0f
-        controlIn.target = 1f
         performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
         invalidate()
     }
@@ -1009,7 +958,7 @@ class WatchView(
         if (latest != null && latest.seq != handledPeekSeq) {
             handledPeekSeq = latest.seq
             val fresh = System.currentTimeMillis() - latest.postTime < 20_000L
-            if (fresh && clusterSheet.target == 0f && controlIn.target == 0f && !cardMenuOpen) startPeek(latest)
+            if (fresh && clusterSheet.target == 0f && !cardMenuOpen) startPeek(latest)
         }
         if (peekItemKey == null) return
         if (peekPkg != null && peekPkg !in NowPlayingListener.activePackages) peekIn.target = 0f
@@ -1052,7 +1001,7 @@ class WatchView(
      *  content fades first, the pill shrinks back into the bubble. */
     private fun drawPeek(c: Canvas, alpha: Float) {
         val key = peekItemKey ?: return
-        if (clusterSheet.value > 0.001f || controlIn.value > 0.001f) { peekRect.setEmpty(); return }
+        if (clusterSheet.value > 0.001f) { peekRect.setEmpty(); return }
         val v = peekIn.value.coerceIn(0f, 1f)
         if (v <= 0.005f) { peekRect.setEmpty(); return }
         val hit = hits.lastOrNull { it.item.key == key } ?: run { peekRect.setEmpty(); return }
@@ -2411,7 +2360,7 @@ class WatchView(
         motionAnimating = false
         frameBadgeVisible = false
 
-        val springs = arrayOf(apps, grid, overview, userZoom, constellationZoom, folderIn, widgetIn, clusterSheet, constellationIn, controlIn, panX, panY, folderPanX, folderPanY, constellationPanX, constellationPanY, cardMenu, peekIn)
+        val springs = arrayOf(apps, grid, overview, userZoom, constellationZoom, folderIn, widgetIn, clusterSheet, constellationIn, panX, panY, folderPanX, folderPanY, constellationPanX, constellationPanY, cardMenu, peekIn)
         if (reducedMotion) for (s in springs) s.snap(s.target) // 2.7.0 (audit #1)
         for (s in springs) s.step(dt)
         val physicsAnimating = stepPhysics(dt)
@@ -2445,12 +2394,6 @@ class WatchView(
             if (clusterSheet.value > 0.001f && undoActive) drawUndoBar(c, w, bottom, a) // 2.7.0: the Clear Pins undo must be visible on the page, not under it
             drawPeek(c, a)
             if (cardItem != null) drawCardMenu(c, w, h, cal, cardMenu.value)
-        }
-
-        // Control Center overlays the Cluster (2.0.0; it used to sit over
-        // the watch Face), so it draws after the cluster block.
-        if (controlIn.value > 0f) {
-            controlCenter.draw(c, w, h, top, bottom, cal, info.battery, info.charging, controlIn.value)
         }
 
         val animating = springs.any { !it.settled } || dragging || physicsAnimating || motionAnimating || (peekItemKey != null && !peekIn.settled)
@@ -3666,8 +3609,7 @@ class WatchView(
 
                 val bw = islandR * 0.78f
                 val bh = dp(34f)
-                drawPodBtn(cx - bw * 0.52f, cy + islandR * 0.20f, bw, bh, "🎛️ Controls", "CLOCK_CONTROLS")
-                drawPodBtn(cx + bw * 0.52f, cy + islandR * 0.20f, bw, bh, "🧩 App Widgets", "SYS_WIDGETS")
+                drawPodBtn(cx, cy + islandR * 0.20f, islandR * 1.18f, bh, "🧩 App Widgets", "SYS_WIDGETS")
             }
 
             WidgetKind.NOW_PLAYING -> {
@@ -3699,24 +3641,6 @@ class WatchView(
                 drawPodBtn(cx, cy + islandR * 0.16f, dp(88f), bh, if (tr?.playing == true) "⏸ Pause" else "▶ Play", "MEDIA_PLAY", true)
                 drawPodBtn(cx + islandR * 0.52f, cy + islandR * 0.16f, dp(54f), bh, "⏭", "MEDIA_NEXT")
                 drawPodBtn(cx, cy + islandR * 0.48f, islandR * 1.18f, dp(34f), "🎵 Open Media Player", "MEDIA_OPEN")
-            }
-
-            WidgetKind.CONTROLS -> {
-                val st = controlCenter.state
-                text.textSize = sp(12f)
-                text.color = withAlpha(tint, aInt)
-                val hdr = "🎛️ QUICK CONTROL POD"
-                c.drawText(hdr, cx - text.measureText(hdr) / 2, cy - islandR * 0.58f, text)
-
-                val bw = islandR * 0.76f
-                val bh = dp(34f)
-                drawPodBtn(cx - bw * 0.52f, cy - islandR * 0.28f, bw, bh, "📶 Wi-Fi", "CTRL_WIFI", st.wifiOn, Color.rgb(10, 132, 255))
-                drawPodBtn(cx + bw * 0.52f, cy - islandR * 0.28f, bw, bh, "🔹 Bluetooth", "CTRL_BT", st.bluetoothOn, Color.rgb(94, 92, 230))
-                drawPodBtn(cx - bw * 0.52f, cy + islandR * 0.04f, bw, bh, "🔦 Flashlight", "CTRL_TORCH", st.torchOn || st.screenFlashlight, Color.rgb(255, 214, 10))
-                val ringerLbl = if (st.ringerMode == AudioManager.RINGER_MODE_NORMAL) "🔔 Sound" else "📳 Vibrate"
-                drawPodBtn(cx + bw * 0.52f, cy + islandR * 0.04f, bw, bh, ringerLbl, "CTRL_RINGER", st.ringerMode == AudioManager.RINGER_MODE_NORMAL, Color.rgb(48, 209, 88))
-                drawPodBtn(cx - bw * 0.52f, cy + islandR * 0.36f, bw, bh, "🧩 App Widgets", "SYS_WIDGETS")
-                drawPodBtn(cx + bw * 0.52f, cy + islandR * 0.36f, bw, bh, "🎛️ Full Panel", "CLOCK_CONTROLS")
             }
 
             WidgetKind.VITALS -> {
@@ -4702,36 +4626,6 @@ class WatchView(
                 }
             }
 
-            WidgetKind.CONTROLS -> {
-                fill.color = Color.argb(aInt, 20, 26, 34)
-                c.drawCircle(x, y, r, fill)
-                stroke.strokeWidth = (d * 0.034f).coerceAtLeast(1.5f)
-                stroke.color = Color.argb(aInt, 100, 210, 255)
-                c.drawCircle(x, y, r * 0.94f, stroke)
-
-                val st = controlCenter.state
-                val orbit = d * 0.26f
-                val miniR = d * 0.105f
-                val colors = intArrayOf(
-                    if (st.wifiOn) Color.rgb(10, 132, 255) else Color.rgb(65, 70, 78),
-                    if (st.bluetoothOn) Color.rgb(94, 92, 230) else Color.rgb(65, 70, 78),
-                    if (st.torchOn || st.screenFlashlight) Color.rgb(255, 214, 10) else Color.rgb(65, 70, 78),
-                    if (st.ringerMode == AudioManager.RINGER_MODE_NORMAL) Color.rgb(48, 209, 88) else Color.rgb(255, 159, 10),
-                    Color.rgb(166, 227, 110),
-                    if (st.notifCount > 0) Color.rgb(255, 55, 95) else Color.rgb(65, 70, 78),
-                )
-                // Center hub
-                fill.color = Color.argb(aInt, 100, 210, 255)
-                c.drawCircle(x, y, d * 0.12f, fill)
-                for (i in 0 until 6) {
-                    val ang = Math.toRadians(i * 60.0 - 90.0)
-                    val mx = x + (cos(ang) * orbit).toFloat()
-                    val my = y + (sin(ang) * orbit).toFloat()
-                    fill.color = withAlpha(colors[i], aInt)
-                    c.drawCircle(mx, my, miniR, fill)
-                }
-            }
-
             WidgetKind.VITALS -> {
                 fill.color = Color.argb(aInt, 18, 28, 22)
                 c.drawCircle(x, y, r, fill)
@@ -5135,10 +5029,7 @@ class WatchView(
                 grabbedPoolIndex = if (clusterTopology == ClusterTopology.LIQUID_POOL && apps.target > 0.5f) {
                     hitEntryAt(e.x, e.y)?.slotIndex ?: -1
                 } else -1
-                modeAtDown = when {
-                    controlIn.target > 0.5f -> MODE_CONTROL
-                    else -> MODE_APPS
-                }
+                modeAtDown = MODE_APPS
                 edgeCrownDragging = modeAtDown == MODE_APPS && clusterSheet.target == 0f && !gridSearching &&
                     e.x > width - dp(34f) && e.y > topInset + dp(60f) && e.y < height - bottomInset - dp(70f)
                 if (edgeCrownDragging) {
@@ -5154,7 +5045,7 @@ class WatchView(
                         ?: pickerBackRect.takeIf { !it.isEmpty && it.contains(e.x, e.y) }
                         ?: dockSegs.firstOrNull { !it.isEmpty && it.contains(e.x, e.y) }
                     if (hitR != null) { pressedRect = RectF(hitR); pressedRadius = dp(16f) }
-                } else if (controlIn.target == 0f) {
+                } else {
                     val seg = dockSegs.firstOrNull { !it.isEmpty && it.contains(e.x, e.y) }
                     if (seg != null) { pressedRect = RectF(seg); pressedRadius = dp(24f) }
                 }
@@ -5202,9 +5093,6 @@ class WatchView(
                 if (dragging && !longPressed && clusterSheet.target == 0f) {
                     if (edgeCrownDragging) {
                         scrubCrownZoom(e.y - downY)
-                    } else if (controlIn.target == 1f && controlCenter.volumeBarRect.contains(downX, downY)) {
-                        val v = ((e.x - controlCenter.volumeBarRect.left) / controlCenter.volumeBarRect.width()).coerceIn(0f, 1f)
-                        onControlAction(ControlAction.VOLUME_UP, v)
                     } else {
                         drag(e.x - lastX, e.y - lastY, e.y - downY)
                     }
@@ -5279,9 +5167,6 @@ class WatchView(
     private fun drag(dx: Float, dy: Float, totalDy: Float) {
         val w = width.toFloat()
         when (modeAtDown) {
-            MODE_CONTROL -> {
-                if (totalDy < 0) controlIn.snap((1f + totalDy / (0.4f * height)).coerceIn(0f, 1f))
-            }
             MODE_APPS -> {
                 when {
                     gridSearching -> {
@@ -5410,11 +5295,6 @@ class WatchView(
     private fun release(vx: Float, vy: Float, totalDy: Float) {
         val w = width.toFloat()
         when (modeAtDown) {
-            MODE_CONTROL -> {
-                if (totalDy < -0.1f * height || vy < -1200f) {
-                    openFullHoneycomb()
-                } else controlIn.target = 1f
-            }
             MODE_APPS -> {
                 when {
                     gridSearching -> {
@@ -5590,23 +5470,6 @@ class WatchView(
                 clusterSheet.target = 0f
                 invalidate()
             }
-            return
-        }
-
-        // 1. Control Center taps
-        if (controlIn.target == 1f) {
-            controlCenter.actionRects.lastOrNull { it.first.contains(x, y) }?.let { (_, act) ->
-                performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                onControlAction(act, null)
-                return
-            }
-            if (controlCenter.volumeBarRect.contains(x, y)) {
-                val v = ((x - controlCenter.volumeBarRect.left) / controlCenter.volumeBarRect.width()).coerceIn(0f, 1f)
-                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                onControlAction(ControlAction.VOLUME_UP, v)
-                return
-            }
-            openFullHoneycomb()
             return
         }
 
@@ -5828,7 +5691,6 @@ class WatchView(
     private fun handleWidgetPodAction(actionId: String) {
         performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
         when (actionId) {
-            "CLOCK_CONTROLS" -> openControlCenter()
             "SYS_WIDGETS" -> {
                 closeWidgetPod()
                 onWidgetsPage()
@@ -5837,10 +5699,6 @@ class WatchView(
             "MEDIA_PLAY" -> onCardAction(CardAction.MEDIA_PLAY_PAUSE)
             "MEDIA_NEXT" -> onCardAction(CardAction.MEDIA_NEXT)
             "MEDIA_OPEN" -> onCardAction(CardAction.MEDIA_OPEN)
-            "CTRL_WIFI" -> onControlAction(ControlAction.WIFI, null)
-            "CTRL_BT" -> onControlAction(ControlAction.BLUETOOTH, null)
-            "CTRL_TORCH" -> onControlAction(ControlAction.TORCH, null)
-            "CTRL_RINGER" -> onControlAction(ControlAction.RINGER, null)
             "VITALS_BATTERY" -> onCardAction(CardAction.OPEN_BATTERY)
             "CAL_OPEN" -> onCardAction(CardAction.OPEN_CALENDAR)
             "CAL_ALARMS" -> onCardAction(CardAction.OPEN_ALARMS)
@@ -5899,7 +5757,6 @@ class WatchView(
         /** Bubbles riding the Chrono Bezel's outer carousel ring at once. */
         const val BEZEL_OUTER_CAP = 18
         const val MODE_APPS = 0
-        const val MODE_CONTROL = 1
         val FOCUS_RING_ORDER = listOf(Hex(0, -1), Hex(1, -1), Hex(1, 0), Hex(0, 1), Hex(-1, 1), Hex(-1, 0))
     }
 }

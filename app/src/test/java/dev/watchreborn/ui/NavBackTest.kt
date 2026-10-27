@@ -35,11 +35,6 @@ class NavBackTest {
         assertEquals(NavLayer.SHEET, NavBack.layerToPop(s))
     }
 
-    @Test fun controlPopsBeforePods() {
-        val s = NavState(controlOpen = true, widgetOpen = true)
-        assertEquals(NavLayer.CONTROL, NavBack.layerToPop(s))
-    }
-
     @Test fun widgetPodPopsBeforeFolder() {
         val s = NavState(widgetOpen = true, folderOpen = true)
         assertEquals(NavLayer.WIDGET_POD, NavBack.layerToPop(s))
