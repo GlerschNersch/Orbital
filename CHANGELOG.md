@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.9.2 — 2026-10-26
+
+Google Play prep (code side). A real app icon at last: the stock Android system icon is replaced by an adaptive icon of the bubble cluster itself — a blue centre bubble ringed by six coloured bubbles on near-black, with a monochrome layer for themed icons — plus a matching 512×512 store icon under `store-assets/`. Permission trim: `REQUEST_DELETE_PACKAGES` removed — uninstall has always used the system `ACTION_DELETE` confirmation and never the PackageInstaller API, so the sensitive permission was dead weight (every other declared permission is genuinely used: status-bar expansion, Wi-Fi/Bluetooth state for Control Center, step counter). Release builds now minify and shrink resources (bundle 816 KB → 293 KB), with the minified build smoke-tested on the emulator — cluster, Widgets, Settings, and the notification peek all working — before shipping.
+
 ## 2.9.1 — 2026-10-26
 
 Core spacing tuned (Matt's screenshot showed the new centre app and its ring swallowing each other): the lattice pitch leaves only ~13% headroom over the base bubble diameter, while usage growth runs to 1.5x and the logarithmic curve parks many favourites near that max — overlap was arithmetically guaranteed. The lattice now runs 10% wider, and growth above 1.0 is compressed (1.5 max → ~1.28) while the below-1 shrink is untouched, so rankings stay readable, the centre still reads biggest (the fisheye already favours it), and even a worst-case pair of max-growth neighbours now fits with a small gap.

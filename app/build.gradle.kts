@@ -12,8 +12,8 @@ android {
         // OnBackInvokedCallback and the Android 13 themed-icon APIs.
         minSdk = 33
         targetSdk = 36
-        versionCode = 51
-        versionName = "2.9.1"
+        versionCode = 52
+        versionName = "2.9.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -32,7 +32,12 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // Play prep (2.9.2): shrink + obfuscate. Safe here — the only
+            // reflection in the app targets a system status-bar object,
+            // and manifest-declared components are kept by aapt rules.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
