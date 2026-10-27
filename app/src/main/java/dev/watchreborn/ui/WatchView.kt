@@ -1116,62 +1116,6 @@ class WatchView(
     }
     private var islandDragId: Int? = null
     private var islandDragMoved = false
-    /** 3.6.0 Part C: the drag's start anchor (cancel restores it),
-     *  the free-drag anchor the pointer is really tracking, and the
-     *  snap zone currently engaged (NONE = free placement). */
-    private var islandDragStartAx = 0f
-    private var islandDragStartAy = 0f
-    private var islandDragFreeAx = 0f
-    private var islandDragFreeAy = 0f
-    private var islandSnapZone = SnapMath.Zone.NONE
-    /** 3.6.1: the last drawn grid frame's camera, stashed so the
-     *  island-drag handler can invert it (canvas px -> anchor)
-     *  with exactly the values the frame was drawn with. */
-    private var lastGridEffZoom = 1f
-    private var lastGridOv = 0f
-
-    /** 3.6.1: invert the island draw transform — a canvas px
-     *  point back to an anchor — using the last drawn frame's
-     *  camera ([lastBasePitch] / [lastGridEffZoom] / [lastGridOv],
-     *  stashed by drawGrid). The forward map is radial: the
-     *  fisheye pull scales both axes by one factor k(d), so the
-     *  inverse solves the pulled distance by fixed-point
-     *  iteration (Fisheye.pulled is monotonic; five passes are
-     *  far past convergence). Force Field islands are unwarped —
-     *  factor 1 there. Null until a frame has been drawn. */
-    private fun screenToIslandAnchor(px: Float, py: Float): FloatArray? {
-        val u = unit
-        val bp = lastBasePitch
-        val ez = lastGridEffZoom
-        if (u <= 0f || bp <= 0f || ez <= 0f) return null
-        val ov = lastGridOv
-        val w = width.toFloat()
-        val h = height.toFloat()
-        val sx = max(1f, w / u)
-        val sy = max(1f, (h / u) / Metrics.WATCH_ASPECT)
-        val dxz = (px - w / 2f) / (u * ez)
-        val dyz = (py - h / 2f) / (u * ez)
-        val isForce = clusterTopology == ClusterTopology.FORCE_FIELD
-        var k = 1f
-        if (!isForce) {
-            val rz = hypot(dxz / sx, dyz / sy)
-            if (rz > 1e-5f) {
-                var d = rz
-                repeat(5) {
-                    val pullK = if (d > 1e-5f) Fisheye.pulled(d) / d else 1f
-                    k = pullK * (1f - ov) + ov
-                    if (k > 1e-5f) d = rz / k
-                }
-            }
-        }
-        if (k <= 1e-5f) return null
-        val dxI = dxz / k
-        val dyI = dyz / k
-        return floatArrayOf(
-            (dxI * u - panX.value * (1f - ov)) / bp,
-            (dyI * u - panY.value * (1f - ov)) / bp,
-        )
-    }
     private var islandPxPerUnit = 0f
     private var islandsShownLastFrame = false
     private val islandPath = Path()
@@ -3348,8 +3292,6 @@ class WatchView(
         // physically overlapped, worst around the new centre app.
         val basePitch = Metrics.GRID_PITCH * u * (1f + 0.32f * ov) * 1.10f
         lastBasePitch = basePitch
-        lastGridEffZoom = effZoom
-        lastGridOv = ov
 
         val isRiver = clusterTopology == ClusterTopology.RIVER
         val isOrbitals = clusterTopology == ClusterTopology.ORBITALS
@@ -3635,39 +3577,6 @@ class WatchView(
             }
             islandsShownLastFrame = islandsShownNow
             if ((isForce || isHoneycomb || isGravity) && islands.isNotEmpty()) {
-                // 3.6.1: while an island drag sits in a snap
-                // zone, wash + outline the zone as a true slice
-                // of the CANVAS — the cluster area between the
-                // header pill and the dock (this frame's [top]
-                // and the matching bottom), in plain view px,
-                // tiled edge-to-edge at the canvas midlines. The
-                // dragged tile rides the snapped anchor (the drag
-                // writes it live), so the drop ghost centres
-                // inside the zone. Sibling zones of the same
-                // layout get a faint outline so the tiling reads.
-                // 3.6.0 pushed the anchor-space field rect through
-                // the fisheye, which collapsed it into a floating
-                // capsule around the tile.
-                if (islandDragId != null && islandSnapZone != SnapMath.Zone.NONE) {
-                    val cTop = top
-                    val cBottom = h - bottomInset - 0.02f * w
-                    stroke.strokeWidth = dp(1.4f)
-                    stroke.color = withAlpha(accent, (aInt * 0.30f).toInt())
-                    for (sib in SnapMath.siblingZones(islandSnapZone)) {
-                        val sr = SnapMath.zoneRect(sib, 0f, cTop, w, cBottom) ?: continue
-                        islandInset.set(sr[0], sr[1], sr[2], sr[3])
-                        c.drawRoundRect(islandInset, dp(12f), dp(12f), stroke)
-                    }
-                    val zr = SnapMath.zoneRect(islandSnapZone, 0f, cTop, w, cBottom)
-                    if (zr != null) {
-                        islandInset.set(zr[0], zr[1], zr[2], zr[3])
-                        fill.color = withAlpha(accent, (aInt * 0.08f).toInt())
-                        c.drawRoundRect(islandInset, dp(12f), dp(12f), fill)
-                        stroke.strokeWidth = dp(2f)
-                        stroke.color = withAlpha(accent, (aInt * 0.55f).toInt())
-                        c.drawRoundRect(islandInset, dp(12f), dp(12f), stroke)
-                    }
-                }
                 for (slot in islands) {
                     // In the lattice layouts the island rides the same
                     // fisheye as its bubbles, so the clearance the slot
@@ -6060,11 +5969,6 @@ class WatchView(
                     islandAt(e.x, e.y)?.let {
                         islandDragId = it.id
                         islandDragMoved = false
-                        islandDragStartAx = it.anchorX
-                        islandDragStartAy = it.anchorY
-                        islandDragFreeAx = it.anchorX
-                        islandDragFreeAy = it.anchorY
-                        islandSnapZone = SnapMath.Zone.NONE
                         return true
                     }
                 }
@@ -6103,52 +6007,9 @@ class WatchView(
                     val slot = islands.firstOrNull { it.id == islandDragId }
                     val dragScale = slot?.dragScale?.takeIf { it > 0f } ?: islandPxPerUnit
                     if (slot != null && dragScale > 0f) {
-                        islandDragFreeAx += (e.x - lastX) / dragScale
-                        islandDragFreeAy += (e.y - lastY) / dragScale
+                        slot.anchorX += (e.x - lastX) / dragScale
+                        slot.anchorY += (e.y - lastY) / dragScale
                         if (hypot(e.x - downX, e.y - downY) > slop) islandDragMoved = true
-                        // 3.6.1: snap is a SCREEN-space gesture
-                        // against the ENTIRE CANVAS (the cluster
-                        // area between the header pill and the
-                        // dock): classify the POINTER in view px.
-                        // While a zone is engaged the slot rides
-                        // the landing anchor live — the zone's
-                        // canvas centre inverted through the
-                        // camera transform and fit-clamped — so
-                        // the lattice solver, the Force Field
-                        // walls and the drop ghost all preview
-                        // the landing spot. The island's scale is
-                        // never touched. (3.6.0 classified the
-                        // tile's anchor against the world field,
-                        // so at working zoom zones engaged late
-                        // and in the wrong places.)
-                        val canvasTop = topInset + 0.02f * width
-                        val canvasBottom = height - bottomInset - 0.02f * width
-                        val zone = SnapMath.classify(
-                            e.x, e.y, 0f, canvasTop, width.toFloat(), canvasBottom,
-                        )
-                        if (zone != islandSnapZone) {
-                            islandSnapZone = zone
-                            if (zone != SnapMath.Zone.NONE) {
-                                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                            }
-                        }
-                        val landCentre = if (zone != SnapMath.Zone.NONE) {
-                            SnapMath.zoneCenter(zone, 0f, canvasTop, width.toFloat(), canvasBottom)
-                        } else null
-                        val landAnchor = landCentre?.let { screenToIslandAnchor(it[0], it[1]) }
-                        if (landAnchor != null) {
-                            val snapPitch = Metrics.GRID_PITCH * unit * 1.10f
-                            val clamped = SnapMath.clampToField(
-                                landAnchor[0], landAnchor[1],
-                                (width / 2f) / snapPitch, (height / 2f) / snapPitch,
-                                slot.halfW, slot.halfH,
-                            )
-                            slot.anchorX = clamped[0]
-                            slot.anchorY = clamped[1]
-                        } else {
-                            slot.anchorX = islandDragFreeAx
-                            slot.anchorY = islandDragFreeAy
-                        }
                         lastX = e.x
                         lastY = e.y
                         invalidate()
@@ -6222,7 +6083,6 @@ class WatchView(
                     val slot = islands.firstOrNull { it.id == islandDragId }
                     val id = islandDragId
                     islandDragId = null
-                    islandSnapZone = SnapMath.Zone.NONE
                     dragging = false
                     if (slot != null && id != null) {
                         if (islandDragMoved) onIslandMoved(id, slot.anchorX, slot.anchorY)
@@ -6260,14 +6120,7 @@ class WatchView(
                 dragging = false
                 pinching = false
                 edgeCrownDragging = false
-                if (islandDragId != null) {
-                    islands.firstOrNull { it.id == islandDragId }?.let {
-                        it.anchorX = islandDragStartAx
-                        it.anchorY = islandDragStartAy
-                    }
-                }
                 islandDragId = null
-                islandSnapZone = SnapMath.Zone.NONE
                 if (islandResizeId != null) {
                     islands.firstOrNull { it.id == islandResizeId }?.scale = islandResizeStartScale
                     islandResizeId = null

@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.6.2 — 2026-10-27
+- **Island quadrant snap removed.** The snap placement added in
+  3.6.0 (and reworked in 3.6.1) is gone, at Matt's call: dragging
+  an island in edit mode is the plain free drag again — the tile
+  follows your finger with the drop ghost showing where it will
+  land, and letting go leaves it exactly where you dropped it.
+  Nothing else changes: built-in widgets, island stacks and
+  faces all stay, the 3.6.1 load-time heal fix stays, and any
+  island positioned while snap existed keeps its spot.
+
 ## 3.6.1 — 2026-10-27
 - **Bug fix: island snap zones now work against the entire
   canvas.** 3.6.0 classified the dragged tile's anchor against
