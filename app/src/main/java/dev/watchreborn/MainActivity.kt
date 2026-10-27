@@ -1728,6 +1728,62 @@ class MainActivity : Activity(), SensorEventListener {
                 )
             }
         }
+        // 3.2.2 fit-first placement: an island's anchor is pulled in
+        // until the whole tile fits the field, so wide/tall widgets
+        // never hang off a screen edge — on first add and on load.
+        // (Drags stay free in-session; a lost-off-edge island heals
+        // back into view on the next load.) Corrected anchors are
+        // written back to prefs so the fix sticks.
+        val dm = resources.displayMetrics
+        val hexPxC = (dm.widthPixels * Metrics.GRID_PITCH * 1.10f).coerceAtLeast(1f)
+        fun limXFor(slot: WatchView.IslandSlot) =
+            ((dm.widthPixels / 2f) / hexPxC - slot.halfW - 0.12f).coerceAtLeast(0f)
+        fun limYFor(slot: WatchView.IslandSlot) =
+            ((dm.heightPixels / 2f) / hexPxC - slot.halfH - 0.12f).coerceAtLeast(0f)
+        for (slot in slots) {
+            if (slot.bornAt == 0L) slot.bornAt = android.os.SystemClock.uptimeMillis()
+            slot.anchorX = slot.anchorX.coerceIn(-limXFor(slot), limXFor(slot))
+            slot.anchorY = slot.anchorY.coerceIn(-limYFor(slot), limYFor(slot))
+        }
+        // Islands must not overlap each other either: clamping can pull
+        // several wide tiles into the same centre column. Stack pass —
+        // tiles whose x-ranges overlap are separated vertically, first
+        // downward, then back upward for whatever the bottom squeezed.
+        val byY = slots.sortedBy { it.anchorY }
+        fun xOverlap(a: WatchView.IslandSlot, b: WatchView.IslandSlot) =
+            a.anchorX - a.halfW < b.anchorX + b.halfW + 0.05f &&
+                b.anchorX - b.halfW < a.anchorX + a.halfW + 0.05f
+        for (pass in 0..1) {
+            val seq = if (pass == 0) byY else byY.asReversed()
+            var prev: WatchView.IslandSlot? = null
+            for (slot in seq) {
+                val p = prev
+                if (p != null && xOverlap(slot, p)) {
+                    if (pass == 0) {
+                        val minTop = p.anchorY + p.halfH + 0.08f
+                        val need = minTop - (slot.anchorY - slot.halfH)
+                        if (need > 0f) slot.anchorY =
+                            (slot.anchorY + need).coerceAtMost(limYFor(slot))
+                    } else {
+                        val maxBottom = p.anchorY - p.halfH - 0.08f
+                        val over = (slot.anchorY + slot.halfH) - maxBottom
+                        if (over > 0f) slot.anchorY =
+                            (slot.anchorY - over).coerceAtLeast(-limYFor(slot))
+                    }
+                }
+                prev = slot
+            }
+        }
+        for (slot in slots) {
+            val storedX = prefs.getFloat(islandKey(slot.id, "ax"), Float.NaN)
+            val storedY = prefs.getFloat(islandKey(slot.id, "ay"), Float.NaN)
+            if (storedX != slot.anchorX || storedY != slot.anchorY) {
+                prefs.edit()
+                    .putFloat(islandKey(slot.id, "ax"), slot.anchorX)
+                    .putFloat(islandKey(slot.id, "ay"), slot.anchorY)
+                    .apply()
+            }
+        }
         view.islands = slots
         view.invalidate()
     }
@@ -1816,6 +1872,39 @@ class MainActivity : Activity(), SensorEventListener {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         islandPod = scrim
         islandPodId = id
+        // 3.2.2: the pod grows out of the island tile it came from
+        // (shared-element feel) while the scrim fades in under it.
+        val tileRect = view.islands.firstOrNull { it.id == id }?.rect?.takeIf { !it.isEmpty }
+        if (tileRect != null) {
+            val vLoc = IntArray(2)
+            view.getLocationOnScreen(vLoc)
+            val tileCx = vLoc[0] + tileRect.centerX()
+            val tileCy = vLoc[1] + tileRect.centerY()
+            scrim.background?.alpha = 0
+            card.post {
+                if (islandPod !== scrim) return@post
+                val cLoc = IntArray(2)
+                card.getLocationOnScreen(cLoc)
+                card.pivotX = card.width / 2f
+                card.pivotY = card.height / 2f
+                card.translationX = tileCx - (cLoc[0] + card.width / 2f)
+                card.translationY = tileCy - (cLoc[1] + card.height / 2f)
+                card.scaleX = (tileRect.width() / card.width).coerceIn(0.05f, 1f)
+                card.scaleY = (tileRect.height() / card.height).coerceIn(0.05f, 1f)
+                card.alpha = 0.35f
+                card.animate().translationX(0f).translationY(0f).scaleX(1f).scaleY(1f)
+                    .alpha(1f).setDuration(260)
+                    .setInterpolator(android.view.animation.DecelerateInterpolator())
+                    .start()
+                android.animation.ValueAnimator.ofInt(0, 190).apply {
+                    duration = 260
+                    addUpdateListener {
+                        scrim.setBackgroundColor(Color.argb(it.animatedValue as Int, 0, 0, 0))
+                    }
+                    start()
+                }
+            }
+        }
     }
 
     private fun closeIslandPod() {
@@ -1823,21 +1912,59 @@ class MainActivity : Activity(), SensorEventListener {
         val id = islandPodId
         islandPod = null
         islandPodId = null
-        if (id != null) {
-            val hv = islandViews[id]
-            val bin = islandContainer
-            if (hv != null && bin != null) {
-                (hv.parent as? ViewGroup)?.removeView(hv)
-                val info = appWidgetManager.getAppWidgetInfo(id)
-                val (wDp, hDp) = if (info != null) islandTileDp(info) else (300 to 160)
-                val dens = resources.displayMetrics.density
-                hv.layoutParams = FrameLayout.LayoutParams((wDp * dens).toInt(), (hDp * dens).toInt())
-                bin.addView(hv)
-                sendIslandSize(id, wDp, hDp)
-                hv.post { snapshotIsland(id) }
+        // 3.2.2: the pod shrinks back into its island tile; teardown
+        // (re-homing the live view into its bin) waits for the
+        // animation, and only runs if the view is still in this pod —
+        // a reopen in the meantime steals it and wins.
+        val card = scrim.getChildAt(0) as? FrameLayout
+        val tileRect = if (id != null)
+            view.islands.firstOrNull { it.id == id }?.rect?.takeIf { !it.isEmpty } else null
+        fun finishClose() {
+            if (id != null) {
+                val hv = islandViews[id]
+                val bin = islandContainer
+                if (hv != null && bin != null && card != null && hv.parent === card) {
+                    card.removeView(hv)
+                    val info = appWidgetManager.getAppWidgetInfo(id)
+                    val (wDp, hDp) = if (info != null) islandTileDp(info) else (300 to 160)
+                    val dens = resources.displayMetrics.density
+                    hv.layoutParams = FrameLayout.LayoutParams((wDp * dens).toInt(), (hDp * dens).toInt())
+                    bin.addView(hv)
+                    sendIslandSize(id, wDp, hDp)
+                    hv.post { snapshotIsland(id) }
+                }
             }
+            (scrim.parent as? ViewGroup)?.removeView(scrim)
         }
-        (scrim.parent as? ViewGroup)?.removeView(scrim)
+        if (card != null && tileRect != null && card.width > 0) {
+            val vLoc = IntArray(2)
+            view.getLocationOnScreen(vLoc)
+            val tileCx = vLoc[0] + tileRect.centerX()
+            val tileCy = vLoc[1] + tileRect.centerY()
+            val cLoc = IntArray(2)
+            card.getLocationOnScreen(cLoc)
+            card.pivotX = card.width / 2f
+            card.pivotY = card.height / 2f
+            card.animate()
+                .translationX(tileCx - (cLoc[0] + card.width / 2f))
+                .translationY(tileCy - (cLoc[1] + card.height / 2f))
+                .scaleX((tileRect.width() / card.width).coerceIn(0.05f, 1f))
+                .scaleY((tileRect.height() / card.height).coerceIn(0.05f, 1f))
+                .alpha(0.3f)
+                .setDuration(180)
+                .setInterpolator(android.view.animation.AccelerateInterpolator())
+                .withEndAction { finishClose() }
+                .start()
+            android.animation.ValueAnimator.ofInt(190, 0).apply {
+                duration = 180
+                addUpdateListener {
+                    scrim.setBackgroundColor(Color.argb(it.animatedValue as Int, 0, 0, 0))
+                }
+                start()
+            }
+        } else {
+            finishClose()
+        }
     }
 
     private fun showIslandMenu(id: Int) {

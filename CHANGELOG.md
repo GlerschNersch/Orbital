@@ -1,5 +1,26 @@
 # Changelog
 
+## 3.2.2 — 2026-10-26
+- Five multi-island cleanups (from the three-island field test):
+  - **Force Field no longer jams.** Bubbles whose hex homes collide with an
+    island are re-homed to free slots by the IslandLayout solver there too,
+    so springs stop pulling bubbles into tiles and the field settles clean;
+    island walls are now radius-aware, keeping a bubble's whole body clear
+    of a tile instead of just its centre.
+  - **Fit-first placement.** A new island's anchor is pulled in until the
+    whole tile fits the field — wide/tall widgets no longer hang off a
+    screen edge. Stored anchors heal the same way on load (drags stay free
+    in-session), and when several wide tiles land in the same column they
+    are stacked apart so islands never overlap each other either.
+  - **Centre protection.** An island that merely brushes the centre
+    bubble's clearance no longer evicts the cluster's most-used app from
+    the core; only a tile actually covering the centre point displaces it.
+  - **Fit, never crop.** Island snapshots are fitted into their tile
+    instead of centre-cropped, so no widget content is ever hidden.
+  - **Motion.** The island pod grows out of the tile you tapped and
+    shrinks back into it on close; islands scale/fade in when they appear
+    or when you return to an island layout.
+
 ## 3.2.1 — 2026-10-26
 - Anchor Islands now live in **Classic Honeycomb** and **Gravity Sizes** too,
   not just Force Field. Bubbles whose home slots would collide with a widget

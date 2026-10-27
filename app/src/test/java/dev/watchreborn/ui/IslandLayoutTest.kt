@@ -87,6 +87,35 @@ class IslandLayoutTest {
         }
     }
 
+    @Test fun islandBrushingTheCoreDoesNotEvictTheCentreApp() {
+        val homes = Hex.spiral(61)
+        val radii = FloatArray(61) { 0.55f }
+        // Rect x in [0.5, 2.6]: the centre bubble's clearance circle
+        // (r=0.55 around (0,0)) reaches into it, but the centre point
+        // itself is outside — the core app must keep its home.
+        val island = IslandLayout.Obstacle(1.55f, 0f, 1.05f, 0.80f)
+        val assigned = IslandLayout.assign(homes, 1f, radii, listOf(island))
+        assertEquals(homes[0], assigned[0])
+        assertEquals(61, assigned.toSet().size)
+        // The bubble whose home is inside the rect still moves out.
+        val idx = homes.indices.first { it != 0 && assigned[it] != homes[it] }
+        assertTrue(idx > 0)
+    }
+
+    @Test fun islandCoveringTheCentrePointEvictsEvenTheCentreApp() {
+        val homes = Hex.spiral(61)
+        val radii = FloatArray(61) { 0.55f }
+        // Rect x in [-0.4, 1.2], y in [-0.8, 0.8]: covers (0,0) itself.
+        val island = IslandLayout.Obstacle(0.4f, 0f, 0.8f, 0.8f)
+        val assigned = IslandLayout.assign(homes, 1f, radii, listOf(island))
+        assertTrue(assigned[0] != homes[0])
+        val c = centers(assigned, 1f)
+        assertFalse(
+            IslandLayout.circleIntersects(c[0].first, c[0].second, radii[0], island),
+        )
+        assertEquals(61, assigned.toSet().size)
+    }
+
     @Test fun gravityScaleKeepsAssignmentsUniqueAndClear() {
         val homes = Hex.spiral(91)
         val radii = FloatArray(91) { i -> if (i == 0) 0.80f else 0.58f }

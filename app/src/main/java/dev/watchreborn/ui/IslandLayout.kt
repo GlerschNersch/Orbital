@@ -53,6 +53,7 @@ object IslandLayout {
         radii: FloatArray,
         obstacles: List<Obstacle>,
         extraSlots: Int = 384,
+        protectedIndex: Int = 0,
     ): List<Hex> {
         if (original.isEmpty()) return emptyList()
         require(radii.size == original.size) { "radii must match item count" }
@@ -68,7 +69,18 @@ object IslandLayout {
             a
         }
         val blocked = BooleanArray(original.size) { i ->
-            circleIntersectsAny(origCenters[i][0], origCenters[i][1], radii[i], obstacles)
+            if (i == protectedIndex) {
+                // Centre protection (3.2.2): the core bubble keeps its
+                // home unless an island actually covers the centre
+                // point itself — a tile merely brushing its clearance
+                // circle does not evict the cluster's most-used app.
+                obstacles.any { o ->
+                    abs(origCenters[i][0] - o.centerX) <= o.halfW &&
+                        abs(origCenters[i][1] - o.centerY) <= o.halfH
+                }
+            } else {
+                circleIntersectsAny(origCenters[i][0], origCenters[i][1], radii[i], obstacles)
+            }
         }
 
         val result = arrayOfNulls<Hex>(original.size)

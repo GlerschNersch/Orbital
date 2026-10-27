@@ -734,6 +734,8 @@ class WatchView(
         /** Screen px per pitch unit at the last draw; converts drag
          *  deltas back into anchor units (fisheye-aware). */
         var dragScale: Float = 0f
+        /** Entrance-animation start (3.2.2): islands scale/fade in. */
+        var bornAt: Long = 0L
     }
     var islands: List<IslandSlot> = emptyList()
     var onIslandTap: (Int) -> Unit = {}
@@ -742,6 +744,7 @@ class WatchView(
     private var islandDragId: Int? = null
     private var islandDragMoved = false
     private var islandPxPerUnit = 0f
+    private var islandsShownLastFrame = false
     private val islandPath = Path()
     private val islandDst = RectF()
     private val islandInset = RectF()
@@ -2333,13 +2336,23 @@ class WatchView(
         // every bubble is a light body on a spring to its hex home;
         // neighbours repel, widget islands repel like walls, and pan
         // velocity sloshes the whole field. Simulated in hex units.
+        // 3.2.2: in Force Field, bubbles whose hex homes collide with
+        // an island are re-homed to free slots by the same solver the
+        // lattice layouts use — otherwise their springs pull them into
+        // the island forever and the field jams into a knot.
+        val ffAssigned = if (clusterTopology == ClusterTopology.FORCE_FIELD && islands.isNotEmpty())
+            islandAssignedHexes(items) else null
+        fun ffHome(i: Int, out: FloatArray) {
+            val hexes = ffAssigned ?: gridHexes
+            if (i in hexes.indices) pointyCenter(hexes[i], 1f, out)
+            else { out[0] = 0f; out[1] = 0f }
+        }
         if (clusterTopology == ClusterTopology.FORCE_FIELD) {
             ensureForceCapacity(count)
             if (reducedMotion) {
                 for (i in 0 until count) {
                     if (!ffSeeded[i]) seedForceSlot(i)
-                    if (i in gridHexes.indices) pointyCenter(gridHexes[i], 1f, ffTmp)
-                    else { ffTmp[0] = 0f; ffTmp[1] = 0f }
+                    ffHome(i, ffTmp)
                     ffPosX[i] = ffTmp[0]; ffPosY[i] = ffTmp[1]
                     ffVelX[i] = 0f; ffVelY[i] = 0f
                 }
@@ -2370,9 +2383,14 @@ class WatchView(
                 var maxErr = 0f
                 var maxVel = 0f
                 for (i in 0 until count) {
-                    if (!ffSeeded[i]) seedForceSlot(i)
-                    if (i in gridHexes.indices) pointyCenter(gridHexes[i], 1f, ffTmp)
-                    else { ffTmp[0] = 0f; ffTmp[1] = 0f }
+                    if (!ffSeeded[i]) {
+                        seedForceSlot(i)
+                        if (ffAssigned != null && i in ffAssigned.indices) {
+                            pointyCenter(ffAssigned[i], 1f, ffTmp)
+                            ffPosX[i] = ffTmp[0]; ffPosY[i] = ffTmp[1]
+                        }
+                    }
+                    ffHome(i, ffTmp)
                     val hx = ffTmp[0]
                     val hy = ffTmp[1]
                     var ax = -kSpring * (ffPosX[i] - hx) - cDamp * ffVelX[i]
@@ -2385,7 +2403,10 @@ class WatchView(
                     ffPosY[i] += ffVelY[i] * dt
                     // Islands are walls: a bubble may not live inside one.
                     for (slot in islands) {
-                        val minD = 0.50f
+                        // 3.2.2: the wall keeps the bubble's whole body
+                        // clear of the tile, not just its centre — a big
+                        // bubble no longer comes to rest on a tile edge.
+                        val minD = islandClearanceRadius(i, items[i])
                         val cxx = ffPosX[i].coerceIn(slot.anchorX - slot.halfW, slot.anchorX + slot.halfW)
                         val cyy = ffPosY[i].coerceIn(slot.anchorY - slot.halfH, slot.anchorY + slot.halfH)
                         val dx = ffPosX[i] - cxx
@@ -2938,6 +2959,14 @@ class WatchView(
             // take pan + zoom but not the fisheye — islands are furniture,
             // and their stillness is what makes the field read as flowing
             // around them.
+            // 3.2.2: replay the island entrance when an island layout
+            // becomes visible again (topology switch back).
+            val islandsShownNow = (isForce || isHoneycomb || isGravity) && islands.isNotEmpty()
+            if (islandsShownNow && !islandsShownLastFrame) {
+                val nowMs = android.os.SystemClock.uptimeMillis()
+                for (slot in islands) if (nowMs - slot.bornAt > 450L) slot.bornAt = nowMs
+            }
+            islandsShownLastFrame = islandsShownNow
             if ((isForce || isHoneycomb || isGravity) && islands.isNotEmpty()) {
                 for (slot in islands) {
                     // In the lattice layouts the island rides the same
@@ -2955,14 +2984,20 @@ class WatchView(
                     val sizeK = if (!isForce) Fisheye.size(dI) * (1f - ov) + 0.88f * ov else 1f
                     val icx = cx + dxI * kI * u * effZoom
                     val icy = cy + dyI * kI * u * effZoom
-                    val hw = slot.halfW * basePitch * effZoom * sizeK
-                    val hh = slot.halfH * basePitch * effZoom * sizeK
+                    // 3.2.2 entrance: a fresh island scales/fades in
+                    // over 400ms instead of popping into existence.
+                    val eAge = (android.os.SystemClock.uptimeMillis() - slot.bornAt).coerceIn(0L, 400L)
+                    val eT = eAge / 400f
+                    val eEase = 1f - (1f - eT) * (1f - eT)
+                    if (eT < 1f) postInvalidateOnAnimation()
+                    val hw = slot.halfW * basePitch * effZoom * sizeK * (0.82f + 0.18f * eEase)
+                    val hh = slot.halfH * basePitch * effZoom * sizeK * (0.82f + 0.18f * eEase)
                     slot.dragScale = basePitch * effZoom * sizeK * kI
                     islandPxPerUnit = slot.dragScale
                     if (hw <= 2f || hh <= 2f) { slot.rect.setEmpty(); continue }
                     slot.rect.set(icx - hw, icy - hh, icx + hw, icy + hh)
                     val rr = dp(18f) * effZoom.coerceIn(0.7f, 1.3f)
-                    fill.color = Color.argb((aInt * 0.92f).toInt(), 18, 22, 30)
+                    fill.color = Color.argb((aInt * 0.92f * eEase).toInt(), 18, 22, 30)
                     c.drawRoundRect(slot.rect, rr, rr, fill)
                     val bmp = slot.bitmap
                     if (bmp != null && !bmp.isRecycled) {
@@ -2970,20 +3005,24 @@ class WatchView(
                         islandPath.reset()
                         islandPath.addRoundRect(slot.rect, rr, rr, Path.Direction.CW)
                         c.clipPath(islandPath)
-                        val scale = max(slot.rect.width() / bmp.width, slot.rect.height() / bmp.height)
+                        // 3.2.2: fit, never crop — the whole widget
+                        // stays visible; the tile matte frames it.
+                        val scale = min(slot.rect.width() / bmp.width, slot.rect.height() / bmp.height)
                         val dw = bmp.width * scale
                         val dh = bmp.height * scale
                         islandDst.set(icx - dw / 2f, icy - dh / 2f, icx + dw / 2f, icy + dh / 2f)
+                        bitmapPaint.alpha = (255 * eEase).toInt().coerceIn(0, 255)
                         c.drawBitmap(bmp, null, islandDst, bitmapPaint)
+                        bitmapPaint.alpha = 255
                         c.restore()
                     } else {
                         text.textSize = sp(12f)
-                        text.color = Color.argb((aInt * 0.8f).toInt(), 200, 210, 220)
+                        text.color = Color.argb((aInt * 0.8f * eEase).toInt(), 200, 210, 220)
                         val lbl = slot.label
                         c.drawText(lbl, icx - text.measureText(lbl) / 2f, icy + text.textSize * 0.35f, text)
                     }
                     stroke.strokeWidth = dp(1.4f)
-                    stroke.color = withAlpha(accent, (aInt * 0.55f).toInt())
+                    stroke.color = withAlpha(accent, (aInt * 0.55f * eEase).toInt())
                     c.drawRoundRect(slot.rect, rr, rr, stroke)
                     if (editMode) {
                         stroke.strokeWidth = dp(2.2f)
