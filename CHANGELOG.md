@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.2.3 — 2026-10-26
+- **Fit-to-view overview.** The overview zoom is no longer a hard-coded
+  0.48: WatchView measures the field's content bounds (bubble slots at
+  overview geometry, island tiles included) and picks the scale that
+  fits everything on screen, capped at the classic 0.48 for small
+  fields and floored at 0.20 for legibility (OverviewFit). The pinch
+  floor, pinch-release snap, edge-crown scrub and the crown-track
+  thumb all follow the measured scale, so pinch-out now travels
+  smoothly to a true see-everything view — with a full catalog plus
+  three widget islands the old 0.48 left much of the field off-screen.
+  Applies to Honeycomb, Gravity, Force Field and Orbitals; the other
+  layouts keep the legacy overview.
+- **Force Field islands shrink in overview** to the same 0.88 factor
+  the lattice layouts use, instead of staying full-size and dominating
+  the see-everything view.
+
 ## 3.2.2 — 2026-10-26
 - Five multi-island cleanups (from the three-island field test):
   - **Force Field no longer jams.** Bubbles whose hex homes collide with an

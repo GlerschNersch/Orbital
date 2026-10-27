@@ -673,6 +673,12 @@ class WatchView(
     private val overview = Spring(0f)
     /** Continuous user pinch/crown zoom factor on the Honeycomb Grid (0.42f = Overview .. 1.0f = Normal .. 1.35f = Magnified). */
     private val userZoom = Spring(1f, 0.32f)
+    /** 3.2.3: the overview zoom factor — the legacy 0.48, or a smaller
+     * fit-to-view scale measured from the content bounds (OverviewFit).
+     * Refreshed by drawGrid whenever the field changes; the pinch,
+     * crown and tap plumbing all read this instead of a constant. */
+    private var overviewZoomFit = OverviewFit.MAX_ZOOM
+    private var overviewFitFingerprint = 0
     /** Continuous user pinch zoom factor inside the Unraveled Constellation (0.75f .. 1.35f). */
     private val constellationZoom = Spring(1f, 0.32f)
     /** 0 = main grid, 1 = inside [activeFolder] (either blooming in-place or full screen). */
@@ -825,6 +831,77 @@ class WatchView(
         var r = 0.45f * growth
         if (clusterTopology == ClusterTopology.GRAVITY) r *= gravityWeightFor(index, item)
         return r + 0.04f
+    }
+
+    /** 3.2.3: overview zoom that fits the whole field — bubble slots
+     * at overview geometry (pitch spread 1.32x, radii at the 0.88
+     * overview size) plus island rects — into the viewport. Only the
+     * bounded 2D fields participate; the band/arc/galaxy layouts keep
+     * the legacy overview. Orbitals gets a radial bound because its
+     * rings rotate. */
+    private fun computeOverviewFitZoom(items: List<GridItem>, w: Float, h: Float, top: Float): Float {
+        val topo = clusterTopology
+        if (topo != ClusterTopology.HONEYCOMB && topo != ClusterTopology.GRAVITY &&
+            topo != ClusterTopology.FORCE_FIELD && topo != ClusterTopology.ORBITALS
+        ) return OverviewFit.MAX_ZOOM
+        if (items.isEmpty()) return OverviewFit.MAX_ZOOM
+        val u = unit
+        val pitchOv = Metrics.GRID_PITCH * u * 1.32f * 1.10f
+        val isLattice = topo == ClusterTopology.HONEYCOMB || topo == ClusterTopology.GRAVITY
+        val assigned = if (isLattice && islands.isNotEmpty()) islandAssignedHexes(items) else null
+        var minX = Float.MAX_VALUE
+        var maxX = -Float.MAX_VALUE
+        var minY = Float.MAX_VALUE
+        var maxY = -Float.MAX_VALUE
+        var radial = 0f
+        val out = FloatArray(2)
+        for (i in items.indices) {
+            computeTopologyWorldPos(i, items.size, pitchOv, out)
+            var wx = out[0]
+            var wy = out[1]
+            if (assigned != null && i in assigned.indices) {
+                pointyCenter(assigned[i], pitchOv * (if (topo == ClusterTopology.GRAVITY) 1.10f else 1f), out)
+                wx = out[0]
+                wy = out[1]
+            }
+            val raw = growthFor(items[i])
+            val growth = if (raw > 1f) 1f + (raw - 1f) * 0.55f else raw
+            val r = Metrics.GRID_CENTER_D * u * 0.88f * growth * 0.5f
+            if (topo == ClusterTopology.ORBITALS) {
+                val rad = hypot(wx, wy) + r
+                if (rad > radial) radial = rad
+            } else {
+                if (wx - r < minX) minX = wx - r
+                if (wx + r > maxX) maxX = wx + r
+                if (wy - r < minY) minY = wy - r
+                if (wy + r > maxY) maxY = wy + r
+            }
+        }
+        if (isLattice || topo == ClusterTopology.FORCE_FIELD) {
+            for (slot in islands) {
+                val cxI = slot.anchorX * pitchOv
+                val cyI = slot.anchorY * pitchOv
+                val hw = slot.halfW * pitchOv * 0.88f
+                val hh = slot.halfH * pitchOv * 0.88f
+                if (cxI - hw < minX) minX = cxI - hw
+                if (cxI + hw > maxX) maxX = cxI + hw
+                if (cyI - hh < minY) minY = cyI - hh
+                if (cyI + hh > maxY) maxY = cyI + hh
+            }
+        }
+        val extentX: Float
+        val extentY: Float
+        if (topo == ClusterTopology.ORBITALS) {
+            extentX = radial
+            extentY = radial
+        } else {
+            extentX = max(abs(minX), abs(maxX))
+            extentY = max(abs(minY), abs(maxY))
+        }
+        val cy = h / 2f
+        val availHalfW = (w / 2f - dp(6f)).coerceAtLeast(1f)
+        val availHalfH = min(cy - top - dp(6f), h - dp(84f) - cy - dp(6f)).coerceAtLeast(1f)
+        return OverviewFit.fitZoom(extentX, extentY, availHalfW, availHalfH)
     }
 
     private fun islandAssignedHexes(items: List<GridItem>): List<Hex> {
@@ -2659,9 +2736,33 @@ class WatchView(
         val sx = max(1f, w / u)
         val sy = max(1f, (h / u) / Metrics.WATCH_ASPECT)
         val items = activeGridItems
+        // 3.2.3 fit-to-view: refresh the cached overview scale when
+        // the field (items / topology / islands / viewport) changes.
+        run {
+            var fp = items.size * 31 + clusterTopology.ordinal
+            if (items.isNotEmpty()) {
+                fp = fp * 31 + items.first().key.hashCode()
+                fp = fp * 31 + items[items.size / 2].key.hashCode()
+                fp = fp * 31 + items.last().key.hashCode()
+            }
+            fp = fp * 31 + islands.size
+            for (slot in islands) {
+                fp = fp * 31 + slot.id
+                fp = fp * 31 + (slot.anchorX * 100).toInt()
+                fp = fp * 31 + (slot.anchorY * 100).toInt()
+            }
+            fp = fp * 31 + w.toInt()
+            fp = fp * 31 + h.toInt()
+            fp = fp * 31 + top.toInt()
+            if (fp != overviewFitFingerprint) {
+                overviewFitFingerprint = fp
+                overviewZoomFit = computeOverviewFitZoom(items, w, h, top)
+            }
+        }
+        val ovZoom = overviewZoomFit
         val uz = userZoom.value
-        val ov = max(overview.value, ((0.82f - uz) / (0.82f - 0.48f)).coerceIn(0f, 1f))
-        val effZoom = zoom * (uz * (1f - overview.value) + 0.48f * overview.value)
+        val ov = max(overview.value, ((0.82f - uz) / (0.82f - ovZoom)).coerceIn(0f, 1f))
+        val effZoom = zoom * (uz * (1f - overview.value) + ovZoom * overview.value)
 
         val bFolder = if (bloomFolders) activeFolder else null
         val bWidget = activeWidget
@@ -2981,7 +3082,7 @@ class WatchView(
                     val dI = hypot(dxI / sx, dyI / sy)
                     val pullK = if (!isForce && dI > 1e-4f) Fisheye.pulled(dI) / dI else 1f
                     val kI = pullK * (1f - ov) + 1f * ov
-                    val sizeK = if (!isForce) Fisheye.size(dI) * (1f - ov) + 0.88f * ov else 1f
+                    val sizeK = if (!isForce) Fisheye.size(dI) * (1f - ov) + 0.88f * ov else 1f - 0.12f * ov
                     val icx = cx + dxI * kI * u * effZoom
                     val icy = cy + dyI * kI * u * effZoom
                     // 3.2.2 entrance: a fresh island scales/fades in
@@ -4425,8 +4526,8 @@ class WatchView(
         c.drawRoundRect(rect, trackW / 2, trackW / 2, fill)
 
         val thumbH = dp(24f)
-        val effZ = userZoom.value * (1f - overview.value) + 0.48f * overview.value
-        val progress = ((1.30f - effZ) / (1.30f - 0.48f)).coerceIn(0f, 1f)
+        val effZ = userZoom.value * (1f - overview.value) + overviewZoomFit * overview.value
+        val progress = ((1.30f - effZ) / (1.30f - overviewZoomFit)).coerceIn(0f, 1f)
         val thumbTop = rect.top + progress * (trackH - thumbH)
         fill.color = withAlpha(accent, (alpha * 245).toInt())
         rect.set(right - trackW, thumbTop, right, thumbTop + thumbH)
@@ -4434,7 +4535,7 @@ class WatchView(
 
         // Show live zoom badge when pinching or scrubbing the edge Digital Crown
         if (pinching || edgeCrownDragging) {
-            val zStr = if (effZ <= 0.54f) "Overview" else "${"%.1f".format(effZ)}x"
+            val zStr = if (effZ <= overviewZoomFit + 0.06f) "Overview" else "${"%.1f".format(effZ)}x"
             text.textSize = sp(11.5f)
             val zw = text.measureText(zStr)
             val bRect = RectF(right - trackW - zw - dp(24f), thumbTop - dp(2f), right - trackW - dp(8f), thumbTop + dp(24f))
@@ -5079,7 +5180,7 @@ class WatchView(
                 pinchCumulative = 1f
                 pinchStartZoom = when {
                     gridSearching -> constellationZoom.value
-                    overview.target >= 0.5f -> 0.48f
+                    overview.target >= 0.5f -> overviewZoomFit
                     else -> userZoom.value
                 }
                 return true
@@ -5115,7 +5216,8 @@ class WatchView(
             if (grid.target == 0f && pinchCumulative < 0.90f) {
                 grid.target = 1f
             }
-            val newZ = (pinchStartZoom * pinchCumulative).coerceIn(0.45f, 1.45f)
+            val newZ = (pinchStartZoom * pinchCumulative)
+                .coerceIn(min(0.45f, (overviewZoomFit - 0.02f).coerceAtLeast(0.16f)), 1.45f)
             if (newZ > 1.36f) {
                 // Pinch out wide -> burst folders open into the Unraveled Star Constellation!
                 overview.snap(0f)
@@ -5136,13 +5238,13 @@ class WatchView(
                 return
             }
             val z = userZoom.value
-            if (z < 0.62f) {
-                userZoom.target = 0.48f
+            if (z < overviewZoomFit + 0.14f) {
+                userZoom.target = overviewZoomFit
                 overview.target = 1f
                 performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
             } else {
                 overview.target = 0f
-                userZoom.target = if (abs(z - 1f) < 0.09f) 1f else z.coerceIn(0.72f, 1.28f)
+                userZoom.target = if (abs(z - 1f) < 0.09f) 1f else z.coerceIn(overviewZoomFit + 0.24f, 1.28f)
             }
             invalidate()
         }
@@ -5163,7 +5265,7 @@ class WatchView(
                 edgeCrownDragging = modeAtDown == MODE_APPS && clusterSheet.target == 0f && !gridSearching &&
                     e.x > width - dp(34f) && e.y > topInset + dp(60f) && e.y < height - bottomInset - dp(70f)
                 if (edgeCrownDragging) {
-                    crownStartZoom = if (overview.target >= 0.5f) 0.48f else userZoom.value
+                    crownStartZoom = if (overview.target >= 0.5f) overviewZoomFit else userZoom.value
                 }
                 velocity?.recycle(); velocity = VelocityTracker.obtain().apply { addMovement(e) }
                 // 2.7.0 (audit #8): pressed-state flash — remember the
@@ -5315,16 +5417,17 @@ class WatchView(
     private fun scrubCrownZoom(totalDy: Float) {
         markHintSeen(HINT_CROWN)
         if (grid.target == 0f) grid.target = 1f
-        val newZ = (crownStartZoom - totalDy / dp(170f)).coerceIn(0.46f, 1.32f)
-        val wasOv = userZoom.value < 0.58f || overview.target >= 0.5f
-        val nowOv = newZ < 0.58f
+        val newZ = (crownStartZoom - totalDy / dp(170f))
+            .coerceIn(min(0.46f, (overviewZoomFit - 0.02f).coerceAtLeast(0.16f)), 1.32f)
+        val wasOv = userZoom.value < overviewZoomFit + 0.10f || overview.target >= 0.5f
+        val nowOv = newZ < overviewZoomFit + 0.10f
         if (wasOv != nowOv) {
             performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         }
         overview.snap(0f)
         userZoom.snap(newZ)
-        userZoom.target = if (newZ < 0.58f) 0.48f else newZ
-        overview.target = if (newZ < 0.58f) 1f else 0f
+        userZoom.target = if (newZ < overviewZoomFit + 0.10f) overviewZoomFit else newZ
+        overview.target = if (newZ < overviewZoomFit + 0.10f) 1f else 0f
         invalidate()
     }
 
@@ -5802,7 +5905,7 @@ class WatchView(
             }
             val item = hit.item
 
-            if (overview.target >= 0.5f || userZoom.value < 0.65f) {
+            if (overview.target >= 0.5f || userZoom.value < overviewZoomFit + 0.17f) {
                 if (clusterTopology == ClusterTopology.NEBULA) {
                     panX.target -= (hit.x - width / 2f) * 1.6f
                     panY.target -= (hit.y - height / 2f) * 1.6f
