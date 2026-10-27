@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.6.4 — 2026-10-27
+- **Island clearance tightened.** The dead band of empty space
+  the bubble solver kept around a placed island is much slimmer.
+  3.6.3 cleared bubbles by scaling the island's whole rectangle
+  by the inverse of the fisheye *size* falloff at its anchor —
+  up to 2.2x at rim placements — which guaranteed no overlap
+  but left a moat up to a tile-height wide. The solver now works
+  from the tile's true footprint plus a slim fixed margin
+  (~1/6 of a slot), widened per axis only by the fisheye *pull*
+  compression at the anchor — the mild, position-side falloff
+  that actually governs how anchor-space distance maps to the
+  screen — and credits the clearance radius the solver already
+  adds around the obstacle. Bubbles hug islands closely at the
+  centre, the rim and the corners, in Honeycomb and Gravity, at
+  working zoom and in the fitted overview — and the no-overlap
+  guarantee is unchanged.
+
 ## 3.6.3 — 2026-10-27
 - **Islands hold their size anywhere.** The fisheye size falloff
   no longer applies to island tiles: a widget parked at the rim

@@ -151,58 +151,140 @@ class IslandLayoutTest {
         assertEquals(1.3f, IslandLayout.nextPresetScale(1.12f), 0.001f)
     }
 
-    @Test fun obstacleForIsIdentityAtTheCentre() {
-        val o = IslandLayout.obstacleFor(0.5f, -1.25f, 1.1f, 0.55f, 1f)
+    @Test fun obstacleForAtTheCentreAddsOnlyTheMarginBand() {
+        // κ = 1 on both axes: the band beyond the true rect is
+        // REF_DRAWN_RADIUS + CLEARANCE_MARGIN - REF_CLEARANCE_RADIUS
+        // = 0.42 + 0.16 - 0.49 = 0.09 — the drawn radius and the
+        // solver's own clearance radius cancel, leaving (most of)
+        // the margin. Centre untouched, rect never shrinks.
+        val o = IslandLayout.obstacleFor(0.5f, -1.25f, 1.1f, 0.55f, 1f, 1f)
         assertEquals(0.5f, o.centerX, 0.001f)
         assertEquals(-1.25f, o.centerY, 0.001f)
-        assertEquals(1.1f, o.halfW, 0.001f)
-        assertEquals(0.55f, o.halfH, 0.001f)
+        assertEquals(1.19f, o.halfW, 0.001f)
+        assertEquals(0.64f, o.halfH, 0.001f)
     }
 
-    @Test fun obstacleForInflatesByTheInverseFalloff() {
-        // At a 0.5 fisheye factor the tile renders twice as wide as
-        // the world rect the old solver cleared for — so the
-        // obstacle doubles, centre untouched.
-        val o = IslandLayout.obstacleFor(2f, 3f, 1.1f, 0.55f, 0.5f)
+    @Test fun obstacleForWidensEachAxisByItsOwnCompression() {
+        // κx = 0.5 (deep rim, radial), κy = 1 (centre-like): the
+        // axes are compensated independently — the whole rect is
+        // NOT scaled by the worst factor, which is what made the
+        // 3.6.3 moat so wide.
+        val band = IslandLayout.REF_DRAWN_RADIUS + IslandLayout.CLEARANCE_MARGIN
+        val o = IslandLayout.obstacleFor(2f, 3f, 1.1f, 0.55f, 0.5f, 1f)
         assertEquals(2f, o.centerX, 0.001f)
         assertEquals(3f, o.centerY, 0.001f)
-        assertEquals(2.2f, o.halfW, 0.001f)
-        assertEquals(1.1f, o.halfH, 0.001f)
+        assertEquals(
+            (1.1f + band) / 0.5f - IslandLayout.REF_CLEARANCE_RADIUS, o.halfW, 0.001f)
+        assertEquals(0.64f, o.halfH, 0.001f)
+        assertTrue(o.halfW > 1.1f && o.halfH > 0.55f)
     }
 
-    @Test fun obstacleForCapsTheInflation() {
-        // The fisheye table runs to 0 at the extreme rim; the
-        // compensation floors at MIN_COMPENSATED_FISHEYE instead of
-        // dividing by ~0 and clearing the whole field.
-        val o = IslandLayout.obstacleFor(0f, 0f, 0.9f, 0.9f, 0.05f)
+    @Test fun obstacleForFloorsTheCompression() {
+        // A pathological compression floors at
+        // MIN_PULL_COMPRESSION instead of dividing the field away;
+        // compressions above 1 and NaN are not real and read as 1.
+        val band = IslandLayout.REF_DRAWN_RADIUS + IslandLayout.CLEARANCE_MARGIN
+        val o = IslandLayout.obstacleFor(0f, 0f, 0.9f, 0.9f, 0.05f, 0.05f)
         assertEquals(
-            0.9f / IslandLayout.MIN_COMPENSATED_FISHEYE, o.halfW, 0.001f)
-        // Factors above 1 and NaN are not real falloffs: no change.
-        assertEquals(0.9f, IslandLayout.obstacleFor(0f, 0f, 0.9f, 0.9f, 1.4f).halfW, 0.001f)
-        assertEquals(0.9f, IslandLayout.obstacleFor(0f, 0f, 0.9f, 0.9f, Float.NaN).halfW, 0.001f)
+            (0.9f + band) / IslandLayout.MIN_PULL_COMPRESSION -
+                IslandLayout.REF_CLEARANCE_RADIUS,
+            o.halfW, 0.001f)
+        assertEquals(
+            0.99f, IslandLayout.obstacleFor(0f, 0f, 0.9f, 0.9f, 1.4f, 1.4f).halfW, 0.001f)
+        assertEquals(
+            0.99f,
+            IslandLayout.obstacleFor(0f, 0f, 0.9f, 0.9f, Float.NaN, Float.NaN).halfW,
+            0.001f)
+    }
+
+    @Test fun axisCompressionsMatchThePullJacobian() {
+        // Centre: the pull is the identity there.
+        val c = IslandLayout.axisCompressions(0f, 0f, 0f)
+        assertEquals(1f, c[0], 0.001f)
+        assertEquals(1f, c[1], 0.001f)
+        // Due east at d = 0.618 (a rim anchor's distance on the
+        // emulator): x is the radial axis, y the tangential one.
+        val d = 0.618f
+        val e = IslandLayout.axisCompressions(d, d, 0f)
+        assertEquals(Fisheye.pulled(d) / d, e[1], 0.001f)
+        // Radial = pulled'(d); pulled is quadratic on this table
+        // segment, so a wide central difference is near-exact too.
+        val radial = (Fisheye.pulled(d + 0.05f) - Fisheye.pulled(d - 0.05f)) / 0.1f
+        assertEquals(radial, e[0], 0.01f)
+        assertTrue("radial compresses harder than tangential", e[0] < e[1])
+        assertTrue("both within the table's real range", e[0] > 0.55f && e[1] < 1f)
+        // Due north the axes swap.
+        val n = IslandLayout.axisCompressions(d, 0f, d)
+        assertEquals(e[1], n[0], 0.001f)
+        assertEquals(e[0], n[1], 0.001f)
+        // Diagonal: both axes land strictly between the two.
+        val g = IslandLayout.axisCompressions(d, d * 0.7071f, d * 0.7071f)
+        assertTrue(g[0] > e[0] && g[0] < e[1])
+        assertEquals(g[0], g[1], 0.001f)
     }
 
     @Test fun rimIslandObstacleClearsBubblesForTheFullFootprint() {
-        // End-to-end: with the inflated obstacle, every assigned
-        // slot is clear of the FULL rect, not just the nominal one.
+        // End-to-end: with the per-axis-compensated obstacle,
+        // every assigned slot is clear of the FULL obstacle — and
+        // the obstacle is honestly tighter than 3.6.3's blanket
+        // inverse-size scaling (which floored at 1/0.45 = 2.22x)
+        // while still wider than the nominal rect on both axes.
         val homes = Hex.spiral(61)
         val radii = FloatArray(61) { 0.55f }
         val nominal = IslandLayout.Obstacle(2.05f, 0f, 1.55f, 1.05f)
-        val inflated = IslandLayout.obstacleFor(2.05f, 0f, 1.55f, 1.05f, 0.6f)
-        val assigned = IslandLayout.assign(homes, 1f, radii, listOf(inflated))
+        // Due-east rim anchor at d = 0.618: κx = pulled'(d) ≈ 0.694
+        // (radial), κy = pulled(d)/d ≈ 0.872 (tangential).
+        val obstacle = IslandLayout.obstacleFor(2.05f, 0f, 1.55f, 1.05f, 0.694f, 0.872f)
+        val assigned = IslandLayout.assign(homes, 1f, radii, listOf(obstacle))
         assertEquals(61, assigned.toSet().size)
         val assignedCenters = centers(assigned, 1f)
         for (i in homes.indices) {
             if (i == 0) continue // the protected centre may stay by design
             assertFalse(
-                "item $i intersects the inflated island",
+                "item $i intersects the island obstacle",
                 IslandLayout.circleIntersects(
-                    assignedCenters[i].first, assignedCenters[i].second, radii[i], inflated),
+                    assignedCenters[i].first, assignedCenters[i].second, radii[i], obstacle),
             )
         }
-        // And the inflation has teeth: the nominal rect alone would
-        // have left at least the inflated-only ring occupied.
-        assertTrue(inflated.halfW > nominal.halfW)
+        assertTrue(obstacle.halfW > nominal.halfW && obstacle.halfW < nominal.halfW / 0.45f)
+        assertTrue(obstacle.halfH > nominal.halfH && obstacle.halfH < nominal.halfH / 0.45f)
+    }
+
+    @Test fun denseFieldMoatIsHalvedByThePullBandObstacle() {
+        // The dense-field guard for the 3.6.4 tightening — the
+        // shape of a real phone, where every slot is claimed, so
+        // the moat around an island is set by the obstacle, not
+        // by which slots happen to be empty. 127 populated homes,
+        // the rim scenario's island; the gap is the nearest
+        // bubble's edge distance to the island's TRUE rect.
+        val homes = Hex.spiral(127)
+        val radii = FloatArray(127) { 0.49f }
+        val trueRect = IslandLayout.Obstacle(2.05f, 0f, 1.55f, 1.05f)
+        fun minGap(obstacle: IslandLayout.Obstacle): Float {
+            val assigned = IslandLayout.assign(homes, 1f, radii, listOf(obstacle))
+            val cs = centers(assigned, 1f)
+            var best = Float.MAX_VALUE
+            for (i in homes.indices) {
+                val dx = maxOf(0f, kotlin.math.abs(cs[i].first - trueRect.centerX) - trueRect.halfW)
+                val dy = maxOf(0f, kotlin.math.abs(cs[i].second - trueRect.centerY) - trueRect.halfH)
+                val g = kotlin.math.sqrt(dx * dx + dy * dy) - radii[i]
+                if (g < best) best = g
+            }
+            return best
+        }
+        // 3.6.3's construction at this anchor (its fisheye factor
+        // floored at 0.45): the moat was nearly two slots wide.
+        val retired = IslandLayout.Obstacle(2.05f, 0f, 1.55f / 0.45f, 1.05f / 0.45f)
+        val gapBefore = minGap(retired)
+        val gapAfter = minGap(
+            IslandLayout.obstacleFor(2.05f, 0f, 1.55f, 1.05f, 0.694f, 0.872f))
+        // Measured on the solver: 1.91 before, 1.06 after — the
+        // after value is the construction's floor (face excess +
+        // clearance radius, quantized to the next hex row).
+        assertTrue("retired moat was wide (was $gapBefore)", gapBefore > 1.8f)
+        assertTrue("moat at least halved-ish (was $gapAfter)", gapAfter < gapBefore - 0.5f)
+        assertTrue("moat at the construction floor (was $gapAfter)", gapAfter < 1.10f)
+        assertTrue("clearance stays positive (was $gapAfter)", gapAfter > 0f)
     }
 
     @Test fun gravityScaleKeepsAssignmentsUniqueAndClear() {

@@ -1187,11 +1187,13 @@ class WatchView(
             mix(slot.anchorY.toRawBits().toLong())
             mix(slot.halfW.toRawBits().toLong())
             mix(slot.halfH.toRawBits().toLong())
-            // 3.6.3: the solver obstacle also depends on the fisheye
-            // factor at the anchor (view geometry) — mix it so a
-            // geometry change re-solves instead of serving a stale
-            // assignment.
-            mix(islandFisheyeSize(slot).toRawBits().toLong())
+            // 3.6.4: the solver obstacle also depends on the pull
+            // compression at the anchor (view geometry) — mix both
+            // axes so a geometry change re-solves instead of
+            // serving a stale assignment.
+            val kc = islandPullCompression(slot)
+            mix(kc[0].toRawBits().toLong())
+            mix(kc[1].toRawBits().toLong())
         }
         return h
     }
@@ -1279,22 +1281,25 @@ class WatchView(
         return OverviewFit.fitZoom(extentX, extentY, availHalfW, availHalfH)
     }
 
-    /** 3.6.3: the fisheye size factor at an island's anchor, in
-     *  the draw pass's own terms (rest state: no pan, no overview
-     *  blend) — how much smaller the tile used to render there. The
-     *  lattice solver inflates the island's obstacle by its inverse
-     *  so the clearance it arranges matches the tile's full-size
-     *  rendering. 1 when the view has no geometry yet. */
-    private fun islandFisheyeSize(slot: IslandSlot): Float {
+    /** 3.6.4: the fisheye pull's per-axis compression at an
+     *  island's anchor, in the draw pass's own terms (rest state:
+     *  no pan, no overview blend) — how much anchor-space
+     *  distance along each axis shrinks on its way to the screen
+     *  there. The lattice solver widens its clearance band by
+     *  these factors (IslandLayout.obstacleFor) so the margin it
+     *  arranges around a tile is the margin the eye sees. Both 1
+     *  when the view has no geometry yet. */
+    private fun islandPullCompression(slot: IslandSlot): FloatArray {
         val u = unit
         val w = width.toFloat()
         val h = height.toFloat()
-        if (u <= 0f || w <= 0f || h <= 0f) return 1f
+        if (u <= 0f || w <= 0f || h <= 0f) return floatArrayOf(1f, 1f)
         val bp = Metrics.GRID_PITCH * u * 1.10f
         val sx = max(1f, w / u)
         val sy = max(1f, (h / u) / Metrics.WATCH_ASPECT)
-        val dI = hypot((slot.anchorX * bp / u) / sx, (slot.anchorY * bp / u) / sy)
-        return Fisheye.size(dI)
+        val nx = (slot.anchorX * bp / u) / sx
+        val ny = (slot.anchorY * bp / u) / sy
+        return IslandLayout.axisCompressions(hypot(nx, ny), nx, ny)
     }
 
     private fun islandAssignedHexes(items: List<GridItem>): List<Hex> {
@@ -1303,10 +1308,13 @@ class WatchView(
             val scale = if (clusterTopology == ClusterTopology.GRAVITY) 1.10f else 1f
             val radii = FloatArray(items.size) { islandClearanceRadius(it, items[it]) }
             val obstacles = islands.map {
-                // 3.6.3: clear bubbles for the tile's full-size
-                // rendered footprint, not its nominal rect.
+                // 3.6.4: clear bubbles for the tile's true footprint
+                // plus a slim margin, widened per axis by the pull
+                // compression at the anchor — not a blanket scaling
+                // of the whole rect (3.6.3's moat was too wide).
+                val k = islandPullCompression(it)
                 IslandLayout.obstacleFor(
-                    it.anchorX, it.anchorY, it.halfW, it.halfH, islandFisheyeSize(it),
+                    it.anchorX, it.anchorY, it.halfW, it.halfH, k[0], k[1],
                 )
             }
             islandLayoutHexes = IslandLayout.assign(gridHexes, scale, radii, obstacles)

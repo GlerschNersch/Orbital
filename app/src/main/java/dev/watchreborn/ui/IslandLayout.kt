@@ -40,32 +40,103 @@ object IslandLayout {
         return false
     }
 
-    // ── Island footprint vs the fisheye (3.6.3) ─────────────────
-    // Islands no longer shrink with the fisheye size falloff: a tile
-    // renders at its nominal size wherever it sits. Bubbles still
-    // shrink, and every centre rides the pull — under the old
-    // rendering both sides of the clearance scaled together, so
-    // world-space clearance survived the trip to the screen. Now
-    // the solver clears bubbles for the tile's RENDERED footprint:
-    // the obstacle is the nominal rect inflated by the inverse of
-    // the fisheye size factor at the island's anchor — the world
-    // rect whose old fisheye-scaled rendering equals the tile's new
-    // full-size rendering.
+    // ── Island footprint vs the fisheye pull (3.6.4) ────────────
+    // Islands render at their nominal size wherever they sit
+    // (3.6.3); bubbles still shrink toward the rim, and every
+    // centre rides the fisheye pull. The solver therefore clears
+    // bubbles for the tile's SCREEN footprint, not its anchor
+    // rect. 3.6.3 approximated that by scaling the whole rect by
+    // the inverse SIZE falloff at the anchor — safe but blunt:
+    // the size table falls to ~0 at the rim (floored at 0.45, a
+    // 2.2x obstacle), while the screen distance between centres
+    // is governed by the PULL, whose local compression is far
+    // milder (tangential never below 0.75; the radial derivative
+    // dips to ~0.59 in one distance band). The moat it left was
+    // up to a tile-height of dead space.
+    //
+    // The tighter construction works per axis. Along one axis, a
+    // bubble whose centre sits t anchor units from the tile's
+    // centre shows up κ·t screen units away, where κ is the
+    // pull's compression along that axis at the island's anchor;
+    // the tile's edge stays at its full half extent, and the
+    // bubble's drawn radius is at most REF_DRAWN_RADIUS. For the
+    // screen gap between the bubble's edge and the tile's edge
+    // to come out at CLEARANCE_MARGIN, the obstacle half extent
+    // must be (half + REF_DRAWN_RADIUS + CLEARANCE_MARGIN) / κ,
+    // minus the clearance radius the solver's circle test adds
+    // on top (REF_CLEARANCE_RADIUS): in screen space that radius
+    // comes back compressed by the same κ while the drawn radius
+    // shrinks by the size falloff, and the two effects cancel to
+    // within a few hundredths of a pitch across the field — so
+    // crediting it back loses nothing and keeps the band slim.
 
-    /** The smallest fisheye factor the solver compensates for;
-     *  past it the inflation is capped, so an extreme-corner island
-     *  cannot clear the whole field. */
-    const val MIN_COMPENSATED_FISHEYE = 0.45f
+    /** Screen-space breathing room (pitch units) the solver
+     *  arranges between a tile's edge and the nearest bubble's
+     *  edge, at any anchor. */
+    const val CLEARANCE_MARGIN = 0.16f
+
+    /** A bubble's drawn radius in pitch units, upper reference:
+     *  the nominal GRID_CENTER_D radius is 0.40; the headroom
+     *  covers usage-grown bubbles (their clearance radius grows
+     *  in step, which is what keeps the cancellation honest). */
+    const val REF_DRAWN_RADIUS = 0.42f
+
+    /** The clearance radius [assign]'s circle test adds around
+     *  the obstacle for a standard bubble (0.45 growth base +
+     *  0.04, see WatchView.islandClearanceRadius). */
+    const val REF_CLEARANCE_RADIUS = 0.49f
+
+    /** The smallest pull compression the solver compensates
+     *  for; the true table minimum is ~0.59, so this is a guard
+     *  against pathological inputs, not a working value. */
+    const val MIN_PULL_COMPRESSION = 0.5f
+
+    /** The pull's compression along the screen axes at a point
+     *  whose fisheye distance is [d] (elliptical screen widths —
+     *  the draw pass's own measure) with normalized coords
+     *  ([nx], [ny]): returns [κx, κy]. The pull is radial in
+     *  normalized space with singular values pulled'(d) (radial)
+     *  and pulled(d)/d (tangential); the axis compressions are
+     *  the Jacobian's diagonal elements, mixing the two by each
+     *  axis's squared share of the direction. Both are 1 at the
+     *  centre, where the pull is the identity. */
+    fun axisCompressions(d: Float, nx: Float, ny: Float): FloatArray {
+        if (d.isNaN() || d < 1e-4f) return floatArrayOf(1f, 1f)
+        val tangential = Fisheye.pulled(d) / d
+        val radial = pullDerivative(d)
+        val shareX = (nx * nx) / (d * d)
+        val shareY = (ny * ny) / (d * d)
+        return floatArrayOf(
+            tangential + (radial - tangential) * shareX,
+            tangential + (radial - tangential) * shareY,
+        )
+    }
+
+    /** d(pulled)/dd of the fisheye pull at [d], central
+     *  difference (exact on the table's quadratic segments). */
+    private fun pullDerivative(d: Float): Float {
+        val h = 0.01f
+        return if (d <= h) Fisheye.pulled(h) / h
+        else (Fisheye.pulled(d + h) - Fisheye.pulled(d - h)) / (2f * h)
+    }
 
     /** The solver obstacle for an island centred at ([centerX],
-     *  [centerY]) with nominal half extents, given the fisheye size
-     *  factor at its anchor ([fisheyeSize], 1 at the centre). */
+     *  [centerY]) with nominal half extents, given the pull's
+     *  per-axis compressions at its anchor ([compressionX],
+     *  [compressionY]; both 1 at the centre). See the block
+     *  comment above for the construction. */
     fun obstacleFor(
-        centerX: Float, centerY: Float, halfW: Float, halfH: Float, fisheyeSize: Float,
+        centerX: Float, centerY: Float, halfW: Float, halfH: Float,
+        compressionX: Float, compressionY: Float,
     ): Obstacle {
-        val s = if (fisheyeSize.isNaN()) 1f
-            else fisheyeSize.coerceIn(MIN_COMPENSATED_FISHEYE, 1f)
-        return Obstacle(centerX, centerY, halfW / s, halfH / s)
+        fun axis(half: Float, k: Float): Float {
+            val kc = if (k.isNaN()) 1f else k.coerceIn(MIN_PULL_COMPRESSION, 1f)
+            return (half + REF_DRAWN_RADIUS + CLEARANCE_MARGIN) / kc - REF_CLEARANCE_RADIUS
+        }
+        return Obstacle(
+            centerX, centerY,
+            axis(halfW, compressionX), axis(halfH, compressionY),
+        )
     }
 
     /**
