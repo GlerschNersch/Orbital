@@ -70,6 +70,7 @@ import dev.watchreborn.ui.CardAction
 import dev.watchreborn.ui.ClusterOption
 import dev.watchreborn.ui.ClusterTopology
 import dev.watchreborn.ui.IslandLayout
+import dev.watchreborn.ui.LayoutBackup
 import dev.watchreborn.ui.TintMath
 import dev.watchreborn.ui.FaceInfo
 import dev.watchreborn.ui.Metrics
@@ -770,6 +771,12 @@ class MainActivity : Activity(), SensorEventListener {
                 addTargetIsland = true
                 showWidgetPicker()
             }
+            ClusterOption.BACKUP_LAYOUT -> {
+                startBackupLayout()
+            }
+            ClusterOption.RESTORE_LAYOUT -> {
+                startRestoreLayout()
+            }
             ClusterOption.CLEAR_PINS -> {
                 // 2.7.0 (audit #3): clearing every pin was the one
                 // destructive action with no safety net — snapshot all
@@ -788,6 +795,117 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
+
+    // ── 3.3.0 Layout backup & restore ───────────────────────────────
+
+    private fun startBackupLayout() {
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+            putExtra(Intent.EXTRA_TITLE, "orbital-layout.json")
+        }
+        runCatching { startActivityForResult(intent, REQ_BACKUP_LAYOUT) }
+            .onFailure { Toast.makeText(this, "File picker unavailable on this device", Toast.LENGTH_SHORT).show() }
+    }
+
+    private fun startRestoreLayout() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+        }
+        runCatching { startActivityForResult(intent, REQ_RESTORE_LAYOUT) }
+            .onFailure { Toast.makeText(this, "File picker unavailable on this device", Toast.LENGTH_SHORT).show() }
+    }
+
+    private fun writeBackupTo(uri: Uri) {
+        val ok = runCatching {
+            val stores = LayoutBackup.STORES.associateWith { name ->
+                getSharedPreferences(name, Context.MODE_PRIVATE).all
+            }
+            val info = packageManager.getPackageInfo(packageName, 0)
+            val json = LayoutBackup.serialize(
+                stores,
+                info.versionName ?: "",
+                info.longVersionCode.toInt(),
+                System.currentTimeMillis(),
+            )
+            val out = contentResolver.openOutputStream(uri, "wt")
+                ?: error("no output stream")
+            out.use { it.write(json.toByteArray(Charsets.UTF_8)) }
+        }.isSuccess
+        Toast.makeText(
+            this,
+            if (ok) "Layout backed up" else "Backup failed — nothing was written",
+            Toast.LENGTH_SHORT,
+        ).show()
+    }
+
+    private fun readBackupFrom(uri: Uri) {
+        val backup = runCatching {
+            val input = contentResolver.openInputStream(uri) ?: error("no input stream")
+            val text = input.use { it.readBytes().toString(Charsets.UTF_8) }
+            LayoutBackup.parse(text)
+        }.getOrElse { e ->
+            // Validation failed or the file couldn't be read: the
+            // current layout stays exactly as it is.
+            Toast.makeText(
+                this,
+                if (e is LayoutBackup.BackupException) e.message else "Could not read that file.",
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        val skippedIslands = countUnresolvableIslands(backup)
+        val whenText = android.text.format.DateFormat.format(
+            "MMM d, yyyy HH:mm", java.util.Date(backup.header.exportedAtMillis),
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Restore layout?")
+            .setMessage(
+                "Backup from Orbital ${backup.header.versionName} • $whenText • ${backup.entryCount} settings.\n\n" +
+                    "Restoring replaces your current layout — topology, pins, widget islands and settings all revert to the backup." +
+                    if (skippedIslands > 0) {
+                        "\n\n$skippedIslands widget island(s) in the backup aren't installed on this device and will be skipped."
+                    } else {
+                        ""
+                    },
+            )
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Restore") { _, _ -> applyBackup(backup) }
+            .show()
+    }
+
+    /** Islands in the backup whose widget id this device can't resolve. */
+    private fun countUnresolvableIslands(backup: LayoutBackup.Backup): Int {
+        val ids = (backup.stores[LayoutBackup.STORE_WATCH]?.get(KEY_ISLAND_IDS) as? String)
+            ?.split(',')?.mapNotNull { it.trim().toIntOrNull() } ?: return 0
+        return ids.count { appWidgetManager.getAppWidgetInfo(it) == null }
+    }
+
+    private fun applyBackup(backup: LayoutBackup.Backup) {
+        for ((name, entries) in backup.stores) {
+            if (name !in LayoutBackup.STORES) continue
+            val edit = getSharedPreferences(name, Context.MODE_PRIVATE).edit().clear()
+            for ((key, value) in entries) {
+                when (value) {
+                    is String -> edit.putString(key, value)
+                    is Boolean -> edit.putBoolean(key, value)
+                    is Int -> edit.putInt(key, value)
+                    is Long -> edit.putLong(key, value)
+                    is Float -> edit.putFloat(key, value)
+                    is Set<*> -> edit.putStringSet(key, value.filterIsInstance<String>().toSet())
+                }
+            }
+            // commit(), not apply(): both stores must be durable on
+            // disk before recreate() tears this activity down.
+            edit.commit()
+        }
+        Toast.makeText(this, "Layout restored", Toast.LENGTH_SHORT).show()
+        // onCreate rebuilds the view, the repo and the island set
+        // from the two stores, so a recreate applies the restore
+        // exactly as a cold start would.
+        recreate()
+    }
 
     private fun handleCardAction(action: CardAction) {
         when (action) {
@@ -1698,6 +1816,12 @@ class MainActivity : Activity(), SensorEventListener {
             } else if (bindId != -1) {
                 runCatching { appWidgetHost.deleteAppWidgetId(bindId) }
             }
+        } else if (requestCode == REQ_BACKUP_LAYOUT) {
+            val uri = data?.data
+            if (resultCode == RESULT_OK && uri != null) writeBackupTo(uri)
+        } else if (requestCode == REQ_RESTORE_LAYOUT) {
+            val uri = data?.data
+            if (resultCode == RESULT_OK && uri != null) readBackupFrom(uri)
         }
     }
 
@@ -2104,6 +2228,8 @@ class MainActivity : Activity(), SensorEventListener {
         const val REQ_PICK_APPWIDGET = 401
         const val REQ_CREATE_APPWIDGET = 402
         const val REQ_BIND_APPWIDGET = 403
+        const val REQ_BACKUP_LAYOUT = 404
+        const val REQ_RESTORE_LAYOUT = 405
         const val KEY_ACCENT = "accent"
         const val KEY_FOLDERS = "auto_folders"
         const val KEY_BLOOM = "bloom_folders"

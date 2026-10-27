@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.3.0 — 2026-10-27
+- **Layout backup & restore.** Settings → More Options → Actions
+  gains two rows: **Back Up Layout** writes the whole Orbital setup
+  — both preference stores (topology, behaviour toggles, pins,
+  folders, widget islands with their anchors and scales, accent) —
+  to a single JSON file you pick through the system file picker,
+  every value stored with its type so a restore is exact. **Restore
+  Layout** opens a backup file, validates it (foreign, corrupt or
+  wrong-version files are rejected with a plain reason and change
+  nothing), shows what restoring will replace, and only then
+  rewrites the stores and restarts the launcher into the restored
+  layout. Islands whose widgets aren't installed on the device are
+  reported and skipped.
+
 ## 3.2.5 — 2026-10-27
 - **App shortcuts in the Context Card.** When the card opens for an
   app, the app's own launcher shortcuts now lead the card in a

@@ -77,6 +77,8 @@ enum class ClusterOption {
     SET_DEFAULT_HOME,
     CLEAR_PINS,
     ADD_ISLAND,
+    BACKUP_LAYOUT,
+    RESTORE_LAYOUT,
     UNHIDE_FOLDERS,
     MORE_OPTIONS,
     CLOSE_SHEET,
@@ -4298,6 +4300,8 @@ class WatchView(
                 add(Triple(null, "ACTIONS", ""))
                 add(Triple(ClusterOption.SET_DEFAULT_HOME, "Default Phone Launcher", "Set Orbital as Home app"))
                 add(Triple(ClusterOption.ADD_ISLAND, "Add Widget Island", "Place a widget in Honeycomb, Gravity, or Force Field"))
+                add(Triple(ClusterOption.BACKUP_LAYOUT, "Back Up Layout", "Save topology, pins, islands & settings to one file"))
+                add(Triple(ClusterOption.RESTORE_LAYOUT, "Restore Layout", "Bring back a layout saved in a backup file"))
                 if (pinnedItemKeys.isNotEmpty()) {
                     add(Triple(ClusterOption.CLEAR_PINS, "Pinned Hex Slots (${pinnedItemKeys.size})", "Tap to unpin all bubbles"))
                 }
@@ -4416,6 +4420,8 @@ class WatchView(
             val valueText = if (toggleOn == null) when (opt) {
                 ClusterOption.CLUSTER_TOPOLOGY -> clusterTopology.fullTitle
                 ClusterOption.CLEAR_PINS -> "Unpin all"
+                ClusterOption.BACKUP_LAYOUT -> "Export"
+                ClusterOption.RESTORE_LAYOUT -> "Import"
                 ClusterOption.UNHIDE_FOLDERS -> "Restore"
                 else -> ""
             } else ""
@@ -4833,6 +4839,32 @@ class WatchView(
                 c.drawLine(cx - s * 0.28f, cy, cx - s * 0.28f, cy + s * 0.38f, stroke)
                 c.drawLine(cx + s * 0.28f, cy, cx + s * 0.28f, cy + s * 0.38f, stroke)
                 c.drawLine(cx - s * 0.28f, cy + s * 0.38f, cx + s * 0.28f, cy + s * 0.38f, stroke)
+            }
+            ClusterOption.BACKUP_LAYOUT -> {
+                // Arrow rising out of a tray: the layout, exported.
+                c.drawLine(cx, cy + s * 0.02f, cx, cy - s * 0.36f, stroke)
+                path.moveTo(cx - s * 0.15f, cy - s * 0.20f)
+                path.lineTo(cx, cy - s * 0.36f)
+                path.lineTo(cx + s * 0.15f, cy - s * 0.20f)
+                c.drawPath(path, stroke)
+                path.moveTo(cx - s * 0.40f, cy + s * 0.06f)
+                path.lineTo(cx - s * 0.30f, cy + s * 0.36f)
+                path.lineTo(cx + s * 0.30f, cy + s * 0.36f)
+                path.lineTo(cx + s * 0.40f, cy + s * 0.06f)
+                c.drawPath(path, stroke)
+            }
+            ClusterOption.RESTORE_LAYOUT -> {
+                // Arrow sinking into a tray: the layout, imported.
+                c.drawLine(cx, cy - s * 0.36f, cx, cy + s * 0.02f, stroke)
+                path.moveTo(cx - s * 0.15f, cy - s * 0.14f)
+                path.lineTo(cx, cy + s * 0.02f)
+                path.lineTo(cx + s * 0.15f, cy - s * 0.14f)
+                c.drawPath(path, stroke)
+                path.moveTo(cx - s * 0.40f, cy + s * 0.06f)
+                path.lineTo(cx - s * 0.30f, cy + s * 0.36f)
+                path.lineTo(cx + s * 0.30f, cy + s * 0.36f)
+                path.lineTo(cx + s * 0.40f, cy + s * 0.06f)
+                c.drawPath(path, stroke)
             }
             ClusterOption.CLEAR_PINS -> {
                 c.drawCircle(cx, cy, s * 0.36f, stroke)
@@ -5976,7 +6008,7 @@ class WatchView(
                         sheetExpanded = !sheetExpanded
                         invalidate()
                     }
-                    ClusterOption.ADD_ISLAND -> {
+                    ClusterOption.ADD_ISLAND, ClusterOption.BACKUP_LAYOUT, ClusterOption.RESTORE_LAYOUT -> {
                         clusterSheet.target = 0f
                         onClusterOptionChanged(opt)
                         invalidate()
