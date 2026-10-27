@@ -78,6 +78,8 @@ enum class ClusterOption {
     ADD_ISLAND,
     BACKUP_LAYOUT,
     RESTORE_LAYOUT,
+    FACE_ROW,
+    NEW_FACE,
     UNHIDE_FOLDERS,
     MORE_OPTIONS,
     CLOSE_SHEET,
@@ -1051,6 +1053,20 @@ class WatchView(
     }
     var islands: List<IslandSlot> = emptyList()
     var onIslandTap: (Int) -> Unit = {}
+
+    // ── 3.5.0 Faces ─────────────────────────────────────────────
+    /** One saved layout as the Settings switcher shows it. */
+    data class FaceEntry(val id: String, val name: String, val topologyTitle: String, val active: Boolean)
+
+    /** The faces in the activity's faces store, in switcher
+     *  order; empty until the activity pushes them (onCreate). */
+    var faceEntries: List<FaceEntry> = emptyList()
+        set(v) { field = v; invalidate() }
+    var onFaceSelected: (String) -> Unit = {}
+    var onFaceMenu: (String) -> Unit = {}
+    /** Face-row hit rects from the last sheet draw — parallel in
+     *  spirit to [sheetRowRects], but carrying the face id. */
+    private val faceRowRects = ArrayList<Pair<RectF, String>>()
     var onIslandMoved: (Int, Float, Float) -> Unit = { _, _, _ -> }
     var onIslandEditTap: (Int) -> Unit = {}
     var onIslandResized: (Int, Float) -> Unit = { _, _ -> }
@@ -4578,6 +4594,7 @@ class WatchView(
         val a = (t * 255).toInt().coerceIn(0, 255)
         sheetRowRects.clear()
         sheetRowLabels.clear()
+        faceRowRects.clear()
 
         // 2.4.0: Settings is a full PAGE, not a popup — an opaque
         // full-screen surface; the cluster no longer shows through.
@@ -4599,6 +4616,16 @@ class WatchView(
         // while collapsed when folders are hidden: it's an active state,
         // not a setting.
         val rows = buildList<Triple<ClusterOption?, String, String>> {
+            if (sheetExpanded) {
+                // 3.5.0: the Faces switcher leads the expanded
+                // sheet — one row per face (the third slot carries
+                // the face id), then New Face.
+                add(Triple(null, "FACES", ""))
+                for (face in faceEntries) {
+                    add(Triple(ClusterOption.FACE_ROW, face.name, face.id))
+                }
+                add(Triple(ClusterOption.NEW_FACE, if (Faces.canAdd(faceEntries.size)) "New Face" else "New Face (limit of ${Faces.MAX_FACES})", ""))
+            }
             add(Triple(null, "LAYOUT", ""))
             add(Triple(ClusterOption.CLUSTER_TOPOLOGY, "Cluster Topology", "${clusterTopology.fullTitle} • Tap for all ${ClusterTopology.entries.size} designs"))
             if (sheetExpanded) {
@@ -4666,12 +4693,12 @@ class WatchView(
         // a line glyph on the left, the label in white, the value in grey
         // on the right, and a real switch for toggles. Row positions and
         // hit rects are unchanged from the old card layout.
-        data class SheetBox(val opt: ClusterOption, val label: String, val rect: RectF, val panel: Int)
+        data class SheetBox(val opt: ClusterOption, val label: String, val rect: RectF, val panel: Int, val faceId: String? = null)
         val boxes = mutableListOf<SheetBox>()
         val headers = mutableListOf<Pair<RectF, String>>()
         var panelId = -1
         var ry = sheetTop + dp(68f)
-        for ((opt, label, _) in rows) {
+        for ((opt, label, third) in rows) {
             if (opt == null) {
                 headers += RectF(padX, ry, w - padX, ry + headerH) to label
                 panelId++
@@ -4682,7 +4709,8 @@ class WatchView(
             val solo = opt == ClusterOption.MORE_OPTIONS || opt == ClusterOption.UNHIDE_FOLDERS
             if (solo) panelId++
             val r = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + rowH)
-            boxes += SheetBox(opt, label, r, panelId)
+            boxes += SheetBox(opt, label, r, panelId, if (opt == ClusterOption.FACE_ROW) third else null)
+            if (opt == ClusterOption.FACE_ROW) faceRowRects += r to third
             if (solo) panelId++
             ry += rowH + gap
         }
@@ -4736,6 +4764,7 @@ class WatchView(
                 ClusterOption.CLEAR_PINS -> "Unpin all"
                 ClusterOption.BACKUP_LAYOUT -> "Export"
                 ClusterOption.RESTORE_LAYOUT -> "Import"
+                ClusterOption.FACE_ROW -> faceEntries.firstOrNull { it.id == box.faceId }?.topologyTitle ?: ""
                 ClusterOption.UNHIDE_FOLDERS -> "Restore"
                 else -> ""
             } else ""
@@ -4774,15 +4803,20 @@ class WatchView(
                     text.color = Color.argb((a * 0.85f).toInt(), 170, 172, 180)
                     c.drawText(valueText, r.right - dp(32f) - text.measureText(valueText), r.centerY() + text.textSize * 0.35f, text)
                 }
-                text.textSize = sp(20f)
-                text.color = Color.argb((a * 0.6f).toInt(), 200, 202, 208)
-                c.drawText("›", r.right - dp(22f), r.centerY() + text.textSize * 0.35f, text)
+                val activeFaceRow = opt == ClusterOption.FACE_ROW &&
+                    faceEntries.firstOrNull { it.id == box.faceId }?.active == true
+                text.textSize = sp(if (activeFaceRow) 17f else 20f)
+                text.color = if (activeFaceRow) withAlpha(accent, a)
+                    else Color.argb((a * 0.6f).toInt(), 200, 202, 208)
+                c.drawText(if (activeFaceRow) "✓" else "›", r.right - dp(22f), r.centerY() + text.textSize * 0.35f, text)
             }
 
             sheetRowRects += r to opt
             sheetRowLabels += r to when {
                 toggleOn != null -> "$label, ${if (toggleOn) "on" else "off"}"
                 opt == ClusterOption.CLUSTER_TOPOLOGY -> "$label, ${clusterTopology.fullTitle}"
+                opt == ClusterOption.FACE_ROW -> faceEntries.firstOrNull { it.id == box.faceId }
+                    ?.let { f -> "${f.name}, ${f.topologyTitle}" + if (f.active) ", current face" else "" } ?: label
                 opt == ClusterOption.MORE_OPTIONS -> if (sheetExpanded) "Show fewer options" else "More options"
                 else -> label
             }
@@ -5168,6 +5202,21 @@ class WatchView(
                 path.lineTo(cx + s * 0.30f, cy + s * 0.36f)
                 path.lineTo(cx + s * 0.40f, cy + s * 0.06f)
                 c.drawPath(path, stroke)
+            }
+            ClusterOption.FACE_ROW -> {
+                // A face: the saved layout, personified.
+                c.drawCircle(cx, cy, s * 0.40f, stroke)
+                fill.color = color
+                c.drawCircle(cx - s * 0.15f, cy - s * 0.10f, s * 0.05f, fill)
+                c.drawCircle(cx + s * 0.15f, cy - s * 0.10f, s * 0.05f, fill)
+                path.moveTo(cx - s * 0.18f, cy + s * 0.12f)
+                path.quadTo(cx, cy + s * 0.30f, cx + s * 0.18f, cy + s * 0.12f)
+                c.drawPath(path, stroke)
+            }
+            ClusterOption.NEW_FACE -> {
+                c.drawCircle(cx, cy, s * 0.40f, stroke)
+                c.drawLine(cx, cy - s * 0.20f, cx, cy + s * 0.20f, stroke)
+                c.drawLine(cx - s * 0.20f, cy, cx + s * 0.20f, cy, stroke)
             }
             ClusterOption.CLEAR_PINS -> {
                 c.drawCircle(cx, cy, s * 0.36f, stroke)
@@ -5693,7 +5742,12 @@ class WatchView(
         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
         when {
             cardMenuOpen -> {}
-            clusterSheet.target == 1f -> {}
+            clusterSheet.target == 1f -> {
+                // 3.5.0: a long-press on a face row opens its menu
+                // (Rename / Delete) in the activity.
+                faceRowRects.lastOrNull { it.first.contains(downX, downY) }
+                    ?.let { onFaceMenu(it.second) }
+            }
             apps.target == 1f -> {
                 hitEntryAt(downX, downY)?.let { h ->
                     val fallbackSlot = activeGridItems.indexOfFirst { it.key == h.item.key }
@@ -5832,6 +5886,7 @@ class WatchView(
                 pressedRect = null
                 if (clusterSheet.target > 0f) {
                     val hitR = sheetRowRects.lastOrNull { it.first.contains(e.x, e.y) }?.first
+                        ?: faceRowRects.lastOrNull { it.first.contains(e.x, e.y) }?.first
                         ?: topologyRowRects.lastOrNull { it.first.contains(e.x, e.y) }?.first
                         ?: pickerBackRect.takeIf { !it.isEmpty && it.contains(e.x, e.y) }
                         ?: dockSegs.firstOrNull { !it.isEmpty && it.contains(e.x, e.y) }
@@ -6299,6 +6354,15 @@ class WatchView(
                 }
                 return
             }
+            faceRowRects.lastOrNull { it.first.contains(x, y) }?.let { (_, faceId) ->
+                performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                if (faceEntries.firstOrNull { it.id == faceId }?.active != true) {
+                    clusterSheet.target = 0f
+                    onFaceSelected(faceId)
+                }
+                invalidate()
+                return
+            }
             sheetRowRects.lastOrNull { it.first.contains(x, y) }?.let { (_, opt) ->
                 performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
                 when (opt) {
@@ -6317,7 +6381,7 @@ class WatchView(
                         sheetExpanded = !sheetExpanded
                         invalidate()
                     }
-                    ClusterOption.ADD_ISLAND, ClusterOption.BACKUP_LAYOUT, ClusterOption.RESTORE_LAYOUT -> {
+                    ClusterOption.ADD_ISLAND, ClusterOption.BACKUP_LAYOUT, ClusterOption.RESTORE_LAYOUT, ClusterOption.NEW_FACE -> {
                         clusterSheet.target = 0f
                         onClusterOptionChanged(opt)
                         invalidate()

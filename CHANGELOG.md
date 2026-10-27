@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.5.0 — 2026-10-27
+- **Multiple faces — saved cluster layouts.** Settings → More Options
+  gains a Faces section: every face is a named snapshot of the whole
+  layout (topology, pins, islands, toggles — the same document a
+  3.3.0 backup file holds), and tapping one switches to it. Faces
+  remember themselves: switching away folds whatever you've changed
+  into the face you're leaving, so there is no save step and no
+  unsaved-changes prompt. New Face copies the current layout under
+  a name you choose (up to six faces); long-press a face to rename
+  or delete it — deleting the face you're on switches to another
+  first, the last face can't be deleted, and widget islands no
+  remaining face uses are released instead of leaked. First run
+  creates a "Main" face holding the layout you already have.
+  Restoring a backup file now also updates the active face, so the
+  two never drift apart.
+
 ## 3.4.0 — 2026-10-27
 - **Topology morph transitions.** Switching layouts no longer
   teleports the field: every bubble flies from where it sits to

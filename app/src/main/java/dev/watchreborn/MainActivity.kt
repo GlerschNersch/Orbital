@@ -70,6 +70,7 @@ import dev.watchreborn.ui.CardAction
 import dev.watchreborn.ui.ClusterOption
 import dev.watchreborn.ui.ClusterTopology
 import dev.watchreborn.ui.IslandLayout
+import dev.watchreborn.ui.Faces
 import dev.watchreborn.ui.LayoutBackup
 import dev.watchreborn.ui.FaceInfo
 import dev.watchreborn.ui.Metrics
@@ -100,6 +101,9 @@ class MainActivity : Activity(), SensorEventListener {
     private val islandSnapPending = mutableSetOf<Int>()
     private var rootFrame: FrameLayout? = null
     private val prefs by lazy { getSharedPreferences("watch", Context.MODE_PRIVATE) }
+    /** 3.5.0: the faces store — never part of a snapshot, so the
+     *  active face id survives the switch it drives. */
+    private val facesPrefs by lazy { getSharedPreferences(Faces.STORE, Context.MODE_PRIVATE) }
     private var apps: List<App> = emptyList()
     private var battery = -1
     private var charging = false
@@ -132,6 +136,7 @@ class MainActivity : Activity(), SensorEventListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         repo = AppRepo(this)
+        ensureFacesMigrated()
         view = WatchView(
             context = this,
             onLaunch = ::launch,
@@ -181,6 +186,9 @@ class MainActivity : Activity(), SensorEventListener {
             prefs.edit().putStringSet(KEY_HINTS_SEEN, cur).apply()
             view.hintsSeen = cur
         }
+        view.onFaceSelected = ::switchFace
+        view.onFaceMenu = ::showFaceMenu
+        pushFacesToView()
         view.onWidgetsPage = { showWidgetsPage() }
         view.onWidgetsPageClosed = { hideWidgetsPage() }
         view.onIslandTap = { id -> openIslandPod(id) }
@@ -744,6 +752,9 @@ class MainActivity : Activity(), SensorEventListener {
                 addTargetIsland = true
                 showWidgetPicker()
             }
+            ClusterOption.NEW_FACE -> {
+                showNewFaceDialog()
+            }
             ClusterOption.BACKUP_LAYOUT -> {
                 startBackupLayout()
             }
@@ -763,6 +774,7 @@ class MainActivity : Activity(), SensorEventListener {
                     Toast.makeText(this, "Pins restored", Toast.LENGTH_SHORT).show()
                 }
             }
+            ClusterOption.FACE_ROW -> Unit // face taps carry an id; the view handles them directly
             ClusterOption.MORE_OPTIONS -> Unit // expand/collapse is view-local
             ClusterOption.CLOSE_SHEET -> Unit
         }
@@ -790,18 +802,24 @@ class MainActivity : Activity(), SensorEventListener {
             .onFailure { Toast.makeText(this, "File picker unavailable on this device", Toast.LENGTH_SHORT).show() }
     }
 
+    /** The live stores as one backup JSON — the file export and
+     *  a face snapshot are the same document (3.5.0). */
+    private fun serializeLiveStores(): String {
+        val stores = LayoutBackup.STORES.associateWith { name ->
+            getSharedPreferences(name, Context.MODE_PRIVATE).all
+        }
+        val info = packageManager.getPackageInfo(packageName, 0)
+        return LayoutBackup.serialize(
+            stores,
+            info.versionName ?: "",
+            info.longVersionCode.toInt(),
+            System.currentTimeMillis(),
+        )
+    }
+
     private fun writeBackupTo(uri: Uri) {
         val ok = runCatching {
-            val stores = LayoutBackup.STORES.associateWith { name ->
-                getSharedPreferences(name, Context.MODE_PRIVATE).all
-            }
-            val info = packageManager.getPackageInfo(packageName, 0)
-            val json = LayoutBackup.serialize(
-                stores,
-                info.versionName ?: "",
-                info.longVersionCode.toInt(),
-                System.currentTimeMillis(),
-            )
+            val json = serializeLiveStores()
             val out = contentResolver.openOutputStream(uri, "wt")
                 ?: error("no output stream")
             out.use { it.write(json.toByteArray(Charsets.UTF_8)) }
@@ -855,7 +873,9 @@ class MainActivity : Activity(), SensorEventListener {
         return ids.count { appWidgetManager.getAppWidgetInfo(it) == null }
     }
 
-    private fun applyBackup(backup: LayoutBackup.Backup) {
+    /** Rewrites both live stores from a parsed backup — the one
+     *  apply path a file restore and a face switch share. */
+    private fun writeBackupStores(backup: LayoutBackup.Backup) {
         for ((name, entries) in backup.stores) {
             if (name !in LayoutBackup.STORES) continue
             val edit = getSharedPreferences(name, Context.MODE_PRIVATE).edit().clear()
@@ -873,11 +893,227 @@ class MainActivity : Activity(), SensorEventListener {
             // disk before recreate() tears this activity down.
             edit.commit()
         }
+    }
+
+    private fun applyBackup(backup: LayoutBackup.Backup) {
+        writeBackupStores(backup)
+        // 3.5.0: the restored layout becomes the active face's own
+        // memory, so face and live layout stay consistent.
+        snapshotLiveIntoActiveFace()
         Toast.makeText(this, "Layout restored", Toast.LENGTH_SHORT).show()
         // onCreate rebuilds the view, the repo and the island set
         // from the two stores, so a recreate applies the restore
         // exactly as a cold start would.
         recreate()
+    }
+
+    // ── 3.5.0 Faces (saved cluster layouts) ─────────────────────
+
+    private fun facesList(): List<Faces.Face> {
+        val ids = facesPrefs.getString(Faces.KEY_IDS, null)
+            ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+        return ids.mapNotNull { id ->
+            val name = facesPrefs.getString(Faces.keyName(id), null) ?: return@mapNotNull null
+            val data = facesPrefs.getString(Faces.keyData(id), null) ?: return@mapNotNull null
+            Faces.Face(id, name, data)
+        }
+    }
+
+    private fun activeFaceId(): String? = facesPrefs.getString(Faces.KEY_ACTIVE, null)
+
+    private fun newFaceId(): String {
+        val existing = facesList().map { it.id }.toSet()
+        var id = "f" + System.currentTimeMillis().toString(36)
+        var n = 0
+        while (id in existing) { n++; id = "f" + System.currentTimeMillis().toString(36) + "x" + n }
+        return id
+    }
+
+    /** First run: one face named "Main" holding the current live
+     *  layout, active — nobody loses the layout they have. */
+    private fun ensureFacesMigrated() {
+        if (facesList().isNotEmpty()) return
+        val face = Faces.migrationFace(newFaceId(), serializeLiveStores())
+        facesPrefs.edit()
+            .putString(Faces.KEY_IDS, face.id)
+            .putString(Faces.keyName(face.id), face.name)
+            .putString(Faces.keyData(face.id), face.data)
+            .putString(Faces.KEY_ACTIVE, face.id)
+            .commit()
+    }
+
+    private fun pushFacesToView() {
+        val active = activeFaceId()
+        view.faceEntries = facesList().map { face ->
+            val topoName = Faces.topologyNameOf(face.data)
+            val title = topoName?.let { name ->
+                runCatching { ClusterTopology.valueOf(name).fullTitle }.getOrNull()
+            } ?: topoName ?: "Saved layout"
+            WatchView.FaceEntry(face.id, face.name, title, face.id == active)
+        }
+    }
+
+    /** The active face re-snapshots the live stores into its own
+     *  slot — how a face "remembers itself", with no save step. */
+    private fun snapshotLiveIntoActiveFace() {
+        val active = activeFaceId() ?: return
+        if (facesList().none { it.id == active }) return
+        facesPrefs.edit().putString(Faces.keyData(active), serializeLiveStores()).commit()
+    }
+
+    private fun switchFace(id: String) {
+        val target = facesList().firstOrNull { it.id == id } ?: return
+        if (id == activeFaceId()) return
+        val backup = runCatching { LayoutBackup.parse(target.data) }.getOrElse {
+            Toast.makeText(this, "That face's saved layout is unreadable", Toast.LENGTH_LONG).show()
+            return
+        }
+        // The outgoing face remembers the live state first; the
+        // active id flips in the faces store before the recreate,
+        // so it survives the switch it drives.
+        snapshotLiveIntoActiveFace()
+        facesPrefs.edit().putString(Faces.KEY_ACTIVE, id).commit()
+        writeBackupStores(backup)
+        recreate()
+    }
+
+    private fun showNewFaceDialog() {
+        val faces = facesList()
+        if (!Faces.canAdd(faces.size)) {
+            Toast.makeText(
+                this,
+                "That's the limit — ${Faces.MAX_FACES} faces. Delete one to add another.",
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        val input = EditText(this).apply {
+            setText(Faces.nextFaceName(faces.map { it.name }))
+            setSingleLine(true)
+            selectAll()
+        }
+        AlertDialog.Builder(this)
+            .setTitle("New Face")
+            .setMessage("Copies the current layout into a new face you can switch to any time.")
+            .setView(input)
+            .setPositiveButton("Create") { _, _ ->
+                val name = input.text.toString().trim()
+                    .ifEmpty { Faces.nextFaceName(facesList().map { it.name }) }
+                createFace(name)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun createFace(name: String) {
+        val faces = facesList()
+        if (!Faces.canAdd(faces.size)) {
+            Toast.makeText(this, "That's the limit — ${Faces.MAX_FACES} faces.", Toast.LENGTH_LONG).show()
+            return
+        }
+        val id = newFaceId()
+        val ids = (faces.map { it.id } + id).joinToString(",")
+        facesPrefs.edit()
+            .putString(Faces.KEY_IDS, ids)
+            .putString(Faces.keyName(id), name)
+            .putString(Faces.keyData(id), serializeLiveStores())
+            .commit()
+        pushFacesToView()
+        Toast.makeText(this, "Face \u201C$name\u201D created", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun showFaceMenu(id: String) {
+        val face = facesList().firstOrNull { it.id == id } ?: return
+        AlertDialog.Builder(this)
+            .setTitle(face.name)
+            .setItems(arrayOf("Rename", "Delete")) { _, which ->
+                when (which) {
+                    0 -> showRenameFaceDialog(face)
+                    1 -> confirmDeleteFace(face)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showRenameFaceDialog(face: Faces.Face) {
+        val input = EditText(this).apply {
+            setText(face.name)
+            setSingleLine(true)
+            selectAll()
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Rename Face")
+            .setView(input)
+            .setPositiveButton("Rename") { _, _ ->
+                val name = input.text.toString().trim().ifEmpty { face.name }
+                facesPrefs.edit().putString(Faces.keyName(face.id), name).commit()
+                pushFacesToView()
+                Toast.makeText(this, "Renamed to $name", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun confirmDeleteFace(face: Faces.Face) {
+        val faces = facesList()
+        if (faces.size <= 1) {
+            Toast.makeText(this, "Keep at least one face", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val isActive = face.id == activeFaceId()
+        val survivor = faces.firstOrNull { it.id != face.id }
+        AlertDialog.Builder(this)
+            .setTitle("Delete \u201C${face.name}\u201D?")
+            .setMessage(
+                if (isActive) {
+                    "This is the face you're using. Orbital switches to \u201C${survivor?.name}\u201D first, then deletes it — its saved layout goes away."
+                } else {
+                    "Its saved layout goes away. Faces that share its widget islands keep them."
+                },
+            )
+            .setPositiveButton("Delete") { _, _ -> deleteFace(face) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun deleteFace(face: Faces.Face) {
+        val faces = facesList()
+        if (faces.size <= 1) return
+        val isActive = face.id == activeFaceId()
+        if (isActive) {
+            // Switch first (the survivor's snapshot becomes live),
+            // then delete — the outgoing face's self-save would be
+            // discarded along with it anyway.
+            val survivor = faces.first { it.id != face.id }
+            val backup = runCatching { LayoutBackup.parse(survivor.data) }.getOrNull()
+            if (backup == null) {
+                Toast.makeText(this, "Couldn't switch away from this face", Toast.LENGTH_LONG).show()
+                return
+            }
+            facesPrefs.edit().putString(Faces.KEY_ACTIVE, survivor.id).commit()
+            writeBackupStores(backup)
+        }
+        // Widget deallocation: ids the deleted face referenced that
+        // no surviving face references and the live set isn't using.
+        val remaining = faces.filter { it.id != face.id }
+        val orphans = Faces.orphanedWidgetIds(
+            Faces.islandIdsOf(face.data),
+            remaining.map { Faces.islandIdsOf(it.data) },
+            savedIslandIds().toSet(),
+        )
+        facesPrefs.edit()
+            .putString(Faces.KEY_IDS, remaining.map { it.id }.joinToString(","))
+            .remove(Faces.keyName(face.id))
+            .remove(Faces.keyData(face.id))
+            .commit()
+        orphans.forEach { runCatching { appWidgetHost.deleteAppWidgetId(it) } }
+        if (isActive) {
+            recreate()
+        } else {
+            pushFacesToView()
+        }
+        Toast.makeText(this, "Face \u201C${face.name}\u201D deleted", Toast.LENGTH_SHORT).show()
     }
 
     private fun handleCardAction(action: CardAction) {
