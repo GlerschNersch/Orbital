@@ -597,7 +597,7 @@ class WatchView(
             invalidate()
         }
 
-    var autoFolders: Boolean = true
+    var autoFolders: Boolean = false
         set(v) {
             field = v
             rebuildGridHexes()

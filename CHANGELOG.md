@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.0.3 — 2026-10-26
+
+Two fixes from Matt's first run of the fresh install:
+
+- Category Clustering now defaults OFF on fresh installs (his setup is all apps loose). The preference itself is unchanged — a stored "on" still wins. This closes a trap the rename exposed: a first-run user got pre-made category folders with no Settings toggle left to undo them.
+- Widget picker latency: tapping + Add appeared to hang for seconds because the picker gathered everything on the UI thread — every provider's labels (repeatedly, inside the sort) and every preview image — before it could appear. The picker now opens instantly with a "Loading widgets…" row and builds its list off-thread; labels are resolved once per widget.
+
 ## 3.0.2 — 2026-10-26
 
 Widgets page: the card is gone (Matt's call). Widgets now sit clean on the page at full width — no panel background, no padding, no name/Remove header strip. The resize grip stays under each widget (drag or tap to resize). Removal moved to a long-press on the widget, which asks first ("Remove this widget from the page?"). Providers are now told the true full width (the old card padding is no longer subtracted).

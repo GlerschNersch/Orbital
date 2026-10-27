@@ -21,6 +21,7 @@ import android.graphics.Color
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -137,7 +138,7 @@ class MainActivity : Activity(), SensorEventListener {
             onTopoViewSaved = ::handleTopoViewSaved,
         )
         view.accent = prefs.getInt(KEY_ACCENT, ACCENTS[0].second)
-        view.autoFolders = prefs.getBoolean(KEY_FOLDERS, true)
+        view.autoFolders = prefs.getBoolean(KEY_FOLDERS, false) // 3.0.3: fresh installs start all-loose (Matt); a stored pref still wins
         view.bloomFolders = prefs.getBoolean(KEY_BLOOM, true)
         view.fixedNeighborhoods = prefs.getBoolean(KEY_FIXED_NEIGHBORHOODS, true)
         view.perLayoutPins = prefs.getBoolean(KEY_PER_LAYOUT_PINS, false)
@@ -1294,6 +1295,7 @@ class MainActivity : Activity(), SensorEventListener {
     // ------------------------------------------------------------------
 
     private var widgetsPicker: FrameLayout? = null
+    private var pickerLoadGen = 0
     private var widgetsPickerCol: LinearLayout? = null
     private var pendingBindId: Int = -1
     private var pendingBindInfo: AppWidgetProviderInfo? = null
@@ -1381,93 +1383,131 @@ class MainActivity : Activity(), SensorEventListener {
     private fun populateWidgetPicker() {
         val col = widgetsPickerCol ?: return
         col.removeAllViews()
-        val pm = packageManager
-        fun appLabel(info: AppWidgetProviderInfo): String =
-            runCatching {
-                pm.getApplicationLabel(
-                    pm.getApplicationInfo(info.provider.packageName, 0),
-                ).toString()
-            }.getOrDefault(info.provider.packageName)
-        val providers = appWidgetManager.installedProviders.sortedWith(
-            compareBy({ appLabel(it).lowercase() }, { it.loadLabel(pm).lowercase() }),
-        )
-        if (providers.isEmpty()) {
-            val empty = TextView(this).apply {
-                text = "No widgets available on this device."
-                textSize = 12.5f
-                setTextColor(Color.rgb(200, 205, 215))
-                gravity = Gravity.CENTER
-                setPadding(dpPx(16f), dpPx(36f), dpPx(16f), dpPx(36f))
-            }
-            col.addView(empty)
-            return
+        val loading = TextView(this).apply {
+            text = "Loading widgets\u2026"
+            textSize = 12.5f
+            setTextColor(Color.rgb(200, 205, 215))
+            gravity = Gravity.CENTER
+            setPadding(dpPx(16f), dpPx(36f), dpPx(16f), dpPx(36f))
         }
+        col.addView(loading)
+        // 3.0.3 (Matt: "a lot of latency when select add"): this used
+        // to run entirely on the UI thread - every provider's label
+        // lookups (repeatedly, inside the sort comparator) plus every
+        // preview image, synchronously at tap time, before the picker
+        // even appeared. Now the picker opens instantly and the list
+        // is gathered off-thread; labels are resolved once per row.
+        val gen = ++pickerLoadGen
         val density = resources.configuration.densityDpi
-        for (info in providers) {
-            val card = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dpPx(12f), dpPx(12f), dpPx(12f), dpPx(12f))
-                background = GradientDrawable().apply {
-                    setColor(Color.rgb(34, 36, 44))
-                    cornerRadius = dpPx(18f).toFloat()
+        kotlin.concurrent.thread(name = "widget-picker-load") {
+            val pm = packageManager
+            val rows = runCatching {
+                appWidgetManager.installedProviders.map { info ->
+                    val app = runCatching {
+                        pm.getApplicationLabel(
+                            pm.getApplicationInfo(info.provider.packageName, 0),
+                        ).toString()
+                    }.getOrDefault(info.provider.packageName)
+                    val preview = runCatching {
+                        info.loadPreviewImage(this@MainActivity, density)
+                    }.getOrNull()
+                    val icon = if (preview == null) {
+                        runCatching { info.loadIcon(this@MainActivity, density) }.getOrNull()
+                    } else {
+                        null
+                    }
+                    PickerRow(info, info.loadLabel(pm) ?: "App Widget", app, preview, icon)
+                }.sortedWith(compareBy({ it.app.lowercase() }, { it.label.lowercase() }))
+            }.getOrDefault(emptyList())
+            runOnUiThread {
+                if (gen != pickerLoadGen || widgetsPickerCol !== col) return@runOnUiThread
+                col.removeAllViews()
+                if (rows.isEmpty()) {
+                    val empty = TextView(this@MainActivity).apply {
+                        text = "No widgets available on this device."
+                        textSize = 12.5f
+                        setTextColor(Color.rgb(200, 205, 215))
+                        gravity = Gravity.CENTER
+                        setPadding(dpPx(16f), dpPx(36f), dpPx(16f), dpPx(36f))
+                    }
+                    col.addView(empty)
+                    return@runOnUiThread
                 }
+                for (row in rows) {
+                    col.addView(buildPickerCard(row))
+                }
+            }
+        }
+    }
+
+    /** One picker row (3.0.3): everything PackageManager-bound is
+     *  resolved once, off the UI thread, before views are built. */
+    private data class PickerRow(
+        val info: AppWidgetProviderInfo,
+        val label: String,
+        val app: String,
+        val preview: Drawable?,
+        val icon: Drawable?,
+    )
+
+    private fun buildPickerCard(row: PickerRow): View {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dpPx(12f), dpPx(12f), dpPx(12f), dpPx(12f))
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(34, 36, 44))
+                cornerRadius = dpPx(18f).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { bottomMargin = dpPx(10f) }
+            isClickable = true
+            setOnClickListener { bindAndAddWidget(row.info) }
+        }
+        if (row.preview != null) {
+            // The provider's own preview image - the whole point of
+            // this picker (Matt couldn't tell widgets apart in the
+            // old name-only system list).
+            val iv = ImageView(this).apply {
+                setImageDrawable(row.preview)
+                adjustViewBounds = true
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                maxHeight = dpPx(130f)
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply { bottomMargin = dpPx(10f) }
-                isClickable = true
-                setOnClickListener { bindAndAddWidget(info) }
+                ).apply { bottomMargin = dpPx(8f) }
             }
-            val preview = runCatching { info.loadPreviewImage(this, density) }.getOrNull()
-            val icon = if (preview == null) {
-                runCatching { info.loadIcon(this, density) }.getOrNull()
-            } else {
-                null
+            card.addView(iv)
+        } else if (row.icon != null) {
+            // No preview shipped: fall back to the app icon, kept
+            // small - a full-width icon looks like a broken preview.
+            val iv = ImageView(this).apply {
+                setImageDrawable(row.icon)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    dpPx(64f),
+                ).apply { bottomMargin = dpPx(8f) }
             }
-            if (preview != null) {
-                // The provider's own preview image — the whole point of
-                // this picker (Matt couldn't tell widgets apart in the
-                // old name-only system list).
-                val iv = ImageView(this).apply {
-                    setImageDrawable(preview)
-                    adjustViewBounds = true
-                    scaleType = ImageView.ScaleType.FIT_CENTER
-                    maxHeight = dpPx(130f)
-                    layoutParams = LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ).apply { bottomMargin = dpPx(8f) }
-                }
-                card.addView(iv)
-            } else if (icon != null) {
-                // No preview shipped: fall back to the app icon, kept
-                // small — a full-width icon looks like a broken preview.
-                val iv = ImageView(this).apply {
-                    setImageDrawable(icon)
-                    scaleType = ImageView.ScaleType.FIT_CENTER
-                    layoutParams = LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        dpPx(64f),
-                    ).apply { bottomMargin = dpPx(8f) }
-                }
-                card.addView(iv)
-            }
-            val lbl = TextView(this).apply {
-                text = info.loadLabel(pm) ?: "App Widget"
-                textSize = 13.5f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(Color.WHITE)
-            }
-            card.addView(lbl)
-            val meta = TextView(this).apply {
-                text = appLabel(info)
-                textSize = 11f
-                setTextColor(Color.rgb(170, 175, 185))
-                setPadding(0, dpPx(2f), 0, 0)
-            }
-            card.addView(meta)
-            col.addView(card)
+            card.addView(iv)
         }
+        val lbl = TextView(this).apply {
+            text = row.label
+            textSize = 13.5f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+        }
+        card.addView(lbl)
+        val meta = TextView(this).apply {
+            text = row.app
+            textSize = 11f
+            setTextColor(Color.rgb(170, 175, 185))
+            setPadding(0, dpPx(2f), 0, 0)
+        }
+        card.addView(meta)
+        return card
     }
 
     private fun bindAndAddWidget(info: AppWidgetProviderInfo) {
