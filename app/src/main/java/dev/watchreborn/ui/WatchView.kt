@@ -53,12 +53,9 @@ enum class ClusterTopology(val shortTitle: String, val fullTitle: String, val su
     HONEYCOMB("⬡ Hex", "⬡ Classic Honeycomb", "6-Axis Hexagonal Fisheye Cluster"),
     ORBITALS("🪐 Orbit", "🪐 Planetary Orbitals", "Concentric Astrolabe Rings (Spin to Rotate)"),
     RIVER("🌊 River", "🌊 Vertical River", "watchOS 10 Vertical 2–3–2 Hex Ribbon"),
-    FIBONACCI("🌻 Spiral", "🌻 Fibonacci Spiral", "137.5° Golden-Angle Sunflower Cluster"),
-    CHRONO_BEZEL("🎡 Bezel", "🎡 Chrono Bezel", "Live Center Watch HUD + Rotating Ring"),
     NEBULA("🌌 Nebula", "🌌 Nebula Islands", "Expanded Category Galaxy Islands in Space"),
     GRAVITY("🫧 Gravity", "🫧 Gravity Sizes", "Usage-Weighted Hero & Satellite Bubbles"),
     DNA_HELIX("🧬 Helix", "🧬 Double Helix", "3D Rotating Twin-Strand DNA Ribbon"),
-    HOURGLASS("⏳ Vortex", "⏳ Chrono Hourglass", "Upper & Lower Funnels Around Live Core"),
     MAGNETIC_DOCK("🧲 Arch", "🧲 Thumb Arc Dock", "One-Handed Bottom Ergonomic Concentric Arcs"),
     LIQUID_POOL("🫧 Pool", "🫧 Zero-G Billiards", "Free-Floating Tilt & Collision Bubble Tank"),
 }
@@ -709,7 +706,13 @@ class WatchView(
     private val searchClearRect = RectF()
     private val centerSearchPillRect = RectF()
 
-    private val chronoHudRect = RectF()
+    // Reused per-frame grid scratch buffers (3.1.0 perf: no FloatArray
+    // allocation inside the draw loop).
+    private var gridBufX = FloatArray(0)
+    private var gridBufY = FloatArray(0)
+    private var gridBufDia = FloatArray(0)
+    private var gridBufDist = FloatArray(0)
+    private var gridBufDepth = FloatArray(0)
     private val nebulaHeaderRects = ArrayList<Triple<RectF, Float, Float>>()
     private val constellationChipRects = ArrayList<Pair<RectF, String>>()
     private val constellationCategoryChipRects = ArrayList<Pair<RectF, dev.watchreborn.apps.AppGroup>>()
@@ -1830,51 +1833,6 @@ class WatchView(
                 // top ~40% empty (the ribbon only grows downward from here).
                 out[1] = (row - 3.2f) * (pitch * 0.90f)
             }
-            ClusterTopology.FIBONACCI -> {
-                if (index == 0) {
-                    out[0] = 0f; out[1] = 0f
-                    return
-                }
-                val goldenAngle = 2.3999632f // 137.50776 degrees in radians
-                val ang = index * goldenAngle + orbitalAngle * 0.6f
-                // 0.78 (was 0.68): the first spiral step used to land close
-                // enough that a usage-grown bubble swallowed the center hub.
-                val r = pitch * 0.78f * sqrt(index.toFloat())
-                out[0] = cos(ang) * r
-                out[1] = sin(ang) * r
-            }
-            ClusterTopology.CHRONO_BEZEL -> {
-                if (index == 0) {
-                    out[0] = 0f; out[1] = 0f
-                    return
-                }
-                if (index <= 10) {
-                    val cnt = min(10, (total - 1).coerceAtLeast(1))
-                    val ang = (index - 1) * (2.0 * PI / cnt) - PI / 2.0 + orbitalAngle
-                    val r = pitch * 1.56f
-                    out[0] = (cos(ang) * r).toFloat()
-                    out[1] = (sin(ang) * r).toFloat()
-                } else {
-                    // The outer ring is a carousel: only BEZEL_OUTER_CAP bubbles
-                    // ride it at once, and spinning the bezel scrolls the window
-                    // through the rest of the catalog (clamped at both ends).
-                    // All ~170 overflow apps used to share this one ring and
-                    // overlap into a solid band around the screen.
-                    val outerTotal = (total - 11).coerceAtLeast(1)
-                    val slot = RingMath.carouselSlot(index - 11, outerTotal, BEZEL_OUTER_CAP, orbitalAngle * 0.65f)
-                    if (slot == null) {
-                        // Scrolled out of the window: park far off-screen (the
-                        // fisheye shrinks it to nothing; it takes no hits).
-                        out[0] = pitch * 40f
-                        out[1] = pitch * 40f
-                    } else {
-                        val ang = slot * (2.0 * PI / BEZEL_OUTER_CAP) - PI / 2.0
-                        val r = pitch * 2.40f
-                        out[0] = (cos(ang) * r).toFloat()
-                        out[1] = (sin(ang) * r).toFloat()
-                    }
-                }
-            }
             ClusterTopology.DNA_HELIX -> {
                 // 🧬 3D Rotating Twin-Strand DNA Ribbon
                 if (index == 0) {
@@ -1890,28 +1848,6 @@ class WatchView(
                 // (the ribbon only grows downward; it used to sit in the
                 // lower two-thirds at rest).
                 out[1] = (rung - 4.5f) * (pitch * 0.72f)
-            }
-            ClusterTopology.HOURGLASS -> {
-                // ⏳ Chrono Hourglass Vortex: pinched waist at (0,0) expanding into upper & lower cones
-                if (index == 0) {
-                    out[0] = 0f; out[1] = 0f
-                    return
-                }
-                val rowSizes = intArrayOf(1, 2, 2, 3, 3, 4, 4, 5, 5, 5, 5)
-                var rem = index - 1
-                var rIdx = 1
-                while (rIdx < rowSizes.size && rem >= rowSizes[rIdx]) {
-                    rem -= rowSizes[rIdx]
-                    rIdx++
-                }
-                val cols = if (rIdx < rowSizes.size) rowSizes[rIdx] else 5
-                val col = rem.coerceIn(0, cols - 1)
-                val tier = (rIdx + 1) / 2
-                val isUpper = rIdx % 2 == 1
-                val ySign = if (isUpper) -1f else 1f
-                val spread = pitch * (0.94f + tier * 0.14f)
-                out[0] = (col - (cols - 1) / 2f) * spread
-                out[1] = ySign * tier * (pitch * 0.88f)
             }
             ClusterTopology.MAGNETIC_DOCK -> {
                 // 🧲 Ergonomic One-Handed Thumb Arc Dock radiating upward from
@@ -2077,8 +2013,6 @@ class WatchView(
 
         // 3. Rotary angular momentum & magnetic notch detent
         val isRotary = clusterTopology == ClusterTopology.ORBITALS ||
-            clusterTopology == ClusterTopology.CHRONO_BEZEL ||
-            clusterTopology == ClusterTopology.FIBONACCI ||
             clusterTopology == ClusterTopology.DNA_HELIX
         if (reducedMotion) orbitalVelocity = 0f
         if (!dragging && isRotary && !reducedMotion) {
@@ -2093,9 +2027,9 @@ class WatchView(
                 active = true
             } else {
                 orbitalVelocity = 0f
-                // Magnetic detent snap on Chrono Bezel & Orbitals so a bubble cleanly locks into the 12 o'clock notch!
-                if (clusterTopology == ClusterTopology.CHRONO_BEZEL || clusterTopology == ClusterTopology.ORBITALS) {
-                    val ringCount = if (clusterTopology == ClusterTopology.CHRONO_BEZEL) min(10, (count - 1).coerceAtLeast(1)) else min(6, (count - 1).coerceAtLeast(1))
+                // Magnetic detent snap on Orbitals so a bubble cleanly locks into the 12 o'clock notch!
+                if (clusterTopology == ClusterTopology.ORBITALS) {
+                    val ringCount = min(6, (count - 1).coerceAtLeast(1))
                     val stepAng = (2.0 * PI / ringCount).toFloat()
                     val nearestNotch = (orbitalAngle / stepAng).roundToInt() * stepAng
                     val diff = nearestNotch - orbitalAngle
@@ -2290,7 +2224,7 @@ class WatchView(
         activeFolder = folder
         val items = activeGridItems
         bloomAnchorIndex = items.indexOfFirst { it.key == folder.key }
-        if (bloomFolders && bloomAnchorIndex in items.indices && clusterTopology != ClusterTopology.CHRONO_BEZEL) {
+        if (bloomFolders && bloomAnchorIndex in items.indices) {
             computeTopologyWorldPos(bloomAnchorIndex, items.size, Metrics.GRID_PITCH * unit, anchorTmp)
             panX.target = -anchorTmp[0]
             panY.target = -anchorTmp[1]
@@ -2321,7 +2255,7 @@ class WatchView(
         activeWidget = widget
         val items = activeGridItems
         bloomAnchorIndex = items.indexOfFirst { it.key == widget.key }
-        if (bloomAnchorIndex in items.indices && clusterTopology != ClusterTopology.CHRONO_BEZEL && clusterTopology != ClusterTopology.NEBULA) {
+        if (bloomAnchorIndex in items.indices && clusterTopology != ClusterTopology.NEBULA) {
             computeTopologyWorldPos(bloomAnchorIndex, items.size, Metrics.GRID_PITCH * unit, anchorTmp)
             panX.target = -anchorTmp[0]
             panY.target = -anchorTmp[1]
@@ -2471,7 +2405,6 @@ class WatchView(
         val bVal = max(fVal, wVal)
         val cVal = constellationIn.value
 
-        chronoHudRect.setEmpty()
         nebulaHeaderRects.clear()
 
         // Special full-galaxy renderer for 🌌 NEBULA ISLANDS when not unraveling
@@ -2491,33 +2424,38 @@ class WatchView(
 
         var nearest: GridItem? = null
         var nearestD = Float.MAX_VALUE
-        val bubbleX = FloatArray(items.size)
-        val bubbleY = FloatArray(items.size)
-        val bubbleDia = FloatArray(items.size)
-        val bubbleDist = FloatArray(items.size) { Float.MAX_VALUE }
-        // 2.9.1 core tuning: the lattice runs 10% wider than the raw
+        if (gridBufX.size < items.size) {
+            val cap = items.size + 32
+            gridBufX = FloatArray(cap)
+            gridBufY = FloatArray(cap)
+            gridBufDia = FloatArray(cap)
+            gridBufDist = FloatArray(cap)
+            gridBufDepth = FloatArray(cap)
+        }
+        val bubbleX = gridBufX
+        val bubbleY = gridBufY
+        val bubbleDia = gridBufDia
+        val bubbleDist = gridBufDist
+        bubbleDist.fill(Float.MAX_VALUE, 0, items.size)
+        // 2.9.1 core tuning: the grid runs 10% wider than the raw
         // watchOS pitch — GRID_PITCH/GRID_CENTER_D leaves only ~13%
         // headroom, so heavily-used neighbours (growth up to 1.5x)
         // physically overlapped, worst around the new centre app.
         val basePitch = Metrics.GRID_PITCH * u * (1f + 0.32f * ov) * 1.10f
 
-        val isBezel = clusterTopology == ClusterTopology.CHRONO_BEZEL
         val isRiver = clusterTopology == ClusterTopology.RIVER
         val isOrbitals = clusterTopology == ClusterTopology.ORBITALS
         val isHelix = clusterTopology == ClusterTopology.DNA_HELIX
-        val isHourglass = clusterTopology == ClusterTopology.HOURGLASS
         val isDock = clusterTopology == ClusterTopology.MAGNETIC_DOCK
         val isPool = clusterTopology == ClusterTopology.LIQUID_POOL
 
         ensureWakeCapacity(items.size)
-        val bubbleDepthAlpha = FloatArray(items.size) { 1f }
+        val bubbleDepthAlpha = gridBufDepth
+        bubbleDepthAlpha.fill(1f, 0, items.size)
 
         for (i in items.indices) {
             val item = items[i]
             if ((bFolder != null || bWidget != null) && i == bloomAnchorIndex && bVal > 0.15f) continue
-            // In Chrono Bezel mode, item 0 (Core Clock) is rendered as the large central Chrono Watch HUD
-            if (isBezel && i == 0 && item is WidgetBubble && item.kind == WidgetKind.CORE_CLOCK) continue
-
             computeTopologyWorldPos(i, items.size, basePitch, tmp)
             var worldX = tmp[0]
             var worldY = tmp[1]
@@ -2556,25 +2494,16 @@ class WatchView(
                 }
             }
 
-            val px = if (isBezel || isRiver || isHelix || isHourglass || isDock || isPool) 0f else panX.value * (1f - ov)
+            val px = if (isRiver || isHelix || isDock || isPool) 0f else panX.value * (1f - ov)
             // The Dock pans vertically (its higher arcs reach up off-screen);
             // it is the one arc layout whose pan used to be pinned to zero.
-            val py = if (isBezel || isPool) 0f else panY.value * (1f - ov)
+            val py = if (isPool) 0f else panY.value * (1f - ov)
             val dx = (worldX + px) / u
             val dy = (worldY + py) / u
             val d = hypot(dx / sx, dy / sy)
             bubbleDist[i] = d
 
-            if (isBezel) {
-                // In Chrono Bezel mode, the active item is the one closest to the 12 o'clock launch notch!
-                // Only the inner ring competes for the notch: outer-carousel items
-                // parked off-screen (or passing the top of their larger ring)
-                // must never steal the highlight from the ring that owns it.
-                if (i in 1..10) {
-                    val notchDist = hypot(worldX, worldY + basePitch * 1.56f)
-                    if (notchDist < nearestD) { nearestD = notchDist; nearest = item }
-                }
-            } else if (d < nearestD) {
+            if (d < nearestD) {
                 nearestD = d
                 nearest = item
             }
@@ -2585,10 +2514,6 @@ class WatchView(
             }
 
             val fisheyeSize = when {
-                isBezel -> {
-                    val notchFactor = (1f - hypot(worldX, worldY + basePitch * 1.56f) / (basePitch * 1.15f)).coerceIn(0f, 1f)
-                    0.68f + 0.34f * notchFactor
-                }
                 isHelix -> {
                     val depthScale = if (i == 0) 1.16f else (0.84f + 0.24f * helixZ)
                     Fisheye.size(d * 0.85f) * depthScale
@@ -2610,11 +2535,11 @@ class WatchView(
             }
             val size = fisheyeSize * (1f - ov) + 0.88f * ov
             if (size <= 0.02f) continue
-            val pulledK = if (isBezel || isPool || isDock) 1f else if (d > 1e-4f) Fisheye.pulled(d) / d else 1f
+            val pulledK = if (isPool || isDock) 1f else if (d > 1e-4f) Fisheye.pulled(d) / d else 1f
             val k = pulledK * (1f - ov) + 1f * ov
             bubbleX[i] = cx + dx * k * u * effZoom
             bubbleY[i] = cy + dy * k * u * effZoom
-            if ((isRiver || isHelix || isHourglass) && (bubbleY[i] < top + dp(52f) || bubbleY[i] > h - dp(84f))) {
+            if ((isRiver || isHelix) && (bubbleY[i] < top + dp(52f) || bubbleY[i] > h - dp(84f))) {
                 bubbleDia[i] = 0f
                 continue
             }
@@ -2635,7 +2560,7 @@ class WatchView(
         if (itemAlpha > 0.01f) {
             val aInt = (itemAlpha * 255).toInt().coerceIn(0, 255)
 
-            // Topology-specific backdrop matrices, orbital rings, river tracks, or chrono bezel HUD
+            // Topology-specific backdrop art: orbital rings, river tracks, helix strands, dock arcs, pool tank
             when (clusterTopology) {
                 ClusterTopology.ORBITALS -> {
                     val sunX = if (items.isNotEmpty() && bubbleDia[0] > 0f) bubbleX[0] else cx + panX.value * (1f - ov) * effZoom
@@ -2664,35 +2589,6 @@ class WatchView(
                     stroke.color = withAlpha(accent, (aInt * 0.28f).toInt())
                     c.drawLine(cx - railOffset, top + dp(52f), cx - railOffset, h - dp(80f), stroke)
                     c.drawLine(cx + railOffset, top + dp(52f), cx + railOffset, h - dp(80f), stroke)
-                    // Subtle river spine & connecting lattice
-                    val maxLinkDist = basePitch * effZoom * 1.35f
-                    stroke.strokeWidth = dp(1.2f)
-                    for (i in items.indices) {
-                        if (bubbleDia[i] <= 2f) continue
-                        for (j in i + 1 until min(items.size, i + 5)) {
-                            if (bubbleDia[j] <= 2f) continue
-                            val dist = hypot(bubbleX[j] - bubbleX[i], bubbleY[j] - bubbleY[i])
-                            if (dist <= maxLinkDist) {
-                                stroke.color = withAlpha(accent, (aInt * 0.22f).toInt())
-                                c.drawLine(bubbleX[i], bubbleY[i], bubbleX[j], bubbleY[j], stroke)
-                            }
-                        }
-                    }
-                }
-                ClusterTopology.FIBONACCI -> {
-                    // Connect Fibonacci parastichy spiral arms (steps of 3, 5, 8)
-                    val steps = intArrayOf(3, 5, 8)
-                    for (step in steps) {
-                        stroke.strokeWidth = dp(if (step == 5) 1.8f else 1.2f)
-                        stroke.color = withAlpha(accent, (aInt * (if (step == 5) 0.34f else 0.18f)).toInt())
-                        for (i in 1 until items.size - step) {
-                            if (bubbleDia[i] <= 2f || bubbleDia[i + step] <= 2f) continue
-                            c.drawLine(bubbleX[i], bubbleY[i], bubbleX[i + step], bubbleY[i + step], stroke)
-                        }
-                    }
-                }
-                ClusterTopology.CHRONO_BEZEL -> {
-                    drawChronoBezelHud(c, cx, cy, basePitch * effZoom, cal, itemAlpha)
                 }
                 ClusterTopology.DNA_HELIX -> {
                     // 🧬 Draw base-pair rungs connecting Strand A (odd) and Strand B (even), plus twin-strand backbones
@@ -2720,22 +2616,6 @@ class WatchView(
                             cur += 2
                         }
                     }
-                }
-                ClusterTopology.HOURGLASS -> {
-                    // ⏳ Draw Chrono Hourglass funnel rails & waist rings
-                    val topY = top + dp(56f)
-                    val botY = h - dp(86f)
-                    val waistW = basePitch * 0.62f * effZoom
-                    val rimW = basePitch * 2.15f * effZoom
-                    stroke.strokeWidth = dp(1.7f)
-                    stroke.color = withAlpha(accent, (aInt * 0.32f).toInt())
-                    c.drawLine(cx - rimW, topY, cx - waistW, cy, stroke)
-                    c.drawLine(cx - waistW, cy, cx - rimW, botY, stroke)
-                    c.drawLine(cx + rimW, topY, cx + waistW, cy, stroke)
-                    c.drawLine(cx + waistW, cy, cx + rimW, botY, stroke)
-                    stroke.strokeWidth = dp(1.3f)
-                    stroke.color = withAlpha(accent, (aInt * 0.45f).toInt())
-                    c.drawCircle(cx, cy, waistW * 0.92f, stroke)
                 }
                 ClusterTopology.MAGNETIC_DOCK -> {
                     // 🧲 Draw concentric thumb-reach arc guides radiating from the
@@ -2765,27 +2645,9 @@ class WatchView(
                     c.drawCircle(cx, cy, tankR * 0.66f, stroke)
                     c.drawCircle(cx, cy, tankR * 0.33f, stroke)
                 }
-                else -> {
-                    // Reactive Hexagonal Lattice Matrix (used by HONEYCOMB & GRAVITY)
-                    // Brightened in 2.4.0 (Matt: the lattice was too faint) —
-                    // thicker filament, ~2.2x the alpha, higher outer floor.
-                    val maxLinkDist = basePitch * effZoom * 1.42f
-                    stroke.strokeWidth = dp(2f)
-                    for (i in items.indices) {
-                        if (bubbleDia[i] <= 2f) continue
-                        val x1 = bubbleX[i]; val y1 = bubbleY[i]
-                        for (j in i + 1 until items.size) {
-                            if (bubbleDia[j] <= 2f) continue
-                            val x2 = bubbleX[j]; val y2 = bubbleY[j]
-                            val dist = hypot(x2 - x1, y2 - y1)
-                            if (dist <= maxLinkDist) {
-                                val centerBoost = (1f - min(bubbleDist[i], bubbleDist[j]) * 1.4f).coerceIn(0.35f, 1f)
-                                stroke.color = withAlpha(accent, (itemAlpha * 130f * centerBoost).toInt())
-                                c.drawLine(x1, y1, x2, y2, stroke)
-                            }
-                        }
-                    }
-                }
+                // HONEYCOMB, GRAVITY and NEBULA draw no backdrop lines:
+                // the bubble-to-bubble lattice was removed in 3.1.0 (Matt).
+                else -> Unit
             }
 
             // Expandable Shockwave Ripple ring when triggered by double-tap or shake
@@ -2797,10 +2659,8 @@ class WatchView(
                 c.drawCircle(shockwaveOriginX, shockwaveOriginY, swR, stroke)
             }
 
-            // Draw each bubble + Gravity hero rings + Chrono Bezel top notch highlight + Overview labels
+            // Draw each bubble + Gravity hero rings + Overview labels
             // For DNA_HELIX, draw back-strand bubbles first so front-strand bubbles overlap cleanly in 3D!
-            // For FIBONACCI, the center hub draws last so a grown neighbour
-            // can't bury the clock at the middle of the spiral.
             // Zero-G Billiards: draw the tank itself (1.4.0) — a softly
             // filled disc with an accent rim at exactly the physics wall
             // radius, so the containment reads as a tank instead of the
@@ -2819,8 +2679,7 @@ class WatchView(
 
             val drawOrder = when {
                 isHelix -> items.indices.sortedBy { dnaHelixDepth(it) }
-                clusterTopology == ClusterTopology.FIBONACCI -> items.indices.sortedBy { it == 0 }
-                else -> items.indices.toList()
+                else -> items.indices
             }
             for (i in drawOrder) {
                 val dia = bubbleDia[i]
@@ -2837,11 +2696,6 @@ class WatchView(
                     stroke.strokeWidth = dp(1.8f)
                     stroke.color = withAlpha(accent, (aInt * 0.45f).toInt())
                     c.drawCircle(x, y, dia * 0.54f, stroke)
-                }
-                if (isBezel && item == nearest) {
-                    stroke.strokeWidth = dp(2.4f)
-                    stroke.color = withAlpha(accent, aInt)
-                    c.drawCircle(x, y, dia * 0.55f, stroke)
                 }
                 if (isPool && i == grabbedPoolIndex && dragging) {
                     stroke.strokeWidth = dp(2.4f)
@@ -2907,88 +2761,6 @@ class WatchView(
         if (placeItem != null) drawPlaceOverlay(c, cal, alpha)
         drawDropAnim(c, cal, alpha, bubbleX, bubbleY, bubbleDia)
         drawGridHeader(c, w, top, nearest, ov, alpha)
-    }
-
-    /** 🎡 Draws the Live Center Chrono Watch HUD & rotating bezel tracks for [ClusterTopology.CHRONO_BEZEL]. */
-    private fun drawChronoBezelHud(c: Canvas, cx: Float, cy: Float, scaledPitch: Float, cal: Calendar, alpha: Float) {
-        val aInt = (alpha * 255).toInt().coerceIn(0, 255)
-        val rInnerBezel = scaledPitch * 1.56f
-        val rOuterBezel = scaledPitch * 2.40f
-        val hudR = scaledPitch * 0.94f
-
-        // Concentric bezel tracks
-        stroke.strokeWidth = dp(1.6f)
-        stroke.color = withAlpha(accent, (aInt * 0.32f).toInt())
-        c.drawCircle(cx, cy, rInnerBezel, stroke)
-        stroke.strokeWidth = dp(1.2f)
-        stroke.color = withAlpha(accent, (aInt * 0.20f).toInt())
-        c.drawCircle(cx, cy, rOuterBezel, stroke)
-
-        // Center Chrono Watch Dial HUD platter
-        chronoHudRect.set(cx - hudR, cy - hudR, cx + hudR, cy + hudR)
-        fill.color = Color.argb((aInt * 0.95f).toInt(), 16, 20, 26)
-        c.drawCircle(cx, cy, hudR, fill)
-        stroke.strokeWidth = dp(2.2f)
-        stroke.color = withAlpha(accent, (aInt * 0.78f).toInt())
-        c.drawCircle(cx, cy, hudR, stroke)
-
-        // 60 perimeter chronometer ticks around the center HUD
-        val sec = cal.get(Calendar.SECOND)
-        val tickOuter = hudR * 0.93f
-        for (t in 0 until 60) {
-            val ang = Math.toRadians(t * 6.0 - 90.0)
-            val ca = cos(ang).toFloat()
-            val sa = sin(ang).toFloat()
-            val major = t % 5 == 0
-            val tickInner = hudR * (if (major) 0.81f else 0.86f)
-            stroke.strokeWidth = dp(if (major) 1.8f else 1.0f)
-            stroke.color = if (t <= sec) withAlpha(accent, aInt) else Color.argb((aInt * 0.26f).toInt(), 150, 155, 165)
-            c.drawLine(cx + ca * tickInner, cy + sa * tickInner, cx + ca * tickOuter, cy + sa * tickOuter, stroke)
-        }
-
-        // Date at top of HUD
-        val dayStr = SimpleDateFormat("EEE, MMM d", Locale.getDefault()).format(cal.time).uppercase()
-        text.textSize = (hudR * 0.145f).coerceAtLeast(sp(10.5f))
-        text.color = withAlpha(accent, aInt)
-        c.drawText(dayStr, cx - text.measureText(dayStr) / 2, cy - hudR * 0.34f, text)
-
-        // Large digital time in center of HUD
-        val hm = DateFormat.getTimeInstance(DateFormat.SHORT).format(cal.time).substringBefore(' ')
-        text.textSize = (hudR * 0.42f).coerceAtLeast(sp(18f))
-        text.color = Color.argb(aInt, 255, 255, 255)
-        c.drawText(hm, cx - text.measureText(hm) / 2, cy + text.textSize * 0.34f, text)
-
-        // Battery / Timer status at bottom of HUD
-        val remMs = currentTimerRemainingMs()
-        // When the catalog overflows the outer carousel ring, the HUD names the
-        // visible window so spinning reads as browsing, not losing apps.
-        val totalItems = activeGridItems.size
-        val outerTotal = totalItems - 11
-        val windowText = if (outerTotal > BEZEL_OUTER_CAP) {
-            val scroll = RingMath.carouselScroll(outerTotal, BEZEL_OUTER_CAP, orbitalAngle * 0.65f)
-            val first = 12 + scroll.toInt()
-            val last = min(totalItems, first + BEZEL_OUTER_CAP - 1)
-            "RING $first–$last OF $totalItems"
-        } else {
-            null
-        }
-        val sub = if (timerRunning) {
-            val remSec = ((remMs + 999L) / 1000L).toInt()
-            "⏱ %d:%02d".format(remSec / 60, remSec % 60)
-        } else if (info.battery >= 0) {
-            if (windowText != null) "🔋 ${info.battery}% • $windowText" else "🔋 ${info.battery}% • SPIN BEZEL"
-        } else {
-            windowText ?: "SPIN BEZEL"
-        }
-        text.textSize = (hudR * 0.135f).coerceAtLeast(sp(10.5f))
-        text.color = Color.argb((aInt * 0.85f).toInt(), 190, 205, 195)
-        c.drawText(sub, cx - text.measureText(sub) / 2, cy + hudR * 0.54f, text)
-
-        // Top 12 o'clock Launch Notch indicator pointing to the magnified bezel bubble
-        text.textSize = sp(11f)
-        text.color = withAlpha(accent, aInt)
-        val notch = "▲"
-        c.drawText(notch, cx - text.measureText(notch) / 2, cy - hudR - dp(4f), text)
     }
 
     /** 🌌 Draws the Expanded Category Galaxy Islands in space for [ClusterTopology.NEBULA]. */
@@ -5182,29 +4954,6 @@ class WatchView(
                     else -> {
                         if (overview.target == 1f) overview.target = 0f
                         when (clusterTopology) {
-                            ClusterTopology.CHRONO_BEZEL -> {
-                                val cx = width / 2f
-                                val cy = height / 2f
-                                val rFromCenter = hypot(lastX - cx, lastY - cy)
-                                val dAng = if (rFromCenter > dp(24f)) {
-                                    val a1 = atan2(lastY - cy, lastX - cx)
-                                    val a2 = atan2((lastY + dy) - cy, (lastX + dx) - cx)
-                                    var delta = a2 - a1
-                                    if (delta > PI.toFloat()) delta -= (2.0 * PI).toFloat()
-                                    if (delta < -PI.toFloat()) delta += (2.0 * PI).toFloat()
-                                    delta
-                                } else {
-                                    (dx - dy) / dp(140f)
-                                }
-                                val oldTick = (orbitalAngle / 0.30f).roundToInt()
-                                orbitalAngle += dAng
-                                val newTick = (orbitalAngle / 0.30f).roundToInt()
-                                if (oldTick != newTick) {
-                                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                }
-                                panX.snap(0f)
-                                panY.snap(0f)
-                            }
                             ClusterTopology.ORBITALS -> {
                                 val cx = width / 2f
                                 val cy = height / 2f
@@ -5226,7 +4975,7 @@ class WatchView(
                                     panY.snap(panY.value + dy)
                                 }
                             }
-                            ClusterTopology.RIVER, ClusterTopology.HOURGLASS -> {
+                            ClusterTopology.RIVER -> {
                                 panX.snap(0f)
                                 panY.snap(panY.value + dy)
                             }
@@ -5310,11 +5059,6 @@ class WatchView(
     }
 
     private fun snapGrid(px: Float, py: Float) {
-        if (clusterTopology == ClusterTopology.CHRONO_BEZEL) {
-            panX.target = 0f
-            panY.target = 0f
-            return
-        }
         val w = unit
         if (clusterTopology == ClusterTopology.NEBULA) {
             val maxR = Metrics.GRID_PITCH * w * 3.1f
@@ -5625,13 +5369,6 @@ class WatchView(
                         return
                     }
                 }
-                if (clusterTopology == ClusterTopology.CHRONO_BEZEL && !chronoHudRect.isEmpty && chronoHudRect.contains(x, y)) {
-                    val clockWidget = activeGridItems.filterIsInstance<WidgetBubble>().firstOrNull { it.kind == WidgetKind.CORE_CLOCK }
-                    if (clockWidget != null) {
-                        openWidgetPod(clockWidget)
-                    }
-                    return
-                }
             }
 
             val hit = hitEntryAt(x, y)
@@ -5662,7 +5399,7 @@ class WatchView(
                 if (clusterTopology == ClusterTopology.NEBULA) {
                     panX.target -= (hit.x - width / 2f) * 1.6f
                     panY.target -= (hit.y - height / 2f) * 1.6f
-                } else if (clusterTopology != ClusterTopology.CHRONO_BEZEL) {
+                } else {
                     val idx = activeGridItems.indexOf(item)
                     if (idx >= 0 && idx < gridHexes.size) {
                         computeTopologyWorldPos(idx, activeGridItems.size, Metrics.GRID_PITCH * unit, tmp)
@@ -5754,8 +5491,6 @@ class WatchView(
         const val DOCK_CLUSTER = 0
         const val DOCK_WIDGETS = 1
         const val DOCK_SETTINGS = 2
-        /** Bubbles riding the Chrono Bezel's outer carousel ring at once. */
-        const val BEZEL_OUTER_CAP = 18
         const val MODE_APPS = 0
         val FOCUS_RING_ORDER = listOf(Hex(0, -1), Hex(1, -1), Hex(1, 0), Hex(0, 1), Hex(-1, 1), Hex(-1, 0))
     }

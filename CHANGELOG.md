@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.1.0 — 2026-10-26
+- Removed the lattice lines connecting the bubbles (Honeycomb / Gravity / Nebula
+  backdrops and the River's bubble connectors; the River rails, Helix strands,
+  Orbital rings, Dock arcs and Pool tank ring stay — they're each layout's own
+  structure, not a web between bubbles).
+- Removed three topologies at Matt's call: Fibonacci Spiral, Chrono Bezel and
+  Chrono Hourglass (enum, placement, backdrop art, spin/snap/tap handling, the
+  bezel HUD and its RingMath carousel helpers + tests). A stored preference for
+  a removed topology falls back to Classic Honeycomb.
+- Performance pass: the lattice's O(n^2) pairwise line pass is gone; the grid's
+  per-frame FloatArray scratch (positions, diameters, distances, depth alpha)
+  is now reused across frames instead of allocated every frame, and the draw
+  order no longer builds a fresh list per frame.
+
 ## 3.0.3 — 2026-10-26
 
 Two fixes from Matt's first run of the fresh install:

@@ -1,10 +1,8 @@
 package dev.watchreborn.ui
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import kotlin.math.PI
 
 class RingMathTest {
 
@@ -53,27 +51,4 @@ class RingMathTest {
         assertEquals(181, RingMath.capacityOf(12, 4, 2))
     }
 
-    @Test fun carouselShowsEverythingWhenTheListFits() {
-        for (i in 0 until 12) {
-            assertEquals(i.toFloat(), RingMath.carouselSlot(i, 12, 18, 3.3f))
-        }
-    }
-
-    @Test fun carouselWindowsAndClamps() {
-        val cap = 18
-        val total = 170
-        // No rotation: the first 18 items are on the ring, the rest hidden.
-        assertEquals(0f, RingMath.carouselSlot(0, total, cap, 0f))
-        assertEquals(17f, RingMath.carouselSlot(17, total, cap, 0f))
-        assertNull(RingMath.carouselSlot(18, total, cap, 0f))
-        // Spinning by exactly one slot of rotation shifts the window by one item.
-        val step = (2.0 * PI / cap).toFloat()
-        assertNull(RingMath.carouselSlot(0, total, cap, step))
-        assertEquals(0f, RingMath.carouselSlot(1, total, cap, step)!!, 0.001f)
-        // Huge rotation clamps at the end of the catalog: last item in the last slot.
-        assertEquals(17f, RingMath.carouselSlot(total - 1, total, cap, 1000f)!!, 0.001f)
-        assertNull(RingMath.carouselSlot(0, total, cap, 1000f))
-        // Negative rotation clamps at the start.
-        assertEquals(0f, RingMath.carouselSlot(0, total, cap, -1000f))
-    }
 }
