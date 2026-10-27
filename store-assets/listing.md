@@ -9,8 +9,8 @@ Prepared 2026-10-26. Everything here is ready to paste into Play Console.
 - **Category:** Personalization
 - **Contains ads:** No
 - **Contact email:** m.vincent43@gmail.com
-- **Privacy policy:** `docs/privacy-policy.html` in this repo (enable GitHub Pages on
-  `main`/`docs` to get the public URL)
+- **Privacy policy:** LIVE at https://glerschnersch.github.io/Orbital/privacy-policy.html
+  (source: `docs/privacy-policy.html`, GitHub Pages on `main`/`docs`)
 
 **Full description:**
 
