@@ -65,6 +65,7 @@ enum class ClusterOption {
     CLUSTER_TOPOLOGY,
     PER_LAYOUT_PINS,
     USAGE_GROWTH,
+    CATEGORY_CLUSTERING,
     BLOOM_MODE,
     CONSTELLATION_SEARCH,
     FIXED_NEIGHBORHOODS,
@@ -222,7 +223,21 @@ class WatchView(
                 h.x, h.y,
             )
         }
-        return bubbles + folderHeaderNodes() + dockNodes(if (widgetsPageOpen) DOCK_WIDGETS else DOCK_CLUSTER)
+        // 3.2.4: widget islands get nodes too — before this they were
+        // invisible to TalkBack: no node, so no way to open the pod,
+        // remove the island, or even learn one exists. The label
+        // carries the widget name plus a spoken field position;
+        // activation opens the live pod (in edit mode, the Open live /
+        // Remove dialog), long-press opens that dialog directly.
+        val islandNodes = if (islandsSupportedHere()) islands.mapNotNull { slot ->
+            if (slot.rect.isEmpty) null else WatchAccessibilityProvider.Node(
+                "island:" + slot.id,
+                slot.label + ", widget island, " + IslandLayout.positionName(slot.anchorX, slot.anchorY),
+                Rect(slot.rect.left.toInt(), slot.rect.top.toInt(), slot.rect.right.toInt(), slot.rect.bottom.toInt()),
+                slot.rect.centerX(), slot.rect.centerY(),
+            )
+        } else emptyList()
+        return bubbles + islandNodes + folderHeaderNodes() + dockNodes(if (widgetsPageOpen) DOCK_WIDGETS else DOCK_CLUSTER)
     }
 
     /** Dock segment nodes (2.7.0, audit #2): the dock is primary
@@ -256,6 +271,15 @@ class WatchView(
     }
 
     private fun a11yActivate(node: WatchAccessibilityProvider.Node) {
+        // 3.2.4: island nodes fire their callbacks directly — outside
+        // edit mode a synthetic tap would reach onIslandTap anyway,
+        // but in edit mode taps ride the touch drag path, so route
+        // explicitly: edit mode -> the Open live / Remove dialog.
+        if (node.key.startsWith("island:")) {
+            val id = node.key.substringAfter("island:").toIntOrNull() ?: return
+            if (editMode) onIslandEditTap(id) else onIslandTap(id)
+            return
+        }
         tap(node.centerX, node.centerY)
     }
 
@@ -268,6 +292,18 @@ class WatchView(
      */
     private fun a11yLongActivate(node: WatchAccessibilityProvider.Node) {
         if (clusterSheet.target > 0f || cardMenuOpen || widgetIn.target > 0f) return
+        // 3.2.4: an island's long-press opens its Open live / Remove
+        // dialog (entering edit mode first, as for bubbles). Islands
+        // aren't grid items, so the swap pattern below can't carry
+        // them; the dialog is their move/remove surface.
+        if (node.key.startsWith("island:")) {
+            val id = node.key.substringAfter("island:").toIntOrNull() ?: return
+            val slot = islands.firstOrNull { it.id == id } ?: return
+            if (!editMode) enterEditMode()
+            announceForAccessibility("${slot.label} island menu")
+            onIslandEditTap(id)
+            return
+        }
         val item = activeGridItems.firstOrNull { it.key == node.key } ?: return
         val carry = a11yCarryItem
         when {
@@ -3132,6 +3168,19 @@ class WatchView(
                         islandInset.set(slot.rect.left + inset, slot.rect.top + inset, slot.rect.right - inset, slot.rect.bottom - inset)
                         c.drawRoundRect(islandInset, rr, rr, stroke)
                     }
+                    // 3.2.4: while this island is being dragged, ghost
+                    // the drop spot — an accent rim inflated past the
+                    // tile at its current anchor, so where it will
+                    // land on release reads before letting go.
+                    if (islandDragId == slot.id && islandDragMoved) {
+                        val grow = dp(7f)
+                        islandInset.set(slot.rect.left - grow, slot.rect.top - grow, slot.rect.right + grow, slot.rect.bottom + grow)
+                        fill.color = withAlpha(accent, (aInt * 0.10f).toInt())
+                        c.drawRoundRect(islandInset, rr + grow, rr + grow, fill)
+                        stroke.strokeWidth = dp(2.6f)
+                        stroke.color = withAlpha(accent, (aInt * 0.95f).toInt())
+                        c.drawRoundRect(islandInset, rr + grow, rr + grow, stroke)
+                    }
                 }
             }
 
@@ -4095,6 +4144,7 @@ class WatchView(
                 add(Triple(ClusterOption.BLOOM_MODE, "Folder Open Style", if (bloomFolders) "Bloom in place" else "Full-screen folder"))
                 add(Triple(ClusterOption.PER_LAYOUT_PINS, "Per-Layout Pins", if (perLayoutPins) "Separate pins per layout" else "One pin set everywhere"))
                 add(Triple(ClusterOption.USAGE_GROWTH, "Usage Growth", if (usageGrowth) "Bubbles grow with use" else "Uniform bubble sizes"))
+                add(Triple(ClusterOption.CATEGORY_CLUSTERING, "Category Clustering", if (autoFolders) "Apps grouped into category folders" else "All apps loose"))
             }
             if (sheetExpanded) {
                 add(Triple(null, "ACTIONS", ""))
@@ -4199,6 +4249,7 @@ class WatchView(
                 ClusterOption.FIXED_NEIGHBORHOODS -> fixedNeighborhoods
                 ClusterOption.PER_LAYOUT_PINS -> perLayoutPins
                 ClusterOption.USAGE_GROWTH -> usageGrowth
+                ClusterOption.CATEGORY_CLUSTERING -> autoFolders
                 ClusterOption.BLOOM_MODE -> bloomFolders
                 else -> null
             }
@@ -4599,6 +4650,13 @@ class WatchView(
                 c.drawCircle(cx, cy, s * 0.34f, stroke)
                 fill.color = color
                 c.drawCircle(cx, cy, s * 0.11f, fill)
+            }
+            ClusterOption.CATEGORY_CLUSTERING -> {
+                val q = s * 0.15f
+                c.drawCircle(cx - s * 0.22f, cy - s * 0.18f, q, stroke)
+                c.drawCircle(cx + s * 0.14f, cy - s * 0.24f, q, stroke)
+                c.drawCircle(cx - s * 0.04f, cy + s * 0.18f, q, stroke)
+                c.drawCircle(cx + s * 0.28f, cy + s * 0.14f, q * 0.7f, stroke)
             }
             ClusterOption.USAGE_GROWTH -> {
                 path.moveTo(cx - s * 0.42f, cy + s * 0.28f)

@@ -116,6 +116,21 @@ class IslandLayoutTest {
         assertEquals(61, assigned.toSet().size)
     }
 
+    @Test fun positionNameReadsTheFieldInNineZones() {
+        assertEquals("centre", IslandLayout.positionName(0f, 0f))
+        assertEquals("upper", IslandLayout.positionName(0.2f, -2.05f))
+        assertEquals("lower", IslandLayout.positionName(0f, 2.05f))
+        assertEquals("upper left", IslandLayout.positionName(-1.6f, -1.5f))
+        assertEquals("upper right", IslandLayout.positionName(1.6f, -0.8f))
+        assertEquals("lower left", IslandLayout.positionName(-0.8f, 1.2f))
+        assertEquals("lower right", IslandLayout.positionName(2f, 2f))
+        assertEquals("left", IslandLayout.positionName(-3f, 0.4f))
+        assertEquals("right", IslandLayout.positionName(3f, -0.4f))
+        // The 0.75 dead zone keeps near-centre anchors "centre".
+        assertEquals("centre", IslandLayout.positionName(0.75f, -0.75f))
+        assertEquals("lower right", IslandLayout.positionName(0.76f, 0.76f))
+    }
+
     @Test fun gravityScaleKeepsAssignmentsUniqueAndClear() {
         val homes = Hex.spiral(91)
         val radii = FloatArray(91) { i -> if (i == 0) 0.80f else 0.58f }

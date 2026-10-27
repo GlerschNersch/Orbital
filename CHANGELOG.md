@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.2.4 — 2026-10-27
+- **Islands speak TalkBack.** Widget islands now appear in the
+  accessibility tree — before this they had no node at all, so a
+  TalkBack user couldn't open one, remove one, or even learn one
+  existed. Each island node carries the widget's name and a spoken
+  field position ("Calendar, widget island, lower"); activating it
+  opens the live pod, and long-pressing it opens the same Open live /
+  Remove dialog touch users get in edit mode.
+- **Category Clustering toggle restored.** The clustering itself
+  never left — the `auto_folders` pref is still read at startup —
+  but no screen could change it since Control Center was removed in
+  3.0.0. Settings → More Options → Behavior has the switch again,
+  wired to the same plumbing; the default stays off (all apps loose).
+- **Island drag drop-spot.** While an island is being dragged in
+  edit mode, an accent-rim ghost inflated past the tile marks where
+  it will land on release, so placement reads before letting go
+  instead of after.
+
 ## 3.2.3 — 2026-10-26
 - **Fit-to-view overview.** The overview zoom is no longer a hard-coded
   0.48: WatchView measures the field's content bounds (bubble slots at

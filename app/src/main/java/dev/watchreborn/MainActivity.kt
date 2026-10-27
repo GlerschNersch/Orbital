@@ -687,6 +687,15 @@ class MainActivity : Activity(), SensorEventListener {
                 prefs.edit().putBoolean(KEY_BLOOM, next).apply()
                 view.bloomFolders = next
             }
+            ClusterOption.CATEGORY_CLUSTERING -> {
+                // 3.2.4: the Settings toggle is back — the pref and
+                // the view-side grouping survived, but no UI could
+                // change the pref once Control Center went away in
+                // 3.0.0. The setter rebuilds the grid itself.
+                val next = !view.autoFolders
+                prefs.edit().putBoolean(KEY_FOLDERS, next).apply()
+                view.autoFolders = next
+            }
             ClusterOption.CONSTELLATION_SEARCH -> {
                 view.startConstellationSearch()
             }

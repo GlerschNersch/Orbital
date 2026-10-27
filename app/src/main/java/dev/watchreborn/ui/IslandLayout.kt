@@ -124,4 +124,29 @@ object IslandLayout {
         }
         return result.map { it!! }
     }
+
+    /**
+     * Coarse spoken position of an island anchor in the field
+     * (3.2.4, for TalkBack node labels): a 3x3 reading of the anchor
+     * in pitch units — "centre", "upper left", "lower", and so on.
+     * Screen Y grows downward, so a positive anchorY is "lower".
+     */
+    fun positionName(anchorX: Float, anchorY: Float): String {
+        val h = when {
+            anchorX < -0.75f -> "left"
+            anchorX > 0.75f -> "right"
+            else -> ""
+        }
+        val v = when {
+            anchorY < -0.75f -> "upper"
+            anchorY > 0.75f -> "lower"
+            else -> ""
+        }
+        return when {
+            v.isEmpty() && h.isEmpty() -> "centre"
+            v.isEmpty() -> h
+            h.isEmpty() -> v
+            else -> "$v $h"
+        }
+    }
 }
