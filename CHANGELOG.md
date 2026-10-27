@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.7.1 — 2026-10-27
+- **Island hugging reverted.** The 3.7.0 off-lattice
+  refinement is removed at Matt's call: on device, the
+  bubbles packed around islands read as chaotic — the
+  scatter cost the field its visual order, and the order
+  was worth more than the tightness. The bubble solver is
+  back to the exact 3.6.5 behaviour (the solver source is
+  byte-identical to 3.6.5, and the solver is deterministic,
+  so every assignment is too): every bubble keeps an exact
+  lattice slot, islands keep their 3.6.3 full size and the
+  3.6.4/3.6.5 pull-based clearance with the 0.08 margin, and
+  the dense-field moat returns to the measured ~1.01 pitch.
+  Everything else from the 3.6.x line — built-in widget
+  islands, island stacks, faces, backup & restore — is
+  unchanged.
+
 ## 3.7.0 — 2026-10-27
 - **Bubbles hug islands.** In Honeycomb and Gravity, bubbles
   near a widget island now leave their hex slots and pack

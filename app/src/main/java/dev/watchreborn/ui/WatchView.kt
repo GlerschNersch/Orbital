@@ -584,7 +584,6 @@ class WatchView(
                 val assigned = if ((fromTopo == ClusterTopology.HONEYCOMB ||
                         fromTopo == ClusterTopology.GRAVITY) && islands.isNotEmpty()
                 ) islandAssignedHexes(items) else null
-                val hugFrom = if (assigned != null) islandHugCenters(items) else null
                 for (i in 0 until n) {
                     if (morphActive && i < morphKeys.size && morphKeys[i] == items[i].key) {
                         val e = morphEaseAt(i, elapsed)
@@ -598,17 +597,11 @@ class WatchView(
                         } else {
                             computeTopologyWorldPos(fromTopo, i, n, 1f, morphTmp)
                             if (assigned != null && i in assigned.indices) {
-                                if (hugFrom != null && i in hugFrom.indices) {
-                                    // 3.7.0: morph from the hug-refined centre.
-                                    morphTmp[0] = hugFrom[i][0]
-                                    morphTmp[1] = hugFrom[i][1]
-                                } else {
-                                    pointyCenter(
-                                        assigned[i],
-                                        if (fromTopo == ClusterTopology.GRAVITY) 1.10f else 1f,
-                                        morphTmp,
-                                    )
-                                }
+                                pointyCenter(
+                                    assigned[i],
+                                    if (fromTopo == ClusterTopology.GRAVITY) 1.10f else 1f,
+                                    morphTmp,
+                                )
                             }
                             morphStartX[i] = morphTmp[0]
                             morphStartY[i] = morphTmp[1]
@@ -676,22 +669,15 @@ class WatchView(
                 val assigned = if ((toTopo == ClusterTopology.HONEYCOMB ||
                         toTopo == ClusterTopology.GRAVITY) && islands.isNotEmpty()
                 ) islandAssignedHexes(items) else null
-                val hugTo = if (assigned != null) islandHugCenters(items) else null
                 var maxD = 0f
                 for (i in 0 until n) {
                     computeTopologyWorldPos(toTopo, i, n, 1f, morphTmp)
                     if (assigned != null && i in assigned.indices) {
-                        if (hugTo != null && i in hugTo.indices) {
-                            // 3.7.0: morph to the hug-refined centre.
-                            morphTmp[0] = hugTo[i][0]
-                            morphTmp[1] = hugTo[i][1]
-                        } else {
-                            pointyCenter(
-                                assigned[i],
-                                if (toTopo == ClusterTopology.GRAVITY) 1.10f else 1f,
-                                morphTmp,
-                            )
-                        }
+                        pointyCenter(
+                            assigned[i],
+                            if (toTopo == ClusterTopology.GRAVITY) 1.10f else 1f,
+                            morphTmp,
+                        )
                     }
                     morphTargetX[i] = morphTmp[0]
                     morphTargetY[i] = morphTmp[1]
@@ -1182,19 +1168,12 @@ class WatchView(
     // is cached against a fingerprint of everything that can change it.
     private var islandLayoutFingerprint = Long.MIN_VALUE
     private var islandLayoutHexes: List<Hex> = emptyList()
-    private var islandHugCentersCache: Array<FloatArray>? = null
 
     private fun islandLayoutFingerprintFor(items: List<GridItem>): Long {
         var h = 1125899906842597L
         fun mix(v: Long) { h = (h xor v) * 1099511628211L }
         mix(clusterTopology.ordinal.toLong())
         mix(items.size.toLong())
-        // 3.7.0: the hug refinement's parameters join the
-        // fingerprint, so retuning them re-solves instead of
-        // serving centres refined under the old values.
-        mix(IslandLayout.HUG_MARGIN.toRawBits().toLong())
-        mix(IslandLayout.HUG_PAIR_MARGIN.toRawBits().toLong())
-        mix(IslandLayout.HUG_NEIGHBOURHOOD.toRawBits().toLong())
         for ((index, item) in items.withIndex()) {
             mix(item.key.hashCode().toLong())
             mix(growthFor(item).toRawBits().toLong())
@@ -1215,12 +1194,6 @@ class WatchView(
             val kc = islandPullCompression(slot)
             mix(kc[0].toRawBits().toLong())
             mix(kc[1].toRawBits().toLong())
-            // The hug judges in screen space via the
-            // anchor->normalized scales — mix them too, so a
-            // geometry change re-solves the hug as well.
-            val fr = islandFisheyeFrame(slot)
-            mix(fr[4].toRawBits().toLong())
-            mix(fr[5].toRawBits().toLong())
         }
         return h
     }
@@ -1250,7 +1223,6 @@ class WatchView(
         val pitchOv = Metrics.GRID_PITCH * u * 1.32f * 1.10f
         val isLattice = topo == ClusterTopology.HONEYCOMB || topo == ClusterTopology.GRAVITY
         val assigned = if (isLattice && islands.isNotEmpty()) islandAssignedHexes(items) else null
-        val hugOv = if (assigned != null) islandHugCenters(items) else null
         var minX = Float.MAX_VALUE
         var maxX = -Float.MAX_VALUE
         var minY = Float.MAX_VALUE
@@ -1262,15 +1234,9 @@ class WatchView(
             var wx = out[0]
             var wy = out[1]
             if (assigned != null && i in assigned.indices) {
-                if (hugOv != null && i in hugOv.indices) {
-                    // 3.7.0: measure the fit at the hug-refined centres.
-                    wx = hugOv[i][0] * pitchOv
-                    wy = hugOv[i][1] * pitchOv
-                } else {
-                    pointyCenter(assigned[i], pitchOv * (if (topo == ClusterTopology.GRAVITY) 1.10f else 1f), out)
-                    wx = out[0]
-                    wy = out[1]
-                }
+                pointyCenter(assigned[i], pitchOv * (if (topo == ClusterTopology.GRAVITY) 1.10f else 1f), out)
+                wx = out[0]
+                wy = out[1]
             }
             val raw = growthFor(items[i])
             val growth = if (raw > 1f) 1f + (raw - 1f) * 0.55f else raw
@@ -1324,33 +1290,16 @@ class WatchView(
      *  arranges around a tile is the margin the eye sees. Both 1
      *  when the view has no geometry yet. */
     private fun islandPullCompression(slot: IslandSlot): FloatArray {
-        val f = islandFisheyeFrame(slot)
-        return floatArrayOf(f[0], f[1])
-    }
-
-    /** 3.7.0: an island's full fisheye frame — [0..1] the
-     *  per-axis pull compressions ([islandPullCompression]),
-     *  [2..3] the anchor in normalized fisheye coords, [4..5]
-     *  the anchor->normalized scale factors (view-global).
-     *  The hug refinement (IslandLayout.refineHug) judges via
-     *  [4..5]: they map anchor points to the normalized
-     *  coords its exact screen positions are computed from.
-     *  Neutral values when the view has no geometry yet. */
-    private fun islandFisheyeFrame(slot: IslandSlot): FloatArray {
         val u = unit
         val w = width.toFloat()
         val h = height.toFloat()
-        if (u <= 0f || w <= 0f || h <= 0f) return floatArrayOf(1f, 1f, 0f, 0f, 0f, 0f)
+        if (u <= 0f || w <= 0f || h <= 0f) return floatArrayOf(1f, 1f)
         val bp = Metrics.GRID_PITCH * u * 1.10f
         val sx = max(1f, w / u)
         val sy = max(1f, (h / u) / Metrics.WATCH_ASPECT)
         val nx = (slot.anchorX * bp / u) / sx
         val ny = (slot.anchorY * bp / u) / sy
-        val k = IslandLayout.axisCompressions(hypot(nx, ny), nx, ny)
-        return floatArrayOf(
-            k[0], k[1], nx, ny,
-            (Metrics.GRID_PITCH * 1.10f) / sx, (Metrics.GRID_PITCH * 1.10f) / sy,
-        )
+        return IslandLayout.axisCompressions(hypot(nx, ny), nx, ny)
     }
 
     private fun islandAssignedHexes(items: List<GridItem>): List<Hex> {
@@ -1369,43 +1318,9 @@ class WatchView(
                 )
             }
             islandLayoutHexes = IslandLayout.assign(gridHexes, scale, radii, obstacles)
-            // 3.7.0: refine the assigned centres off-lattice
-            // around each island (IslandLayout.refineHug). The
-            // lattice layouts draw, morph and measure at these
-            // centres; the hexes above remain the assignment of
-            // record (Force Field's re-homing reads them).
-            islandHugCentersCache = if (islands.isEmpty()) null else {
-                val assignedCenters = Array(items.size) { i ->
-                    val a = FloatArray(2)
-                    pointyCenter(islandLayoutHexes[i], scale, a)
-                    a
-                }
-                val hugIslands = islands.mapIndexed { idx, slot ->
-                    IslandLayout.HugIsland(
-                        rect = IslandLayout.Obstacle(
-                            slot.anchorX, slot.anchorY, slot.halfW, slot.halfH),
-                        obstacle = obstacles[idx],
-                    )
-                }
-                val frame0 = islandFisheyeFrame(islands[0])
-                IslandLayout.refineHug(
-                    assignedCenters, radii, hugIslands,
-                    frame0[4], frame0[5],
-                )
-            }
             islandLayoutFingerprint = fp
         }
         return islandLayoutHexes
-    }
-
-    /** 3.7.0: the hug-refined bubble centres (pitch units,
-     *  lattice scale applied), parallel to
-     *  [islandAssignedHexes]; null when no solve is cached
-     *  for this item set. */
-    private fun islandHugCenters(items: List<GridItem>): Array<FloatArray>? {
-        islandAssignedHexes(items)
-        val cs = islandHugCentersCache
-        return if (cs != null && cs.size == items.size) cs else null
     }
     private val nebulaHeaderRects = ArrayList<Triple<RectF, Float, Float>>()
     private val constellationChipRects = ArrayList<Pair<RectF, String>>()
@@ -3433,7 +3348,6 @@ class WatchView(
         // island is in play, so the stock layouts are untouched).
         val assignedHexes = if ((isHoneycomb || isGravity) && islands.isNotEmpty())
             islandAssignedHexes(items) else null
-        val hugCenters = if (assignedHexes != null) islandHugCenters(items) else null
 
         // 3.4.0: this frame's morph clock. If the item set changed
         // under the flight (filing, a folder rebuild) or reduced
@@ -3450,18 +3364,9 @@ class WatchView(
             var worldX = tmp[0]
             var worldY = tmp[1]
             if (assignedHexes != null && i in assignedHexes.indices) {
-                if (hugCenters != null && i in hugCenters.indices) {
-                    // 3.7.0: hug-refined centre (pitch units,
-                    // lattice scale already applied) — bubbles
-                    // near an island sit off-lattice, packed
-                    // against the tile.
-                    worldX = hugCenters[i][0] * basePitch
-                    worldY = hugCenters[i][1] * basePitch
-                } else {
-                    pointyCenter(assignedHexes[i], basePitch * (if (isGravity) 1.10f else 1f), tmp)
-                    worldX = tmp[0]
-                    worldY = tmp[1]
-                }
+                pointyCenter(assignedHexes[i], basePitch * (if (isGravity) 1.10f else 1f), tmp)
+                worldX = tmp[0]
+                worldY = tmp[1]
             }
 
             // Position glide: when an item's slot changes (placement, filing, a
