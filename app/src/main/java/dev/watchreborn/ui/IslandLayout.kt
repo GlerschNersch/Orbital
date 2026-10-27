@@ -72,8 +72,11 @@ object IslandLayout {
 
     /** Screen-space breathing room (pitch units) the solver
      *  arranges between a tile's edge and the nearest bubble's
-     *  edge, at any anchor. */
-    const val CLEARANCE_MARGIN = 0.16f
+     *  edge, at any anchor. (3.6.5: halved from 0.16 — "just a
+     *  hair tighter," per Matt after using 3.6.4. It stays
+     *  non-zero: it is the only term that guarantees a bubble
+     *  never quite touches the tile.) */
+    const val CLEARANCE_MARGIN = 0.08f
 
     /** A bubble's drawn radius in pitch units, upper reference:
      *  the nominal GRID_CENTER_D radius is 0.40; the headroom

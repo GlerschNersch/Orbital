@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.6.5 — 2026-10-27
+- **Island clearance margin shaved — just a hair tighter.** The
+  fixed screen-space margin the bubble solver keeps between an
+  island tile's edge and the nearest bubble's edge is halved,
+  from 0.16 of a pitch (~1/6 of a slot) to 0.08. Nothing else
+  changes: the 3.6.4 per-axis fisheye-pull construction is
+  untouched, and the no-overlap guarantee is unchanged — the
+  margin stays non-zero precisely because it is what guarantees
+  a bubble never quite touches the tile. On the dense-field
+  solver measure (127 populated slots, rim island) the
+  nearest-bubble gap moves from 1.06 to 1.01 pitch — the halved
+  band edge shows up only partly in the measured gap, because
+  the remaining distance is set by the hex lattice itself
+  (bubble rows quantize at 0.866 spacing).
+
 ## 3.6.4 — 2026-10-27
 - **Island clearance tightened.** The dead band of empty space
   the bubble solver kept around a placed island is much slimmer.

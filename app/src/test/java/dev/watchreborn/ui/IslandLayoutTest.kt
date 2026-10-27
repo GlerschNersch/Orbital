@@ -154,14 +154,15 @@ class IslandLayoutTest {
     @Test fun obstacleForAtTheCentreAddsOnlyTheMarginBand() {
         // κ = 1 on both axes: the band beyond the true rect is
         // REF_DRAWN_RADIUS + CLEARANCE_MARGIN - REF_CLEARANCE_RADIUS
-        // = 0.42 + 0.16 - 0.49 = 0.09 — the drawn radius and the
-        // solver's own clearance radius cancel, leaving (most of)
-        // the margin. Centre untouched, rect never shrinks.
+        // = 0.42 + 0.08 - 0.49 = 0.01 — the drawn radius and the
+        // solver's own clearance radius cancel, leaving a sliver
+        // of the (3.6.5-halved) margin. Centre untouched, rect
+        // never shrinks.
         val o = IslandLayout.obstacleFor(0.5f, -1.25f, 1.1f, 0.55f, 1f, 1f)
         assertEquals(0.5f, o.centerX, 0.001f)
         assertEquals(-1.25f, o.centerY, 0.001f)
-        assertEquals(1.19f, o.halfW, 0.001f)
-        assertEquals(0.64f, o.halfH, 0.001f)
+        assertEquals(1.11f, o.halfW, 0.001f)
+        assertEquals(0.56f, o.halfH, 0.001f)
     }
 
     @Test fun obstacleForWidensEachAxisByItsOwnCompression() {
@@ -175,7 +176,7 @@ class IslandLayoutTest {
         assertEquals(3f, o.centerY, 0.001f)
         assertEquals(
             (1.1f + band) / 0.5f - IslandLayout.REF_CLEARANCE_RADIUS, o.halfW, 0.001f)
-        assertEquals(0.64f, o.halfH, 0.001f)
+        assertEquals(0.56f, o.halfH, 0.001f)
         assertTrue(o.halfW > 1.1f && o.halfH > 0.55f)
     }
 
@@ -190,9 +191,9 @@ class IslandLayoutTest {
                 IslandLayout.REF_CLEARANCE_RADIUS,
             o.halfW, 0.001f)
         assertEquals(
-            0.99f, IslandLayout.obstacleFor(0f, 0f, 0.9f, 0.9f, 1.4f, 1.4f).halfW, 0.001f)
+            0.91f, IslandLayout.obstacleFor(0f, 0f, 0.9f, 0.9f, 1.4f, 1.4f).halfW, 0.001f)
         assertEquals(
-            0.99f,
+            0.91f,
             IslandLayout.obstacleFor(0f, 0f, 0.9f, 0.9f, Float.NaN, Float.NaN).halfW,
             0.001f)
     }
@@ -250,13 +251,14 @@ class IslandLayoutTest {
         assertTrue(obstacle.halfH > nominal.halfH && obstacle.halfH < nominal.halfH / 0.45f)
     }
 
-    @Test fun denseFieldMoatIsHalvedByThePullBandObstacle() {
-        // The dense-field guard for the 3.6.4 tightening — the
-        // shape of a real phone, where every slot is claimed, so
-        // the moat around an island is set by the obstacle, not
-        // by which slots happen to be empty. 127 populated homes,
-        // the rim scenario's island; the gap is the nearest
-        // bubble's edge distance to the island's TRUE rect.
+    @Test fun denseFieldMoatUnderThePullBandObstacle() {
+        // The dense-field guard for the 3.6.4 tightening, kept
+        // current with 3.6.5's halved margin — the shape of a
+        // real phone, where every slot is claimed, so the moat
+        // around an island is set by the obstacle, not by which
+        // slots happen to be empty. 127 populated homes, the
+        // rim scenario's island; the gap is the nearest bubble's
+        // edge distance to the island's TRUE rect.
         val homes = Hex.spiral(127)
         val radii = FloatArray(127) { 0.49f }
         val trueRect = IslandLayout.Obstacle(2.05f, 0f, 1.55f, 1.05f)
@@ -278,12 +280,17 @@ class IslandLayoutTest {
         val gapBefore = minGap(retired)
         val gapAfter = minGap(
             IslandLayout.obstacleFor(2.05f, 0f, 1.55f, 1.05f, 0.694f, 0.872f))
-        // Measured on the solver: 1.91 before, 1.06 after — the
-        // after value is the construction's floor (face excess +
-        // clearance radius, quantized to the next hex row).
+        // Measured on the solver: 1.91 under the retired 3.6.3
+        // construction, 1.06 under 3.6.4's 0.16 margin, 1.01
+        // under 3.6.5's 0.08. Halving the margin moves the band
+        // edge ~0.09-0.12 per axis, but the minimum gap follows
+        // by only 0.05 — the rest is absorbed by hex-row
+        // quantization (0.866 spacing): the gap sits at the
+        // construction's floor (face excess + clearance radius,
+        // quantized to the next hex row) either way.
         assertTrue("retired moat was wide (was $gapBefore)", gapBefore > 1.8f)
         assertTrue("moat at least halved-ish (was $gapAfter)", gapAfter < gapBefore - 0.5f)
-        assertTrue("moat at the construction floor (was $gapAfter)", gapAfter < 1.10f)
+        assertTrue("moat at the measured 3.6.5 floor (was $gapAfter)", gapAfter in 0.95f..1.05f)
         assertTrue("clearance stays positive (was $gapAfter)", gapAfter > 0f)
     }
 
