@@ -5,6 +5,10 @@ import android.app.Activity
 import android.app.ActivityManager
 import android.app.AlarmManager
 import android.app.AlertDialog
+import android.appwidget.AppWidgetHostView
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.widget.RemoteViews
 import android.app.Dialog
 import android.app.role.RoleManager
 import android.appwidget.AppWidgetHost
@@ -82,6 +86,16 @@ class MainActivity : Activity(), SensorEventListener {
     private val appWidgetManager by lazy { AppWidgetManager.getInstance(this) }
     private val appWidgetHost: AppWidgetHost
         get() = sharedWidgetHost(this)
+
+    // ── 3.2.0 Anchor Islands ────────────────────────────────────────────
+    private var islandContainer: FrameLayout? = null
+    private val islandViews = mutableMapOf<Int, AppWidgetHostView>()
+    private val islandSlots = mutableMapOf<Int, WatchView.IslandSlot>()
+    private var islandPod: FrameLayout? = null
+    private var islandPodId: Int? = null
+    private var addTargetIsland = false
+    private val islandSnapHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val islandSnapPending = mutableSetOf<Int>()
     private var rootFrame: FrameLayout? = null
     private val prefs by lazy { getSharedPreferences("watch", Context.MODE_PRIVATE) }
     private var apps: List<App> = emptyList()
@@ -167,6 +181,14 @@ class MainActivity : Activity(), SensorEventListener {
         }
         view.onWidgetsPage = { showWidgetsPage() }
         view.onWidgetsPageClosed = { hideWidgetsPage() }
+        view.onIslandTap = { id -> openIslandPod(id) }
+        view.onIslandMoved = { id, ax, ay ->
+            prefs.edit().putFloat(islandKey(id, "ax"), ax).putFloat(islandKey(id, "ay"), ay).apply()
+        }
+        view.onIslandEditTap = { id -> showIslandMenu(id) }
+        IslandAwareHostView.widgetUpdateHook = { id ->
+            if (id in islandViews) scheduleIslandSnapshot(id)
+        }
         view.applyInitialHomeMode()
         view.setOnApplyWindowInsetsListener { v, insets ->
             val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
@@ -186,6 +208,13 @@ class MainActivity : Activity(), SensorEventListener {
             ),
         )
         this.rootFrame = rootFrame
+        // 3.2.0: island host views live in a 1x1 invisible bin on the
+        // root frame — attached (so providers push updates and layout
+        // runs) but never seen; the cluster draws their snapshots.
+        val islandBin = FrameLayout(this)
+        islandBin.visibility = View.INVISIBLE
+        rootFrame.addView(islandBin, FrameLayout.LayoutParams(1, 1))
+        islandContainer = islandBin
         setContentView(rootFrame)
         window.setDecorFitsSystemWindows(false)
         onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) {
@@ -206,6 +235,7 @@ class MainActivity : Activity(), SensorEventListener {
 
         launcherApps.registerCallback(appsChanged)
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        loadIslands()
         reload()
     }
 
@@ -242,6 +272,11 @@ class MainActivity : Activity(), SensorEventListener {
         val now = android.os.SystemClock.uptimeMillis()
         if (now - lastBackHandledMs < 350L) return
         lastBackHandledMs = now
+        // The island pod is the topmost layer.
+        if (islandPod != null) {
+            closeIslandPod()
+            return
+        }
         // The widget picker, then the Widgets page, take Back first.
         if (widgetPickerVisible()) {
             hideWidgetPicker()
@@ -664,6 +699,10 @@ class MainActivity : Activity(), SensorEventListener {
             ClusterOption.SET_DEFAULT_HOME -> {
                 chooseHome()
             }
+            ClusterOption.ADD_ISLAND -> {
+                addTargetIsland = true
+                showWidgetPicker()
+            }
             ClusterOption.CLEAR_PINS -> {
                 // 2.7.0 (audit #3): clearing every pin was the one
                 // destructive action with no safety net — snapshot all
@@ -1019,7 +1058,7 @@ class MainActivity : Activity(), SensorEventListener {
                 setColor(view.accent)
                 cornerRadius = dpPx(20f).toFloat()
             }
-            setOnClickListener { showWidgetPicker() }
+            setOnClickListener { addTargetIsland = false; showWidgetPicker() }
         }
         titleRow.addView(title)
         titleRow.addView(addBtn)
@@ -1609,6 +1648,11 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun finishAddWidget(widgetId: Int) {
+        if (addTargetIsland) {
+            addTargetIsland = false
+            finishAddIsland(widgetId)
+            return
+        }
         val updated = (savedWidgetIds() + widgetId).distinct()
         saveWidgetIds(updated)
         hideWidgetPicker()
@@ -1616,6 +1660,205 @@ class MainActivity : Activity(), SensorEventListener {
         // Land on the widget just added (1.22.0): it's appended at the
         // bottom of the page, off-screen when the page is long.
         widgetsScroll?.post { widgetsScroll?.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    // ── 3.2.0 Anchor Islands: implementation ────────────────────────────
+
+    private fun islandKey(id: Int, part: String) = "island_${id}_$part"
+
+    private fun savedIslandIds(): List<Int> =
+        prefs.getString(KEY_ISLAND_IDS, "").orEmpty()
+            .split(',').mapNotNull { it.trim().toIntOrNull() }
+
+    private fun saveIslandIds(ids: List<Int>) {
+        prefs.edit().putString(KEY_ISLAND_IDS, ids.joinToString(",")).apply()
+    }
+
+    /** Tile size in dp from the provider's own minimums, clamped sane. */
+    private fun islandTileDp(info: AppWidgetProviderInfo): Pair<Int, Int> {
+        val w = (if (info.minWidth > 0) info.minWidth else 300).coerceIn(180, 420)
+        val h = (if (info.minHeight > 0) info.minHeight else 160).coerceIn(110, 300)
+        return w to h
+    }
+
+    private fun sendIslandSize(id: Int, wDp: Int, hDp: Int) {
+        val opts = android.os.Bundle().apply {
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, wDp)
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, wDp)
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, hDp)
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, hDp)
+        }
+        runCatching { appWidgetManager.updateAppWidgetOptions(id, opts) }
+    }
+
+    private fun loadIslands() {
+        for (id in savedIslandIds()) {
+            val info = appWidgetManager.getAppWidgetInfo(id) ?: continue
+            createIslandView(id, info)
+        }
+        pushIslandsToView()
+    }
+
+    private fun createIslandView(id: Int, info: AppWidgetProviderInfo) {
+        val bin = islandContainer ?: return
+        val hv = appWidgetHost.createView(this, id, info)
+        val (wDp, hDp) = islandTileDp(info)
+        val dens = resources.displayMetrics.density
+        hv.layoutParams = FrameLayout.LayoutParams((wDp * dens).toInt(), (hDp * dens).toInt())
+        bin.addView(hv)
+        islandViews[id] = hv
+        sendIslandSize(id, wDp, hDp)
+        hv.post { snapshotIsland(id) }
+    }
+
+    private fun pushIslandsToView() {
+        val hexPx = (resources.displayMetrics.widthPixels * Metrics.GRID_PITCH * 1.10f).coerceAtLeast(1f)
+        val dens = resources.displayMetrics.density
+        val slots = savedIslandIds().map { id ->
+            islandSlots.getOrPut(id) {
+                val info = appWidgetManager.getAppWidgetInfo(id)
+                val (wDp, hDp) = if (info != null) islandTileDp(info) else (300 to 160)
+                WatchView.IslandSlot(
+                    id = id,
+                    anchorX = prefs.getFloat(islandKey(id, "ax"), 0f),
+                    anchorY = prefs.getFloat(islandKey(id, "ay"), 2.05f),
+                    halfW = ((wDp * dens) / hexPx / 2f).coerceIn(0.75f, 1.60f),
+                    halfH = ((hDp * dens) / hexPx / 2f).coerceIn(0.45f, 1.20f),
+                    label = info?.loadLabel(packageManager)?.toString() ?: "Widget",
+                )
+            }
+        }
+        view.islands = slots
+        view.invalidate()
+    }
+
+    private fun scheduleIslandSnapshot(id: Int) {
+        if (!islandSnapPending.add(id)) return
+        islandSnapHandler.postDelayed({
+            islandSnapPending.remove(id)
+            snapshotIsland(id)
+        }, 350)
+    }
+
+    private fun snapshotIsland(id: Int) {
+        val hv = islandViews[id] ?: return
+        val slot = islandSlots[id] ?: return
+        val w = hv.width
+        val h = hv.height
+        if (w <= 0 || h <= 0) {
+            hv.post { snapshotIsland(id) }
+            return
+        }
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        hv.draw(Canvas(bmp))
+        val old = slot.bitmap
+        slot.bitmap = bmp
+        if (old != null && old !== bmp) old.recycle()
+        if (view.clusterTopology == ClusterTopology.FORCE_FIELD) view.invalidate()
+    }
+
+    private fun finishAddIsland(widgetId: Int) {
+        val info = appWidgetManager.getAppWidgetInfo(widgetId)
+        val n = savedIslandIds().size
+        // Anchor on a loose ring around the core, golden-angle spaced, so
+        // several islands don't land on the same spot.
+        // Start due south of the core: bar-shaped widgets stay centred
+        // horizontally instead of hanging off the east edge.
+        val ang = 1.5708f + n * 2.39996f
+        prefs.edit()
+            .putFloat(islandKey(widgetId, "ax"), kotlin.math.cos(ang) * 2.05f)
+            .putFloat(islandKey(widgetId, "ay"), kotlin.math.sin(ang) * 2.05f)
+            .apply()
+        saveIslandIds((savedIslandIds() + widgetId).distinct())
+        if (info != null) createIslandView(widgetId, info)
+        pushIslandsToView()
+        hideWidgetPicker()
+        if (view.clusterTopology != ClusterTopology.FORCE_FIELD) {
+            prefs.edit().putString(KEY_CLUSTER_TOPOLOGY, ClusterTopology.FORCE_FIELD.name).apply()
+            view.clusterTopology = ClusterTopology.FORCE_FIELD
+        }
+        view.invalidate()
+        Toast.makeText(this, "Widget island added to the Force Field", Toast.LENGTH_LONG).show()
+    }
+
+    private fun openIslandPod(id: Int) {
+        val hv = islandViews[id] ?: return
+        val info = appWidgetManager.getAppWidgetInfo(id) ?: return
+        closeIslandPod()
+        val (wDp, hDp) = islandTileDp(info)
+        val dens = resources.displayMetrics.density
+        val screenWDp = (resources.displayMetrics.widthPixels / dens).toInt()
+        val podW = minOf(wDp * 2, screenWDp - 32).coerceAtLeast(120)
+        val podH = (podW.toFloat() * hDp / wDp).toInt().coerceAtLeast(80)
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(Color.argb(190, 0, 0, 0))
+            isClickable = true
+            setOnClickListener { closeIslandPod() }
+        }
+        val card = FrameLayout(this).apply {
+            setBackgroundColor(Color.rgb(24, 28, 36))
+            elevation = 12f * dens
+        }
+        (hv.parent as? ViewGroup)?.removeView(hv)
+        hv.layoutParams = FrameLayout.LayoutParams((podW * dens).toInt(), (podH * dens).toInt())
+        card.addView(hv)
+        sendIslandSize(id, podW, podH)
+        scrim.addView(
+            card,
+            FrameLayout.LayoutParams((podW * dens).toInt(), (podH * dens).toInt(), android.view.Gravity.CENTER),
+        )
+        rootFrame?.addView(scrim, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        islandPod = scrim
+        islandPodId = id
+    }
+
+    private fun closeIslandPod() {
+        val scrim = islandPod ?: return
+        val id = islandPodId
+        islandPod = null
+        islandPodId = null
+        if (id != null) {
+            val hv = islandViews[id]
+            val bin = islandContainer
+            if (hv != null && bin != null) {
+                (hv.parent as? ViewGroup)?.removeView(hv)
+                val info = appWidgetManager.getAppWidgetInfo(id)
+                val (wDp, hDp) = if (info != null) islandTileDp(info) else (300 to 160)
+                val dens = resources.displayMetrics.density
+                hv.layoutParams = FrameLayout.LayoutParams((wDp * dens).toInt(), (hDp * dens).toInt())
+                bin.addView(hv)
+                sendIslandSize(id, wDp, hDp)
+                hv.post { snapshotIsland(id) }
+            }
+        }
+        (scrim.parent as? ViewGroup)?.removeView(scrim)
+    }
+
+    private fun showIslandMenu(id: Int) {
+        val info = appWidgetManager.getAppWidgetInfo(id)
+        val label = info?.loadLabel(packageManager)?.toString() ?: "Widget"
+        AlertDialog.Builder(this)
+            .setTitle(label)
+            .setItems(arrayOf("Open live widget", "Remove island")) { _, which ->
+                when (which) {
+                    0 -> openIslandPod(id)
+                    1 -> removeIsland(id)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun removeIsland(id: Int) {
+        if (islandPodId == id) closeIslandPod()
+        islandViews.remove(id)?.let { hv -> (hv.parent as? ViewGroup)?.removeView(hv) }
+        islandSlots.remove(id)?.bitmap?.recycle()
+        runCatching { appWidgetHost.deleteAppWidgetId(id) }
+        saveIslandIds(savedIslandIds() - id)
+        prefs.edit().remove(islandKey(id, "ax")).remove(islandKey(id, "ay")).apply()
+        pushIslandsToView()
+        Toast.makeText(this, "Island removed", Toast.LENGTH_SHORT).show()
     }
 
     private companion object {
@@ -1635,8 +1878,13 @@ class MainActivity : Activity(), SensorEventListener {
 
         fun sharedWidgetHost(context: Context): AppWidgetHost =
             sharedHost ?: synchronized(this) {
-                sharedHost ?: AppWidgetHost(context.applicationContext, APPWIDGET_HOST_ID)
-                    .also { sharedHost = it }
+                sharedHost ?: object : AppWidgetHost(context.applicationContext, APPWIDGET_HOST_ID) {
+                    override fun onCreateView(
+                        ctx: Context,
+                        appWidgetId: Int,
+                        appWidget: AppWidgetProviderInfo?,
+                    ): AppWidgetHostView = IslandAwareHostView(ctx)
+                }.also { sharedHost = it }
             }
         const val REQ_PICK_APPWIDGET = 401
         const val REQ_CREATE_APPWIDGET = 402
@@ -1650,6 +1898,7 @@ class MainActivity : Activity(), SensorEventListener {
         const val KEY_USAGE_GROWTH = "usage_growth"
         const val KEY_HINTS_SEEN = "hints_seen"
         const val KEY_APPWIDGET_IDS = "appwidget_ids"
+        const val KEY_ISLAND_IDS = "island_ids"
         val ACCENTS = listOf(
             "Green" to Color.rgb(166, 227, 110),
             "Orange" to Color.rgb(255, 159, 10),
@@ -1657,5 +1906,21 @@ class MainActivity : Activity(), SensorEventListener {
             "Pink" to Color.rgb(255, 100, 160),
             "White" to Color.rgb(235, 235, 235),
         )
+    }
+}
+
+/**
+ * Host view that reports every RemoteViews update (3.2.0): island
+ * snapshots refresh when a provider pushes new content.
+ */
+class IslandAwareHostView(context: Context) : AppWidgetHostView(context) {
+    override fun updateAppWidget(remoteViews: RemoteViews?) {
+        super.updateAppWidget(remoteViews)
+        widgetUpdateHook?.invoke(appWidgetId)
+    }
+
+    companion object {
+        @Volatile
+        var widgetUpdateHook: ((Int) -> Unit)? = null
     }
 }

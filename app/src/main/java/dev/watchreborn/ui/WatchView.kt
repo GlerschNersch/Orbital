@@ -55,6 +55,7 @@ enum class ClusterTopology(val shortTitle: String, val fullTitle: String, val su
     RIVER("🌊 River", "🌊 Vertical River", "watchOS 10 Vertical 2–3–2 Hex Ribbon"),
     NEBULA("🌌 Nebula", "🌌 Nebula Islands", "Expanded Category Galaxy Islands in Space"),
     GRAVITY("🫧 Gravity", "🫧 Gravity Sizes", "Usage-Weighted Hero & Satellite Bubbles"),
+    FORCE_FIELD("🌊 Force", "🌊 Force Field", "Physics Cluster — Springs, Flow & Widget Islands"),
     DNA_HELIX("🧬 Helix", "🧬 Double Helix", "3D Rotating Twin-Strand DNA Ribbon"),
     MAGNETIC_DOCK("🧲 Arch", "🧲 Thumb Arc Dock", "One-Handed Bottom Ergonomic Concentric Arcs"),
     LIQUID_POOL("🫧 Pool", "🫧 Zero-G Billiards", "Free-Floating Tilt & Collision Bubble Tank"),
@@ -69,6 +70,7 @@ enum class ClusterOption {
     FIXED_NEIGHBORHOODS,
     SET_DEFAULT_HOME,
     CLEAR_PINS,
+    ADD_ISLAND,
     UNHIDE_FOLDERS,
     MORE_OPTIONS,
     CLOSE_SHEET,
@@ -713,6 +715,68 @@ class WatchView(
     private var gridBufDia = FloatArray(0)
     private var gridBufDist = FloatArray(0)
     private var gridBufDepth = FloatArray(0)
+
+    // ── 3.2.0 Anchor Islands ────────────────────────────────────────────
+    /** A widget tile living in the Force Field: a heavy body in the
+     *  physics field. Anchor and half-extents are in hex units (1 = one
+     *  grid pitch). The bitmap is a snapshot of the real widget, hosted
+     *  off-screen and rendered by MainActivity. */
+    class IslandSlot(
+        val id: Int,
+        var anchorX: Float,
+        var anchorY: Float,
+        val halfW: Float,
+        val halfH: Float,
+        val label: String,
+    ) {
+        var bitmap: android.graphics.Bitmap? = null
+        val rect = RectF()
+    }
+    var islands: List<IslandSlot> = emptyList()
+    var onIslandTap: (Int) -> Unit = {}
+    var onIslandMoved: (Int, Float, Float) -> Unit = { _, _, _ -> }
+    var onIslandEditTap: (Int) -> Unit = {}
+    private var islandDragId: Int? = null
+    private var islandDragMoved = false
+    private var islandPxPerUnit = 0f
+    private val islandPath = Path()
+    private val islandDst = RectF()
+    private val islandInset = RectF()
+
+    private fun islandAt(x: Float, y: Float): IslandSlot? =
+        if (clusterTopology == ClusterTopology.FORCE_FIELD)
+            islands.lastOrNull { !it.rect.isEmpty && it.rect.contains(x, y) }
+        else null
+
+    // Force Field physics state (positions in hex units; pitch = 1).
+    private var ffPosX = FloatArray(0)
+    private var ffPosY = FloatArray(0)
+    private var ffVelX = FloatArray(0)
+    private var ffVelY = FloatArray(0)
+    private var ffSeeded = BooleanArray(0)
+    private var ffPairs = IntArray(0)
+    private var ffPairBuiltFor = -1
+    private val ffTmp = FloatArray(2)
+
+    private fun ensureForceCapacity(count: Int) {
+        if (ffPosX.size >= count) return
+        val cap = count + 16
+        ffPosX = ffPosX.copyOf(cap)
+        ffPosY = ffPosY.copyOf(cap)
+        ffVelX = ffVelX.copyOf(cap)
+        ffVelY = ffVelY.copyOf(cap)
+        ffSeeded = ffSeeded.copyOf(cap)
+    }
+
+    private fun seedForceSlot(index: Int) {
+        if (index in gridHexes.indices) pointyCenter(gridHexes[index], 1f, ffTmp)
+        else { ffTmp[0] = 0f; ffTmp[1] = 0f }
+        ffPosX[index] = ffTmp[0]
+        ffPosY[index] = ffTmp[1]
+        ffVelX[index] = 0f
+        ffVelY[index] = 0f
+        ffSeeded[index] = true
+    }
     private val nebulaHeaderRects = ArrayList<Triple<RectF, Float, Float>>()
     private val constellationChipRects = ArrayList<Pair<RectF, String>>()
     private val constellationCategoryChipRects = ArrayList<Pair<RectF, dev.watchreborn.apps.AppGroup>>()
@@ -1800,6 +1864,12 @@ class WatchView(
                     out[0] = 0f; out[1] = 0f
                 }
             }
+            ClusterTopology.FORCE_FIELD -> {
+                ensureForceCapacity(total)
+                if (index in ffSeeded.indices && !ffSeeded[index]) seedForceSlot(index)
+                out[0] = ffPosX[index] * pitch
+                out[1] = ffPosY[index] * pitch
+            }
             ClusterTopology.ORBITALS -> {
                 if (index == 0) {
                     out[0] = 0f; out[1] = 0f
@@ -2199,6 +2269,120 @@ class WatchView(
             }
         }
 
+        // 6. Force Field (`FORCE_FIELD`) spring-home physics (3.2.0):
+        // every bubble is a light body on a spring to its hex home;
+        // neighbours repel, widget islands repel like walls, and pan
+        // velocity sloshes the whole field. Simulated in hex units.
+        if (clusterTopology == ClusterTopology.FORCE_FIELD) {
+            ensureForceCapacity(count)
+            if (reducedMotion) {
+                for (i in 0 until count) {
+                    if (!ffSeeded[i]) seedForceSlot(i)
+                    if (i in gridHexes.indices) pointyCenter(gridHexes[i], 1f, ffTmp)
+                    else { ffTmp[0] = 0f; ffTmp[1] = 0f }
+                    ffPosX[i] = ffTmp[0]; ffPosY[i] = ffTmp[1]
+                    ffVelX[i] = 0f; ffVelY[i] = 0f
+                }
+            } else {
+                if (ffPairBuiltFor != count) {
+                    val pairs = ArrayList<Int>()
+                    for (i in 0 until count) {
+                        if (i !in gridHexes.indices) continue
+                        val a = gridHexes[i]
+                        for (j in i + 1 until count) {
+                            if (j !in gridHexes.indices) continue
+                            val b = gridHexes[j]
+                            val dq = a.q - b.q
+                            val dr = a.r - b.r
+                            if ((abs(dq) + abs(dr) + abs(dq + dr)) / 2 == 1) {
+                                pairs.add(i); pairs.add(j)
+                            }
+                        }
+                    }
+                    ffPairs = pairs.toIntArray()
+                    ffPairBuiltFor = count
+                }
+                val pitchPx = pitch.coerceAtLeast(1f)
+                val sloshX = (-dPanX / pitchPx).coerceIn(-2.5f, 2.5f)
+                val sloshY = (-dPanY / pitchPx).coerceIn(-2.5f, 2.5f)
+                val kSpring = 30f
+                val cDamp = 8.2f
+                var maxErr = 0f
+                var maxVel = 0f
+                for (i in 0 until count) {
+                    if (!ffSeeded[i]) seedForceSlot(i)
+                    if (i in gridHexes.indices) pointyCenter(gridHexes[i], 1f, ffTmp)
+                    else { ffTmp[0] = 0f; ffTmp[1] = 0f }
+                    val hx = ffTmp[0]
+                    val hy = ffTmp[1]
+                    var ax = -kSpring * (ffPosX[i] - hx) - cDamp * ffVelX[i]
+                    var ay = -kSpring * (ffPosY[i] - hy) - cDamp * ffVelY[i]
+                    ax += sloshX * 6f
+                    ay += sloshY * 6f
+                    ffVelX[i] = (ffVelX[i] + ax * dt).coerceIn(-6f, 6f)
+                    ffVelY[i] = (ffVelY[i] + ay * dt).coerceIn(-6f, 6f)
+                    ffPosX[i] += ffVelX[i] * dt
+                    ffPosY[i] += ffVelY[i] * dt
+                    // Islands are walls: a bubble may not live inside one.
+                    for (slot in islands) {
+                        val minD = 0.50f
+                        val cxx = ffPosX[i].coerceIn(slot.anchorX - slot.halfW, slot.anchorX + slot.halfW)
+                        val cyy = ffPosY[i].coerceIn(slot.anchorY - slot.halfH, slot.anchorY + slot.halfH)
+                        val dx = ffPosX[i] - cxx
+                        val dy = ffPosY[i] - cyy
+                        val dist = hypot(dx, dy)
+                        if (dist < 1e-3f) {
+                            // Centre inside the island: exit by the shallowest side.
+                            val pl = ffPosX[i] - (slot.anchorX - slot.halfW)
+                            val pr = (slot.anchorX + slot.halfW) - ffPosX[i]
+                            val pt = ffPosY[i] - (slot.anchorY - slot.halfH)
+                            val pb = (slot.anchorY + slot.halfH) - ffPosY[i]
+                            when {
+                                pl <= pr && pl <= pt && pl <= pb -> ffPosX[i] = slot.anchorX - slot.halfW - minD * 0.9f
+                                pr <= pt && pr <= pb -> ffPosX[i] = slot.anchorX + slot.halfW + minD * 0.9f
+                                pt <= pb -> ffPosY[i] = slot.anchorY - slot.halfH - minD * 0.9f
+                                else -> ffPosY[i] = slot.anchorY + slot.halfH + minD * 0.9f
+                            }
+                        } else if (dist < minD) {
+                            val push = minD - dist
+                            ffPosX[i] += dx / dist * push
+                            ffPosY[i] += dy / dist * push
+                            val vn = ffVelX[i] * (dx / dist) + ffVelY[i] * (dy / dist)
+                            if (vn < 0f) {
+                                ffVelX[i] -= vn * (dx / dist)
+                                ffVelY[i] -= vn * (dy / dist)
+                            }
+                        }
+                    }
+                    val err = hypot(ffPosX[i] - hx, ffPosY[i] - hy)
+                    if (err > maxErr) maxErr = err
+                    val spd = hypot(ffVelX[i], ffVelY[i])
+                    if (spd > maxVel) maxVel = spd
+                }
+                // Neighbour repulsion: positional, split between the pair,
+                // so a disturbed bubble shoves its ring instead of
+                // overlapping it.
+                var pIdx = 0
+                while (pIdx + 1 < ffPairs.size) {
+                    val i = ffPairs[pIdx]
+                    val j = ffPairs[pIdx + 1]
+                    pIdx += 2
+                    val dx = ffPosX[j] - ffPosX[i]
+                    val dy = ffPosY[j] - ffPosY[i]
+                    val dist = hypot(dx, dy)
+                    val minD = 0.94f
+                    if (dist < minD && dist > 1e-3f) {
+                        val push = (minD - dist) * 0.32f
+                        ffPosX[i] -= dx / dist * push
+                        ffPosY[i] -= dy / dist * push
+                        ffPosX[j] += dx / dist * push
+                        ffPosY[j] += dy / dist * push
+                    }
+                }
+                if (dragging || maxErr > 0.006f || maxVel > 0.03f) active = true
+            }
+        }
+
         return active
     }
 
@@ -2448,6 +2632,7 @@ class WatchView(
         val isHelix = clusterTopology == ClusterTopology.DNA_HELIX
         val isDock = clusterTopology == ClusterTopology.MAGNETIC_DOCK
         val isPool = clusterTopology == ClusterTopology.LIQUID_POOL
+        val isForce = clusterTopology == ClusterTopology.FORCE_FIELD
 
         ensureWakeCapacity(items.size)
         val bubbleDepthAlpha = gridBufDepth
@@ -2464,14 +2649,14 @@ class WatchView(
             // layout switch), its world position springs to the new slot instead
             // of teleporting. Pan/zoom/fisheye still apply on top. Liquid Pool
             // has its own simulated motion and opts out.
-            if (!isPool) {
+            if (!isPool && !isForce) {
                 glideToward(glidePosGrid, item.key, worldX, worldY, basePitch * 4.5f)
                 worldX = glideTmp[0]
                 worldY = glideTmp[1]
             }
 
             // Apply Jello / Wake Wave spring displacement & tilt parallax when physics is enabled
-            if (!isPool && i in wakeDispX.indices) {
+            if (!isPool && !isForce && i in wakeDispX.indices) {
                 worldX += wakeDispX[i] * (1f - 0.5f * ov)
                 worldY += wakeDispY[i] * (1f - 0.5f * ov)
                 val ringDist = if (i in gridHexes.indices) {
@@ -2675,6 +2860,52 @@ class WatchView(
                 stroke.strokeWidth = dp(1f)
                 stroke.color = withAlpha(accent, (aInt * 0.20f).toInt())
                 c.drawCircle(cx, cy, tankScreenR * 0.965f, stroke)
+            }
+
+            // 3.2.0 Anchor Islands: widget tiles under the bubbles. They
+            // take pan + zoom but not the fisheye — islands are furniture,
+            // and their stillness is what makes the field read as flowing
+            // around them.
+            if (isForce && islands.isNotEmpty()) {
+                islandPxPerUnit = basePitch * effZoom
+                for (slot in islands) {
+                    val icx = cx + (slot.anchorX * basePitch + panX.value * (1f - ov)) * effZoom
+                    val icy = cy + (slot.anchorY * basePitch + panY.value * (1f - ov)) * effZoom
+                    val hw = slot.halfW * basePitch * effZoom
+                    val hh = slot.halfH * basePitch * effZoom
+                    slot.rect.set(icx - hw, icy - hh, icx + hw, icy + hh)
+                    val rr = dp(18f) * effZoom.coerceIn(0.7f, 1.3f)
+                    fill.color = Color.argb((aInt * 0.92f).toInt(), 18, 22, 30)
+                    c.drawRoundRect(slot.rect, rr, rr, fill)
+                    val bmp = slot.bitmap
+                    if (bmp != null && !bmp.isRecycled) {
+                        c.save()
+                        islandPath.reset()
+                        islandPath.addRoundRect(slot.rect, rr, rr, Path.Direction.CW)
+                        c.clipPath(islandPath)
+                        val scale = max(slot.rect.width() / bmp.width, slot.rect.height() / bmp.height)
+                        val dw = bmp.width * scale
+                        val dh = bmp.height * scale
+                        islandDst.set(icx - dw / 2f, icy - dh / 2f, icx + dw / 2f, icy + dh / 2f)
+                        c.drawBitmap(bmp, null, islandDst, bitmapPaint)
+                        c.restore()
+                    } else {
+                        text.textSize = sp(12f)
+                        text.color = Color.argb((aInt * 0.8f).toInt(), 200, 210, 220)
+                        val lbl = slot.label
+                        c.drawText(lbl, icx - text.measureText(lbl) / 2f, icy + text.textSize * 0.35f, text)
+                    }
+                    stroke.strokeWidth = dp(1.4f)
+                    stroke.color = withAlpha(accent, (aInt * 0.55f).toInt())
+                    c.drawRoundRect(slot.rect, rr, rr, stroke)
+                    if (editMode) {
+                        stroke.strokeWidth = dp(2.2f)
+                        stroke.color = withAlpha(accent, (aInt * 0.9f).toInt())
+                        val inset = dp(5f)
+                        islandInset.set(slot.rect.left + inset, slot.rect.top + inset, slot.rect.right - inset, slot.rect.bottom - inset)
+                        c.drawRoundRect(islandInset, rr, rr, stroke)
+                    }
+                }
             }
 
             val drawOrder = when {
@@ -3641,6 +3872,7 @@ class WatchView(
             if (sheetExpanded) {
                 add(Triple(null, "ACTIONS", ""))
                 add(Triple(ClusterOption.SET_DEFAULT_HOME, "Default Phone Launcher", "Set Orbital as Home app"))
+                add(Triple(ClusterOption.ADD_ISLAND, "Add Widget Island", "Place a widget in the Force Field cluster"))
                 if (pinnedItemKeys.isNotEmpty()) {
                     add(Triple(ClusterOption.CLEAR_PINS, "Pinned Hex Slots (${pinnedItemKeys.size})", "Tap to unpin all bubbles"))
                 }
@@ -4821,6 +5053,14 @@ class WatchView(
                     val seg = dockSegs.firstOrNull { !it.isEmpty && it.contains(e.x, e.y) }
                     if (seg != null) { pressedRect = RectF(seg); pressedRadius = dp(24f) }
                 }
+                // 3.2.0: in edit mode an island drag starts on the island.
+                if (editMode && modeAtDown == MODE_APPS && clusterSheet.target == 0f) {
+                    islandAt(e.x, e.y)?.let {
+                        islandDragId = it.id
+                        islandDragMoved = false
+                        return true
+                    }
+                }
                 // Edit mode: touching a bubble picks it up immediately — the
                 // whole point is arranging without long-pressing each bubble.
                 if (editMode && modeAtDown == MODE_APPS && !edgeCrownDragging) {
@@ -4837,6 +5077,18 @@ class WatchView(
             MotionEvent.ACTION_MOVE -> {
                 if (cardMenuOpen) return true
                 if (pinching) return true
+                if (islandDragId != null) {
+                    val slot = islands.firstOrNull { it.id == islandDragId }
+                    if (slot != null && islandPxPerUnit > 0f) {
+                        slot.anchorX += (e.x - lastX) / islandPxPerUnit
+                        slot.anchorY += (e.y - lastY) / islandPxPerUnit
+                        if (hypot(e.x - downX, e.y - downY) > slop) islandDragMoved = true
+                        lastX = e.x
+                        lastY = e.y
+                        invalidate()
+                    }
+                    return true
+                }
                 if (placeItem != null) {
                     placeX = e.x; placeY = e.y
                     if (hypot(e.x - downX, e.y - downY) > slop) placeMoved = true
@@ -4880,6 +5132,18 @@ class WatchView(
                     invalidate()
                     return true
                 }
+                if (islandDragId != null) {
+                    val slot = islands.firstOrNull { it.id == islandDragId }
+                    val id = islandDragId
+                    islandDragId = null
+                    dragging = false
+                    if (slot != null && id != null) {
+                        if (islandDragMoved) onIslandMoved(id, slot.anchorX, slot.anchorY)
+                        else onIslandEditTap(id)
+                    }
+                    invalidate()
+                    return true
+                }
                 if (edgeCrownDragging) {
                     edgeCrownDragging = false
                     dragging = false
@@ -4909,6 +5173,7 @@ class WatchView(
                 dragging = false
                 pinching = false
                 edgeCrownDragging = false
+                islandDragId = null
                 placeItem = null
                 placeHoverSlot = -1
                 placeMoved = false
@@ -5204,6 +5469,11 @@ class WatchView(
                         sheetExpanded = !sheetExpanded
                         invalidate()
                     }
+                    ClusterOption.ADD_ISLAND -> {
+                        clusterSheet.target = 0f
+                        onClusterOptionChanged(opt)
+                        invalidate()
+                    }
                     else -> {
                         onClusterOptionChanged(opt)
                     }
@@ -5368,6 +5638,16 @@ class WatchView(
                         invalidate()
                         return
                     }
+                }
+            }
+
+            // 3.2.0 Anchor Islands: a tap on an island opens its live
+            // widget (edit-mode taps ride the island drag path instead).
+            if (!editMode) {
+                islandAt(x, y)?.let { slot ->
+                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    onIslandTap(slot.id)
+                    return
                 }
             }
 

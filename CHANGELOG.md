@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.2.0 — 2026-10-26
+- Anchor Islands (Matt's pick): a new ninth topology, **Force Field** — every
+  bubble is a light body on a spring to its hex home; neighbours repel, fast
+  pans slosh the field, and it sleeps when settled. Reduced motion parks every
+  bubble on its home.
+- Widget islands: Settings → More Options → Add Widget Island binds any system
+  widget as a heavy island in the Force Field (no cap). The real widget is
+  hosted off-screen and drawn into the cluster as a snapshot tile that
+  refreshes when the provider pushes an update; islands repel bubbles like
+  walls. Tap an island for the live widget in a pod (Back or scrim closes);
+  in Edit Layout, drag islands to re-anchor them, tap one for Open/Remove.
+
 ## 3.1.0 — 2026-10-26
 - Removed the lattice lines connecting the bubbles (Honeycomb / Gravity / Nebula
   backdrops and the River's bubble connectors; the River rails, Helix strands,
