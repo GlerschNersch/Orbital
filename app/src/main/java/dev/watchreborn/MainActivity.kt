@@ -70,6 +70,10 @@ import dev.watchreborn.ui.CardAction
 import dev.watchreborn.ui.ClusterOption
 import dev.watchreborn.ui.ClusterTopology
 import dev.watchreborn.ui.IslandLayout
+import dev.watchreborn.ui.IslandMembers
+import dev.watchreborn.ui.NativeIslands
+import dev.watchreborn.ui.NativeKind
+import dev.watchreborn.ui.NativePodView
 import dev.watchreborn.ui.Faces
 import dev.watchreborn.ui.LayoutBackup
 import dev.watchreborn.ui.FaceInfo
@@ -96,7 +100,20 @@ class MainActivity : Activity(), SensorEventListener {
     private val islandSlots = mutableMapOf<Int, WatchView.IslandSlot>()
     private var islandPod: FrameLayout? = null
     private var islandPodId: Int? = null
+    /** The pod's hosted widget id when the top member is a system
+     *  widget; null for a native pod (nothing to re-home). */
+    private var islandPodWidgetId: Int? = null
     private var addTargetIsland = false
+    /** 3.6.0 Part B: while non-null, the picker appends to this
+     *  island slot's stack instead of creating an island. Nullable
+     *  because native slot ids are negative — a -1 sentinel would
+     *  collide with the first native island. */
+    private var stackTargetSlot: Int? = null
+    /** 3.6.0: appWidgetId -> owning island slot id (a stack's
+     *  members are not slot ids). */
+    private val islandSlotByWidget = mutableMapOf<Int, Int>()
+    /** The picker's Built-in section container (3.6.0 Part A). */
+    private var widgetsPickerBuiltinCol: LinearLayout? = null
     private val islandSnapHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val islandSnapPending = mutableSetOf<Int>()
     private var rootFrame: FrameLayout? = null
@@ -197,6 +214,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         view.onIslandEditTap = { id -> showIslandMenu(id) }
         view.onIslandResized = { id, scale -> applyIslandScale(id, scale) }
+        view.onIslandCycle = { id -> cycleIslandStack(id) }
         IslandAwareHostView.widgetUpdateHook = { id ->
             if (id in islandViews) scheduleIslandSnapshot(id)
         }
@@ -678,16 +696,18 @@ class MainActivity : Activity(), SensorEventListener {
         val clamped = IslandLayout.clampScale(scale)
         prefs.edit().putFloat(islandKey(id, "scale"), clamped).apply()
         islandSlots[id]?.let { it.scale = clamped }
-        val info = appWidgetManager.getAppWidgetInfo(id)
-        val hv = islandViews[id]
-        if (info != null && hv != null) {
-            val (baseW, baseH) = islandTileDp(info)
-            val wDp = (baseW * clamped).toInt().coerceIn(108, 756)
-            val hDp = (baseH * clamped).toInt().coerceIn(66, 540)
-            val dens = resources.displayMetrics.density
+        // 3.6.0: resize every hosted member of the slot — stack
+        // members share the island's footprint. Native members are
+        // drawn into the slot rect and follow on their own.
+        val (baseW, baseH) = slotTileDp(id)
+        val wDp = (baseW * clamped).toInt().coerceIn(108, 756)
+        val hDp = (baseH * clamped).toInt().coerceIn(66, 540)
+        val dens = resources.displayMetrics.density
+        for (wid in IslandMembers.systemIds(islandMembersOf(id))) {
+            val hv = islandViews[wid] ?: continue
             hv.layoutParams = FrameLayout.LayoutParams((wDp * dens).toInt(), (hDp * dens).toInt())
-            sendIslandSize(id, wDp, hDp)
-            hv.post { snapshotIsland(id) }
+            sendIslandSize(wid, wDp, hDp)
+            hv.post { snapshotIsland(wid) }
         }
         pushIslandsToView()
     }
@@ -866,11 +886,21 @@ class MainActivity : Activity(), SensorEventListener {
             .show()
     }
 
-    /** Islands in the backup whose widget id this device can't resolve. */
+    /** Islands in the backup whose SYSTEM members this device
+     *  can't resolve. (3.6.0: native members always resolve — they
+     *  are drawn by Orbital itself — and a stack's slot id is not
+     *  a widget id.) */
     private fun countUnresolvableIslands(backup: LayoutBackup.Backup): Int {
-        val ids = (backup.stores[LayoutBackup.STORE_WATCH]?.get(KEY_ISLAND_IDS) as? String)
+        val watch = backup.stores[LayoutBackup.STORE_WATCH] ?: return 0
+        val slotIds = (watch[KEY_ISLAND_IDS] as? String)
             ?.split(',')?.mapNotNull { it.trim().toIntOrNull() } ?: return 0
-        return ids.count { appWidgetManager.getAppWidgetInfo(it) == null }
+        val sys = HashSet<Int>()
+        for (slotId in slotIds) {
+            val members = watch[islandKey(slotId, "members")] as? String
+            if (members != null) sys += IslandMembers.systemIdsOfRaw(members)
+            else if (slotId > 0) sys += slotId
+        }
+        return sys.count { appWidgetManager.getAppWidgetInfo(it) == null }
     }
 
     /** Rewrites both live stores from a parsed backup — the one
@@ -1100,7 +1130,8 @@ class MainActivity : Activity(), SensorEventListener {
         val orphans = Faces.orphanedWidgetIds(
             Faces.islandIdsOf(face.data),
             remaining.map { Faces.islandIdsOf(it.data) },
-            savedIslandIds().toSet(),
+            savedIslandIds()
+                .flatMap { IslandMembers.systemIds(islandMembersOf(it)) }.toSet(),
         )
         facesPrefs.edit()
             .putString(Faces.KEY_IDS, remaining.map { it.id }.joinToString(","))
@@ -1798,6 +1829,17 @@ class MainActivity : Activity(), SensorEventListener {
         }
         col.addView(sub)
 
+        // 3.6.0 Part A: the Built-in section — populated per open
+        // by populateBuiltinSection (island / stack targets only).
+        // It lives OUTSIDE the provider list column, whose contents
+        // the async provider load replaces wholesale.
+        val builtinCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        widgetsPickerBuiltinCol = builtinCol
+        col.addView(builtinCol)
+
         val scroll = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f,
@@ -1814,6 +1856,7 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun populateWidgetPicker() {
+        populateBuiltinSection()
         val col = widgetsPickerCol ?: return
         col.removeAllViews()
         val loading = TextView(this).apply {
@@ -1870,6 +1913,83 @@ class MainActivity : Activity(), SensorEventListener {
                     col.addView(buildPickerCard(row))
                 }
             }
+        }
+    }
+
+    /** 3.6.0 Part A: the picker's Built-in section — shown only
+     *  when the picker targets an island (a new island, or a stack
+     *  append); built-ins are islands, not Widgets-page widgets. */
+    private fun populateBuiltinSection() {
+        val col = widgetsPickerBuiltinCol ?: return
+        col.removeAllViews()
+        if (!addTargetIsland && stackTargetSlot == null) {
+            col.visibility = View.GONE
+            return
+        }
+        col.visibility = View.VISIBLE
+        val header = TextView(this).apply {
+            text = "BUILT-IN — DRAWN LIVE BY ORBITAL"
+            textSize = 11f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.rgb(150, 200, 130))
+            setPadding(0, dpPx(2f), 0, dpPx(8f))
+        }
+        col.addView(header)
+        for (kind in NativeIslands.pickerKinds) {
+            col.addView(buildBuiltinCard(kind))
+        }
+    }
+
+    private fun buildBuiltinCard(kind: NativeKind): View {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dpPx(14f), dpPx(12f), dpPx(14f), dpPx(12f))
+            background = GradientDrawable().apply {
+                setColor(Color.rgb(34, 36, 44))
+                cornerRadius = dpPx(18f).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { bottomMargin = dpPx(8f) }
+        }
+        val glyph = TextView(this).apply {
+            text = kind.glyph
+            textSize = 24f
+            setPadding(0, 0, dpPx(12f), 0)
+        }
+        val texts = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        val name = TextView(this).apply {
+            text = kind.label
+            textSize = 14.5f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+        }
+        val blurb = TextView(this).apply {
+            text = kind.blurb
+            textSize = 11.5f
+            setTextColor(Color.rgb(170, 175, 185))
+        }
+        texts.addView(name)
+        texts.addView(blurb)
+        card.addView(glyph)
+        card.addView(texts)
+        card.setOnClickListener { pickNativeKind(kind) }
+        return card
+    }
+
+    /** A built-in pick: appended to the target stack, or a fresh
+     *  native island. */
+    private fun pickNativeKind(kind: NativeKind) {
+        val target = stackTargetSlot
+        if (target != null) {
+            stackTargetSlot = null
+            appendNativeToStack(target, kind)
+        } else {
+            finishAddNative(kind)
         }
     }
 
@@ -2048,6 +2168,12 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun finishAddWidget(widgetId: Int) {
+        val stackTarget = stackTargetSlot
+        if (stackTarget != null) {
+            stackTargetSlot = null
+            finishAddToStack(stackTarget, widgetId)
+            return
+        }
         if (addTargetIsland) {
             addTargetIsland = false
             finishAddIsland(widgetId)
@@ -2081,6 +2207,74 @@ class MainActivity : Activity(), SensorEventListener {
         return w to h
     }
 
+    /** The slot's ordered member tokens (3.6.0). Slots written
+     *  before stacks existed have no members key: they synthesise
+     *  a single system member from their own id — exactly the
+     *  pre-3.6.0 behaviour. Native slots (negative ids) always
+     *  carry an explicit members key. */
+    private fun islandMembersOf(slotId: Int): List<String> {
+        val raw = prefs.getString(islandKey(slotId, "members"), null)
+        if (raw != null) return IslandMembers.parse(raw)
+        return if (slotId > 0) listOf(IslandMembers.sysToken(slotId)) else emptyList()
+    }
+
+    /** Persist membership and mirror it into the live slot. */
+    private fun saveIslandMembers(slotId: Int, members: List<String>, top: Int) {
+        val t = IslandMembers.clampTopIndex(members, top)
+        prefs.edit()
+            .putString(islandKey(slotId, "members"), IslandMembers.serialize(members))
+            .putInt(islandKey(slotId, "top"), t)
+            .apply()
+        islandSlots[slotId]?.let { slot ->
+            slot.memberTokens = members
+            slot.topIndex = t
+            slot.label = islandSlotLabel(slotId)
+        }
+    }
+
+    /** A member's display label: provider label, or the native
+     *  kind's name. */
+    private fun memberLabel(token: String): String {
+        IslandMembers.nativeKind(token)?.let { return it.label }
+        val wid = IslandMembers.sysId(token) ?: return "Widget"
+        return appWidgetManager.getAppWidgetInfo(wid)
+            ?.loadLabel(packageManager)?.toString() ?: "Widget"
+    }
+
+    /** The slot's label = its current top member's label. */
+    private fun islandSlotLabel(slotId: Int): String {
+        val members = islandMembersOf(slotId)
+        val top = IslandMembers.clampTopIndex(
+            members, prefs.getInt(islandKey(slotId, "top"), 0),
+        )
+        return members.getOrNull(top)?.let { memberLabel(it) } ?: "Widget"
+    }
+
+    /** The slot's tile size: its FIRST member's footprint — stack
+     *  members share the island's established size. */
+    private fun slotTileDp(slotId: Int): Pair<Int, Int> {
+        val first = islandMembersOf(slotId).firstOrNull()
+        if (first != null) {
+            val wid = IslandMembers.sysId(first)
+            if (wid != null) {
+                val info = appWidgetManager.getAppWidgetInfo(wid)
+                if (info != null) return islandTileDp(info)
+            }
+            IslandMembers.nativeKind(first)?.let { return it.defaultWDp to it.defaultHDp }
+        }
+        return 300 to 160
+    }
+
+    /** Native island slot ids are a persisted negative sequence —
+     *  never appWidgetIds — so every island pref (anchors, scale,
+     *  members, faces snapshots, backups) round-trips without
+     *  anything trying to resolve them as hosted widgets. */
+    private fun nextNativeSlotId(): Int {
+        val seq = prefs.getInt("island_native_seq", 0) + 1
+        prefs.edit().putInt("island_native_seq", seq).apply()
+        return -seq
+    }
+
     private fun sendIslandSize(id: Int, wDp: Int, hDp: Int) {
         val opts = android.os.Bundle().apply {
             putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, wDp)
@@ -2092,25 +2286,30 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun loadIslands() {
-        for (id in savedIslandIds()) {
-            val info = appWidgetManager.getAppWidgetInfo(id) ?: continue
-            createIslandView(id, info)
+        for (slotId in savedIslandIds()) {
+            for (wid in IslandMembers.systemIds(islandMembersOf(slotId))) {
+                val info = appWidgetManager.getAppWidgetInfo(wid) ?: continue
+                createIslandView(slotId, wid, info)
+            }
         }
         pushIslandsToView()
     }
 
-    private fun createIslandView(id: Int, info: AppWidgetProviderInfo) {
+    /** Host one system member of a slot (3.6.0: [slotId] owns the
+     *  tile size and scale; [id] is the member's appWidgetId). */
+    private fun createIslandView(slotId: Int, id: Int, info: AppWidgetProviderInfo) {
         val bin = islandContainer ?: return
         val hv = appWidgetHost.createView(this, id, info)
-        val (baseW, baseH) = islandTileDp(info)
+        val (baseW, baseH) = slotTileDp(slotId)
         // 3.2.5: a resized island keeps its scale across restarts.
-        val scale0 = IslandLayout.clampScale(prefs.getFloat(islandKey(id, "scale"), 1f))
+        val scale0 = IslandLayout.clampScale(prefs.getFloat(islandKey(slotId, "scale"), 1f))
         val wDp = (baseW * scale0).toInt().coerceIn(108, 756)
         val hDp = (baseH * scale0).toInt().coerceIn(66, 540)
         val dens = resources.displayMetrics.density
         hv.layoutParams = FrameLayout.LayoutParams((wDp * dens).toInt(), (hDp * dens).toInt())
         bin.addView(hv)
         islandViews[id] = hv
+        islandSlotByWidget[id] = slotId
         sendIslandSize(id, wDp, hDp)
         hv.post { snapshotIsland(id) }
     }
@@ -2120,19 +2319,29 @@ class MainActivity : Activity(), SensorEventListener {
         val dens = resources.displayMetrics.density
         val slots = savedIslandIds().map { id ->
             islandSlots.getOrPut(id) {
-                val info = appWidgetManager.getAppWidgetInfo(id)
-                val (wDp, hDp) = if (info != null) islandTileDp(info) else (300 to 160)
+                val (wDp, hDp) = slotTileDp(id)
                 WatchView.IslandSlot(
                     id = id,
                     anchorX = prefs.getFloat(islandKey(id, "ax"), 0f),
                     anchorY = prefs.getFloat(islandKey(id, "ay"), 2.05f),
                     halfW = ((wDp * dens) / hexPx / 2f).coerceIn(0.75f, 1.60f),
                     halfH = ((hDp * dens) / hexPx / 2f).coerceIn(0.45f, 1.20f),
-                    label = info?.loadLabel(packageManager)?.toString() ?: "Widget",
+                    label = islandSlotLabel(id),
                 ).also { slot ->
                     slot.scale = IslandLayout.clampScale(prefs.getFloat(islandKey(id, "scale"), 1f))
                 }
             }
+        }
+        // 3.6.0: membership can change under a live slot (stack
+        // appends / removals / cycling) — refresh it before the
+        // fit-first heal below reads anchors and extents.
+        for (slot in slots) {
+            val members = islandMembersOf(slot.id)
+            slot.memberTokens = members
+            slot.topIndex = IslandMembers.clampTopIndex(
+                members, prefs.getInt(islandKey(slot.id, "top"), 0),
+            )
+            slot.label = islandSlotLabel(slot.id)
         }
         // 3.2.2 fit-first placement: an island's anchor is pulled in
         // until the whole tile fits the field, so wide/tall widgets
@@ -2204,7 +2413,8 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun snapshotIsland(id: Int) {
         val hv = islandViews[id] ?: return
-        val slot = islandSlots[id] ?: return
+        val slotId = islandSlotByWidget[id] ?: return
+        val slot = islandSlots[slotId] ?: return
         val w = hv.width
         val h = hv.height
         if (w <= 0 || h <= 0) {
@@ -2213,8 +2423,9 @@ class MainActivity : Activity(), SensorEventListener {
         }
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         hv.draw(Canvas(bmp))
-        val old = slot.bitmap
-        slot.bitmap = bmp
+        val token = IslandMembers.sysToken(id)
+        val old = slot.bitmaps[token]
+        slot.bitmaps[token] = bmp
         if (old != null && old !== bmp) old.recycle()
         if (view.clusterTopology == ClusterTopology.FORCE_FIELD ||
             view.clusterTopology == ClusterTopology.HONEYCOMB ||
@@ -2235,7 +2446,8 @@ class MainActivity : Activity(), SensorEventListener {
             .putFloat(islandKey(widgetId, "ay"), kotlin.math.sin(ang) * 2.05f)
             .apply()
         saveIslandIds((savedIslandIds() + widgetId).distinct())
-        if (info != null) createIslandView(widgetId, info)
+        saveIslandMembers(widgetId, listOf(IslandMembers.sysToken(widgetId)), 0)
+        if (info != null) createIslandView(widgetId, widgetId, info)
         pushIslandsToView()
         hideWidgetPicker()
         val islandTopologies = setOf(
@@ -2248,12 +2460,147 @@ class MainActivity : Activity(), SensorEventListener {
         Toast.makeText(this, "Widget island added", Toast.LENGTH_LONG).show()
     }
 
+    /** Picker -> a fresh native island (3.6.0 Part A): mirrors
+     *  finishAddIsland's placement, but the slot id is a negative
+     *  sequence number and the members key names the native kind. */
+    private fun finishAddNative(kind: NativeKind) {
+        val slotId = nextNativeSlotId()
+        val n = savedIslandIds().size
+        val ang = 1.5708f + n * 2.39996f
+        prefs.edit()
+            .putFloat(islandKey(slotId, "ax"), kotlin.math.cos(ang) * 2.05f)
+            .putFloat(islandKey(slotId, "ay"), kotlin.math.sin(ang) * 2.05f)
+            .apply()
+        saveIslandMembers(slotId, listOf(IslandMembers.nativeToken(kind)), 0)
+        saveIslandIds((savedIslandIds() + slotId).distinct())
+        pushIslandsToView()
+        hideWidgetPicker()
+        val islandTopologies = setOf(
+            ClusterTopology.HONEYCOMB, ClusterTopology.GRAVITY, ClusterTopology.FORCE_FIELD)
+        if (view.clusterTopology !in islandTopologies) {
+            prefs.edit().putString(KEY_CLUSTER_TOPOLOGY, ClusterTopology.FORCE_FIELD.name).apply()
+            view.clusterTopology = ClusterTopology.FORCE_FIELD
+        }
+        view.invalidate()
+        Toast.makeText(this, "${kind.label} island added", Toast.LENGTH_LONG).show()
+    }
+
+    /** Picker (system path) -> append the widget to a stack. The
+     *  new member becomes the visible one, so the add is seen. */
+    private fun finishAddToStack(slotId: Int, widgetId: Int) {
+        val info = appWidgetManager.getAppWidgetInfo(widgetId)
+        val members = islandMembersOf(slotId).toMutableList()
+        val token = IslandMembers.sysToken(widgetId)
+        if (token !in members) members += token
+        saveIslandMembers(slotId, members, members.size - 1)
+        if (info != null) createIslandView(slotId, widgetId, info)
+        pushIslandsToView()
+        hideWidgetPicker()
+        view.invalidate()
+        Toast.makeText(this, "Added to the stack", Toast.LENGTH_SHORT).show()
+    }
+
+    /** Picker (built-in path) -> append a native to a stack. */
+    private fun appendNativeToStack(slotId: Int, kind: NativeKind) {
+        val members = islandMembersOf(slotId).toMutableList()
+        val token = IslandMembers.nativeToken(kind)
+        if (token in members) {
+            Toast.makeText(
+                this, "${kind.label} is already in this stack", Toast.LENGTH_SHORT,
+            ).show()
+            hideWidgetPicker()
+            return
+        }
+        members += token
+        saveIslandMembers(slotId, members, members.size - 1)
+        pushIslandsToView()
+        hideWidgetPicker()
+        view.invalidate()
+        Toast.makeText(this, "${kind.label} added to the stack", Toast.LENGTH_SHORT).show()
+    }
+
+    /** Dot-row tap (3.6.0 Part B): advance the stack's top member
+     *  with the view's slide animation; membership persists, so
+     *  the cycle survives restarts and rides face snapshots. */
+    private fun cycleIslandStack(slotId: Int) {
+        val members = islandMembersOf(slotId)
+        if (members.size <= 1) return
+        val cur = IslandMembers.clampTopIndex(
+            members, prefs.getInt(islandKey(slotId, "top"), 0),
+        )
+        val next = IslandMembers.nextTopIndex(members, cur)
+        islandSlots[slotId]?.let { slot ->
+            slot.cycleFromIndex = cur
+            slot.cycleStartMs = android.os.SystemClock.uptimeMillis()
+        }
+        saveIslandMembers(slotId, members, next)
+        view.invalidate()
+    }
+
+    /** True while any live island or any saved face still
+     *  references [wid] — a stack member's appWidgetId is only
+     *  released when nothing references it (the 3.5.0 face-orphan
+     *  rule, applied live). */
+    private fun widgetReferencedElsewhere(wid: Int): Boolean {
+        for (slotId in savedIslandIds()) {
+            if (wid in IslandMembers.systemIds(islandMembersOf(slotId))) return true
+        }
+        val faceIds = facesPrefs.getString(Faces.KEY_IDS, null)
+            ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
+        for (fid in faceIds) {
+            val data = facesPrefs.getString(Faces.keyData(fid), null) ?: continue
+            if (wid in Faces.islandIdsOf(data)) return true
+        }
+        return false
+    }
+
+    /** Edit-menu action (3.6.0 Part B): remove the slot's current
+     *  top member. Down to one member the stack dissolves back
+     *  into a plain island (same model, a single member). */
+    private fun removeStackMember(slotId: Int) {
+        val members = islandMembersOf(slotId).toMutableList()
+        if (members.size <= 1) return
+        val top = IslandMembers.clampTopIndex(
+            members, prefs.getInt(islandKey(slotId, "top"), 0),
+        )
+        val removed = members.removeAt(top)
+        val removedLabel = memberLabel(removed)
+        saveIslandMembers(slotId, members, top)
+        IslandMembers.sysId(removed)?.let { wid ->
+            islandViews.remove(wid)?.let { hv ->
+                (hv.parent as? ViewGroup)?.removeView(hv)
+            }
+            islandSlotByWidget.remove(wid)
+            islandSlots[slotId]?.bitmaps?.remove(IslandMembers.sysToken(wid))?.recycle()
+            if (!widgetReferencedElsewhere(wid)) {
+                runCatching { appWidgetHost.deleteAppWidgetId(wid) }
+            }
+        }
+        pushIslandsToView()
+        Toast.makeText(
+            this, "Removed $removedLabel from the stack", Toast.LENGTH_SHORT,
+        ).show()
+    }
+
+    /** Open the pod for an island SLOT (3.6.0: the pod shows the
+     *  slot's current top member — a system widget's live view, or
+     *  an enlarged native rendering for a built-in). */
     private fun openIslandPod(id: Int) {
-        val hv = islandViews[id] ?: return
-        val info = appWidgetManager.getAppWidgetInfo(id) ?: return
+        val members = islandMembersOf(id)
+        val top = IslandMembers.clampTopIndex(
+            members, prefs.getInt(islandKey(id, "top"), 0),
+        )
+        val token = members.getOrNull(top) ?: return
+        IslandMembers.nativeKind(token)?.let { kind ->
+            openNativeIslandPod(id, kind)
+            return
+        }
+        val wid = IslandMembers.sysId(token) ?: return
+        val hv = islandViews[wid] ?: return
+        if (appWidgetManager.getAppWidgetInfo(wid) == null) return
         closeIslandPod()
         // 3.2.5: the pod's "tile size" is the tile as resized.
-        val (tileW, tileH) = islandTileDp(info)
+        val (tileW, tileH) = slotTileDp(id)
         val podScale = islandSlots[id]?.scale ?: 1f
         val wDp = (tileW * podScale).toInt().coerceIn(108, 756)
         val hDp = (tileH * podScale).toInt().coerceIn(66, 540)
@@ -2273,7 +2620,7 @@ class MainActivity : Activity(), SensorEventListener {
         (hv.parent as? ViewGroup)?.removeView(hv)
         hv.layoutParams = FrameLayout.LayoutParams((podW * dens).toInt(), (podH * dens).toInt())
         card.addView(hv)
-        sendIslandSize(id, podW, podH)
+        sendIslandSize(wid, podW, podH)
         scrim.addView(
             card,
             FrameLayout.LayoutParams((podW * dens).toInt(), (podH * dens).toInt(), android.view.Gravity.CENTER),
@@ -2282,6 +2629,7 @@ class MainActivity : Activity(), SensorEventListener {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         islandPod = scrim
         islandPodId = id
+        islandPodWidgetId = wid
         // 3.2.2: the pod grows out of the island tile it came from
         // (shared-element feel) while the scrim fades in under it.
         val tileRect = view.islands.firstOrNull { it.id == id }?.rect?.takeIf { !it.isEmpty }
@@ -2317,11 +2665,88 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
+    /** Pod for a native top member (3.6.0 Part A): the system
+     *  pod's chrome with a NativePodView inside — enlarged live
+     *  rendering plus the kind's action chips. No hosted view is
+     *  re-homed afterwards; teardown is just the scrim. */
+    private fun openNativeIslandPod(slotId: Int, kind: NativeKind) {
+        closeIslandPod()
+        val (tileW, tileH) = slotTileDp(slotId)
+        val podScale = islandSlots[slotId]?.scale ?: 1f
+        val wDp = (tileW * podScale).toInt().coerceIn(108, 756)
+        val hDp = (tileH * podScale).toInt().coerceIn(66, 540)
+        val dens = resources.displayMetrics.density
+        val screenWDp = (resources.displayMetrics.widthPixels / dens).toInt()
+        val podW = minOf(wDp * 2, screenWDp - 32).coerceAtLeast(120)
+        // +52dp: room for the pod view's chip rows under the content.
+        val podH = ((podW.toFloat() * hDp / wDp).toInt() + 52).coerceAtLeast(120)
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(Color.argb(190, 0, 0, 0))
+            isClickable = true
+            setOnClickListener { closeIslandPod() }
+        }
+        val card = FrameLayout(this).apply {
+            setBackgroundColor(Color.rgb(24, 28, 36))
+            elevation = 12f * dens
+        }
+        val podView = NativePodView(this, view, kind)
+        podView.onAction = { actionId -> view.onNativePodAction(actionId) }
+        card.addView(
+            podView,
+            FrameLayout.LayoutParams((podW * dens).toInt(), (podH * dens).toInt()),
+        )
+        scrim.addView(
+            card,
+            FrameLayout.LayoutParams(
+                (podW * dens).toInt(), (podH * dens).toInt(), android.view.Gravity.CENTER,
+            ),
+        )
+        rootFrame?.addView(scrim, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        islandPod = scrim
+        islandPodId = slotId
+        islandPodWidgetId = null
+        // The pod grows out of the island tile it came from.
+        val tileRect = view.islands.firstOrNull { it.id == slotId }?.rect?.takeIf { !it.isEmpty }
+        if (tileRect != null) {
+            val vLoc = IntArray(2)
+            view.getLocationOnScreen(vLoc)
+            val tileCx = vLoc[0] + tileRect.centerX()
+            val tileCy = vLoc[1] + tileRect.centerY()
+            scrim.background?.alpha = 0
+            card.post {
+                if (islandPod !== scrim) return@post
+                val cLoc = IntArray(2)
+                card.getLocationOnScreen(cLoc)
+                card.pivotX = card.width / 2f
+                card.pivotY = card.height / 2f
+                card.translationX = tileCx - (cLoc[0] + card.width / 2f)
+                card.translationY = tileCy - (cLoc[1] + card.height / 2f)
+                card.scaleX = (tileRect.width() / card.width).coerceIn(0.05f, 1f)
+                card.scaleY = (tileRect.height() / card.height).coerceIn(0.05f, 1f)
+                card.alpha = 0.35f
+                card.animate().translationX(0f).translationY(0f).scaleX(1f).scaleY(1f)
+                    .alpha(1f).setDuration(260)
+                    .setInterpolator(android.view.animation.DecelerateInterpolator())
+                    .start()
+                android.animation.ValueAnimator.ofInt(0, 190).apply {
+                    duration = 260
+                    addUpdateListener {
+                        scrim.setBackgroundColor(Color.argb(it.animatedValue as Int, 0, 0, 0))
+                    }
+                    start()
+                }
+            }
+        }
+    }
+
     private fun closeIslandPod() {
         val scrim = islandPod ?: return
         val id = islandPodId
+        val podWid = islandPodWidgetId
         islandPod = null
         islandPodId = null
+        islandPodWidgetId = null
         // 3.2.2: the pod shrinks back into its island tile; teardown
         // (re-homing the live view into its bin) waits for the
         // animation, and only runs if the view is still in this pod —
@@ -2330,13 +2755,15 @@ class MainActivity : Activity(), SensorEventListener {
         val tileRect = if (id != null)
             view.islands.firstOrNull { it.id == id }?.rect?.takeIf { !it.isEmpty } else null
         fun finishClose() {
-            if (id != null) {
-                val hv = islandViews[id]
+            // 3.6.0: the slot id keys the tile; the pod's widget id
+            // keys the hosted view (for a native pod podWid is null
+            // and there is nothing to re-home).
+            if (id != null && podWid != null) {
+                val hv = islandViews[podWid]
                 val bin = islandContainer
                 if (hv != null && bin != null && card != null && hv.parent === card) {
                     card.removeView(hv)
-                    val info = appWidgetManager.getAppWidgetInfo(id)
-                    val (baseW2, baseH2) = if (info != null) islandTileDp(info) else (300 to 160)
+                    val (baseW2, baseH2) = slotTileDp(id)
                     // 3.2.5: the resize scale survives the pod round-trip.
                     val sc = islandSlots[id]?.scale
                         ?: IslandLayout.clampScale(prefs.getFloat(islandKey(id, "scale"), 1f))
@@ -2345,8 +2772,8 @@ class MainActivity : Activity(), SensorEventListener {
                     val dens = resources.displayMetrics.density
                     hv.layoutParams = FrameLayout.LayoutParams((wDp * dens).toInt(), (hDp * dens).toInt())
                     bin.addView(hv)
-                    sendIslandSize(id, wDp, hDp)
-                    hv.post { snapshotIsland(id) }
+                    sendIslandSize(podWid, wDp, hDp)
+                    hv.post { snapshotIsland(podWid) }
                 }
             }
             (scrim.parent as? ViewGroup)?.removeView(scrim)
@@ -2383,15 +2810,35 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun showIslandMenu(id: Int) {
-        val info = appWidgetManager.getAppWidgetInfo(id)
-        val label = info?.loadLabel(packageManager)?.toString() ?: "Widget"
+        val members = islandMembersOf(id)
+        val top = IslandMembers.clampTopIndex(
+            members, prefs.getInt(islandKey(id, "top"), 0),
+        )
+        val topToken = members.getOrNull(top)
+        val topKind = topToken?.let { IslandMembers.nativeKind(it) }
+        val label = topToken?.let { memberLabel(it) } ?: "Widget"
+        val labels = ArrayList<String>()
+        val actions = ArrayList<() -> Unit>()
+        labels += if (topKind != null) "Open built-in" else "Open live widget"
+        actions += { openIslandPod(id) }
+        labels += "Add to Stack\u2026"
+        actions += {
+            stackTargetSlot = id
+            addTargetIsland = false
+            showWidgetPicker()
+        }
+        if (members.size > 1 && topToken != null) {
+            labels += "Remove \u201C${memberLabel(topToken)}\u201D from Stack"
+            actions += { removeStackMember(id) }
+        }
+        labels += "Remove island"
+        actions += { removeIsland(id) }
         AlertDialog.Builder(this)
-            .setTitle(label)
-            .setItems(arrayOf("Open live widget", "Remove island")) { _, which ->
-                when (which) {
-                    0 -> openIslandPod(id)
-                    1 -> removeIsland(id)
-                }
+            .setTitle(
+                if (members.size > 1) "$label — stack of ${members.size}" else label,
+            )
+            .setItems(labels.toTypedArray()) { _, which ->
+                actions.getOrNull(which)?.invoke()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -2399,12 +2846,25 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun removeIsland(id: Int) {
         if (islandPodId == id) closeIslandPod()
-        islandViews.remove(id)?.let { hv -> (hv.parent as? ViewGroup)?.removeView(hv) }
-        islandSlots.remove(id)?.bitmap?.recycle()
-        runCatching { appWidgetHost.deleteAppWidgetId(id) }
+        // 3.6.0: every member goes — hosted views are torn down,
+        // snapshots recycled, and each system member's appWidgetId
+        // released. (Whole-island removal keeps its pre-stack
+        // semantics; a face that still names those ids skips them
+        // on load, as it always has. Stack-MEMBER removal is the
+        // reference-checked path — see removeStackMember.)
+        for (token in islandMembersOf(id)) {
+            val wid = IslandMembers.sysId(token) ?: continue
+            islandViews.remove(wid)?.let { hv ->
+                (hv.parent as? ViewGroup)?.removeView(hv)
+            }
+            islandSlotByWidget.remove(wid)
+            runCatching { appWidgetHost.deleteAppWidgetId(wid) }
+        }
+        islandSlots.remove(id)?.bitmaps?.values?.forEach { it.recycle() }
         saveIslandIds(savedIslandIds() - id)
         prefs.edit().remove(islandKey(id, "ax")).remove(islandKey(id, "ay"))
-            .remove(islandKey(id, "scale")).apply()
+            .remove(islandKey(id, "scale")).remove(islandKey(id, "members"))
+            .remove(islandKey(id, "top")).apply()
         pushIslandsToView()
         Toast.makeText(this, "Island removed", Toast.LENGTH_SHORT).show()
     }

@@ -240,7 +240,11 @@ class WatchView(
         val islandNodes = if (islandsSupportedHere()) islands.mapNotNull { slot ->
             if (slot.rect.isEmpty) null else WatchAccessibilityProvider.Node(
                 "island:" + slot.id,
-                slot.label + ", widget island, " + IslandLayout.positionName(slot.anchorX, slot.anchorY),
+                slot.label + ", widget island" +
+                    (if (slot.stackCount > 1) {
+                        ", stack item " + (slot.topIndex + 1) + " of " + slot.stackCount
+                    } else "") +
+                    ", " + IslandLayout.positionName(slot.anchorX, slot.anchorY),
                 Rect(slot.rect.left.toInt(), slot.rect.top.toInt(), slot.rect.right.toInt(), slot.rect.bottom.toInt()),
                 slot.rect.centerX(), slot.rect.centerY(),
             )
@@ -1031,7 +1035,9 @@ class WatchView(
         var anchorY: Float,
         halfW: Float,
         halfH: Float,
-        val label: String,
+        /** 3.6.0: a var — the label follows the stack's top member;
+         *  the activity keeps it current. */
+        var label: String,
     ) {
         /** Provider-derived half extents, before the user's resize. */
         val baseHalfW = halfW
@@ -1043,7 +1049,19 @@ class WatchView(
         var scale: Float = 1f
         val halfW: Float get() = baseHalfW * scale
         val halfH: Float get() = baseHalfH * scale
-        var bitmap: android.graphics.Bitmap? = null
+        /** 3.6.0: hosted-widget snapshots keyed by member token —
+         *  a stack keeps every system member's snapshot, not just
+         *  the visible one's. */
+        val bitmaps = HashMap<String, android.graphics.Bitmap>()
+        /** 3.6.0 Part B: ordered member tokens + the visible one. */
+        var memberTokens: List<String> = emptyList()
+        var topIndex: Int = 0
+        /** Cycle animation: the member sliding out, and when the
+         *  slide started; -1 when settled. */
+        var cycleFromIndex: Int = -1
+        var cycleStartMs: Long = 0L
+        fun topToken(): String? = memberTokens.getOrNull(topIndex)
+        val stackCount: Int get() = memberTokens.size
         val rect = RectF()
         /** Screen px per pitch unit at the last draw; converts drag
          *  deltas back into anchor units (fisheye-aware). */
@@ -1070,6 +1088,8 @@ class WatchView(
     var onIslandMoved: (Int, Float, Float) -> Unit = { _, _, _ -> }
     var onIslandEditTap: (Int) -> Unit = {}
     var onIslandResized: (Int, Float) -> Unit = { _, _ -> }
+    /** 3.6.0 Part B: a tap on a stacked island's dot row cycles it. */
+    var onIslandCycle: (Int) -> Unit = {}
     private var islandResizeId: Int? = null
     private var islandResizeMoved = false
     private var islandResizeStartScale = 1f
@@ -1096,6 +1116,14 @@ class WatchView(
     }
     private var islandDragId: Int? = null
     private var islandDragMoved = false
+    /** 3.6.0 Part C: the drag's start anchor (cancel restores it),
+     *  the free-drag anchor the pointer is really tracking, and the
+     *  snap zone currently engaged (NONE = free placement). */
+    private var islandDragStartAx = 0f
+    private var islandDragStartAy = 0f
+    private var islandDragFreeAx = 0f
+    private var islandDragFreeAy = 0f
+    private var islandSnapZone = SnapMath.Zone.NONE
     private var islandPxPerUnit = 0f
     private var islandsShownLastFrame = false
     private val islandPath = Path()
@@ -1298,6 +1326,25 @@ class WatchView(
         strokeCap = Paint.Cap.ROUND
     }
     private val text = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.create("sans-serif", Typeface.BOLD) }
+    // 3.6.0 Part A: dedicated paints/scratch for native island
+    // rendering — kept off the shared paints because the island
+    // pass calls in mid-draw. Formatters are built once; the
+    // clock re-formats its strings per draw (cheap) but never
+    // rebuilds a SimpleDateFormat per frame.
+    private val nativeText = TextPaint(Paint.ANTI_ALIAS_FLAG)
+    private val nativeFill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val nativeStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    private val nativeOval = RectF()
+    private val nativeRect = RectF()
+    private val nativeCal: Calendar = Calendar.getInstance()
+    private val nativeTimeFmt = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT)
+    private val nativeDateFmt = java.text.SimpleDateFormat("EEE, MMM d", java.util.Locale.US)
+    private val nativeFullDateFmt = java.text.SimpleDateFormat("EEEE, MMMM d, yyyy", java.util.Locale.US)
+    private val nativeWeekdayFmt = java.text.SimpleDateFormat("EEEE", java.util.Locale.US)
+    private val nativeMonthFmt = java.text.SimpleDateFormat("MMMM", java.util.Locale.US)
+    private var nativeStepsCacheVal = -1
+    private var nativeStepsCacheText = ""
+    private var lastNativeTickMs = 0L
     private val rect = RectF()
     private val arcRect = RectF()
     private val clipPath = Path()
@@ -3538,6 +3585,37 @@ class WatchView(
             }
             islandsShownLastFrame = islandsShownNow
             if ((isForce || isHoneycomb || isGravity) && islands.isNotEmpty()) {
+                // 3.6.0 Part C: while an island drag sits in a snap
+                // zone, wash + outline the zone (quadrant or half
+                // of the field). The dragged tile itself rides the
+                // snapped anchor (the drag writes it live), so the
+                // existing drop ghost centres inside the zone.
+                if (islandDragId != null && islandSnapZone != SnapMath.Zone.NONE) {
+                    val pitchRest = Metrics.GRID_PITCH * u * 1.10f
+                    val zr = SnapMath.zoneRect(
+                        islandSnapZone, (w / 2f) / pitchRest, (h / 2f) / pitchRest,
+                    )
+                    if (zr != null) {
+                        val zcxA = (zr[0] + zr[2]) / 2f
+                        val zcyA = (zr[1] + zr[3]) / 2f
+                        val zdx = (zcxA * basePitch + panX.value * (1f - ov)) / u
+                        val zdy = (zcyA * basePitch + panY.value * (1f - ov)) / u
+                        val zd = hypot(zdx / sx, zdy / sy)
+                        val zk = if (!isForce && zd > 1e-4f) {
+                            (Fisheye.pulled(zd) / zd) * (1f - ov) + ov
+                        } else 1f
+                        val zcx = cx + zdx * zk * u * effZoom
+                        val zcy = cy + zdy * zk * u * effZoom
+                        val zhw = (zr[2] - zr[0]) / 2f * basePitch * effZoom
+                        val zhh = (zr[3] - zr[1]) / 2f * basePitch * effZoom
+                        islandInset.set(zcx - zhw, zcy - zhh, zcx + zhw, zcy + zhh)
+                        fill.color = withAlpha(accent, (aInt * 0.08f).toInt())
+                        c.drawRoundRect(islandInset, dp(24f), dp(24f), fill)
+                        stroke.strokeWidth = dp(2f)
+                        stroke.color = withAlpha(accent, (aInt * 0.55f).toInt())
+                        c.drawRoundRect(islandInset, dp(24f), dp(24f), stroke)
+                    }
+                }
                 for (slot in islands) {
                     // In the lattice layouts the island rides the same
                     // fisheye as its bubbles, so the clearance the slot
@@ -3595,27 +3673,19 @@ class WatchView(
                     val rr = dp(18f) * effZoom.coerceIn(0.7f, 1.3f)
                     fill.color = Color.argb((aInt * 0.92f * eEase).toInt(), 18, 22, 30)
                     c.drawRoundRect(slot.rect, rr, rr, fill)
-                    val bmp = slot.bitmap
-                    if (bmp != null && !bmp.isRecycled) {
-                        c.save()
-                        islandPath.reset()
-                        islandPath.addRoundRect(slot.rect, rr, rr, Path.Direction.CW)
-                        c.clipPath(islandPath)
-                        // 3.2.2: fit, never crop — the whole widget
-                        // stays visible; the tile matte frames it.
-                        val scale = min(slot.rect.width() / bmp.width, slot.rect.height() / bmp.height)
-                        val dw = bmp.width * scale
-                        val dh = bmp.height * scale
-                        islandDst.set(icx - dw / 2f, icy - dh / 2f, icx + dw / 2f, icy + dh / 2f)
-                        bitmapPaint.alpha = (255 * eEase).toInt().coerceIn(0, 255)
-                        c.drawBitmap(bmp, null, islandDst, bitmapPaint)
-                        bitmapPaint.alpha = 255
-                        c.restore()
-                    } else {
-                        text.textSize = sp(12f)
-                        text.color = Color.argb((aInt * 0.8f * eEase).toInt(), 200, 210, 220)
-                        val lbl = slot.label
-                        c.drawText(lbl, icx - text.measureText(lbl) / 2f, icy + text.textSize * 0.35f, text)
+                    // 3.6.0: the visible member's content — a
+                    // system member's snapshot, a native member's
+                    // live canvas drawing, or the cycle-slide pair.
+                    drawIslandMember(c, slot, aInt, eEase, icx, icy, cal, rr)
+                    // A live clock/timer tile stays honest while
+                    // the field is otherwise at rest.
+                    val topKindNow = slot.topToken()?.let { IslandMembers.nativeKind(it) }
+                    if (topKindNow == NativeKind.CLOCK || topKindNow == NativeKind.TIMER) {
+                        val nowTick = android.os.SystemClock.uptimeMillis()
+                        if (nowTick - lastNativeTickMs > 950L) {
+                            lastNativeTickMs = nowTick
+                            postInvalidateDelayed(1000L)
+                        }
                     }
                     stroke.strokeWidth = dp(1.4f)
                     stroke.color = withAlpha(accent, (aInt * 0.55f * eEase).toInt())
@@ -3661,6 +3731,24 @@ class WatchView(
                         c.drawLine(gc[0] + gd, gc[1] - gd, gc[0] + gd, gc[1] - gd * 0.25f, stroke)
                         c.drawLine(gc[0] - gd, gc[1] + gd, gc[0] - gd * 0.25f, gc[1] + gd, stroke)
                         c.drawLine(gc[0] - gd, gc[1] + gd, gc[0] - gd, gc[1] + gd * 0.25f, stroke)
+                    }
+                    // 3.6.0 Part B: stack dots — one per member,
+                    // the filled dot is the visible member. The row
+                    // is also the cycle tap target (see tap()).
+                    if (slot.stackCount > 1 && slot.rect.height() > dp(44f)) {
+                        val nDots = slot.stackCount
+                        val dotGap = dp(9.5f)
+                        val dotY = slot.rect.bottom - dp(7f)
+                        var dotX = icx - (nDots - 1) * dotGap / 2f
+                        for (di in 0 until nDots) {
+                            fill.color = if (di == slot.topIndex) {
+                                withAlpha(accent, (aInt * 0.95f).toInt())
+                            } else {
+                                Color.argb((aInt * 0.35f).toInt(), 255, 255, 255)
+                            }
+                            c.drawCircle(dotX, dotY, dp(2.3f), fill)
+                            dotX += dotGap
+                        }
                     }
                 }
             }
@@ -4641,7 +4729,7 @@ class WatchView(
             if (sheetExpanded) {
                 add(Triple(null, "ACTIONS", ""))
                 add(Triple(ClusterOption.SET_DEFAULT_HOME, "Default Phone Launcher", "Set Orbital as Home app"))
-                add(Triple(ClusterOption.ADD_ISLAND, "Add Widget Island", "Place a widget in Honeycomb, Gravity, or Force Field"))
+                add(Triple(ClusterOption.ADD_ISLAND, "Add Widget Island", "Place a widget or built-in in Honeycomb, Gravity, or Force Field"))
                 add(Triple(ClusterOption.BACKUP_LAYOUT, "Back Up Layout", "Save topology, pins, islands & settings to one file"))
                 add(Triple(ClusterOption.RESTORE_LAYOUT, "Restore Layout", "Bring back a layout saved in a backup file"))
                 if (pinnedItemKeys.isNotEmpty()) {
@@ -5920,6 +6008,11 @@ class WatchView(
                     islandAt(e.x, e.y)?.let {
                         islandDragId = it.id
                         islandDragMoved = false
+                        islandDragStartAx = it.anchorX
+                        islandDragStartAy = it.anchorY
+                        islandDragFreeAx = it.anchorX
+                        islandDragFreeAy = it.anchorY
+                        islandSnapZone = SnapMath.Zone.NONE
                         return true
                     }
                 }
@@ -5958,9 +6051,41 @@ class WatchView(
                     val slot = islands.firstOrNull { it.id == islandDragId }
                     val dragScale = slot?.dragScale?.takeIf { it > 0f } ?: islandPxPerUnit
                     if (slot != null && dragScale > 0f) {
-                        slot.anchorX += (e.x - lastX) / dragScale
-                        slot.anchorY += (e.y - lastY) / dragScale
+                        islandDragFreeAx += (e.x - lastX) / dragScale
+                        islandDragFreeAy += (e.y - lastY) / dragScale
                         if (hypot(e.x - downX, e.y - downY) > slop) islandDragMoved = true
+                        // 3.6.0 Part C: quadrant snap placement —
+                        // classify the POINTER's anchor-space
+                        // position against the usable field; while
+                        // a zone is engaged the slot rides the
+                        // snapped anchor live, so the lattice
+                        // solver, the Force Field walls and the
+                        // drop ghost all preview the landing spot.
+                        // The island's scale is never touched.
+                        val snapPitch = Metrics.GRID_PITCH * unit * 1.10f
+                        val fieldHx = (width / 2f) / snapPitch
+                        val fieldHy = (height / 2f) / snapPitch
+                        val zone = SnapMath.classify(
+                            islandDragStartAx + (e.x - downX) / dragScale,
+                            islandDragStartAy + (e.y - downY) / dragScale,
+                            fieldHx, fieldHy,
+                        )
+                        if (zone != islandSnapZone) {
+                            islandSnapZone = zone
+                            if (zone != SnapMath.Zone.NONE) {
+                                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                            }
+                        }
+                        val snapped = if (zone != SnapMath.Zone.NONE) {
+                            SnapMath.snappedAnchor(zone, fieldHx, fieldHy, slot.halfW, slot.halfH)
+                        } else null
+                        if (snapped != null) {
+                            slot.anchorX = snapped[0]
+                            slot.anchorY = snapped[1]
+                        } else {
+                            slot.anchorX = islandDragFreeAx
+                            slot.anchorY = islandDragFreeAy
+                        }
                         lastX = e.x
                         lastY = e.y
                         invalidate()
@@ -6034,6 +6159,7 @@ class WatchView(
                     val slot = islands.firstOrNull { it.id == islandDragId }
                     val id = islandDragId
                     islandDragId = null
+                    islandSnapZone = SnapMath.Zone.NONE
                     dragging = false
                     if (slot != null && id != null) {
                         if (islandDragMoved) onIslandMoved(id, slot.anchorX, slot.anchorY)
@@ -6071,7 +6197,14 @@ class WatchView(
                 dragging = false
                 pinching = false
                 edgeCrownDragging = false
+                if (islandDragId != null) {
+                    islands.firstOrNull { it.id == islandDragId }?.let {
+                        it.anchorX = islandDragStartAx
+                        it.anchorY = islandDragStartAy
+                    }
+                }
                 islandDragId = null
+                islandSnapZone = SnapMath.Zone.NONE
                 if (islandResizeId != null) {
                     islands.firstOrNull { it.id == islandResizeId }?.scale = islandResizeStartScale
                     islandResizeId = null
@@ -6555,10 +6688,21 @@ class WatchView(
 
             // 3.2.0 Anchor Islands: a tap on an island opens its live
             // widget (edit-mode taps ride the island drag path instead).
+            // 3.6.0 Part B: on a stacked island the bottom dot row
+            // cycles the stack in place; the rest of the tile opens
+            // the CURRENT top member's pod.
             if (!editMode) {
                 islandAt(x, y)?.let { slot ->
                     performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                    onIslandTap(slot.id)
+                    val dotSpan = (slot.stackCount - 1) * dp(9.5f) / 2f + dp(12f)
+                    if (slot.stackCount > 1 && !slot.rect.isEmpty &&
+                        y >= slot.rect.bottom - dp(20f) && y <= slot.rect.bottom + dp(4f) &&
+                        kotlin.math.abs(x - slot.rect.centerX()) <= dotSpan
+                    ) {
+                        onIslandCycle(slot.id)
+                    } else {
+                        onIslandTap(slot.id)
+                    }
                     return
                 }
             }
@@ -6615,6 +6759,377 @@ class WatchView(
             return
         }
 
+    }
+
+    /** Scratch for the now-playing art wash (kept distinct from
+     *  nativeRect, which may BE the rect being drawn into). */
+    private val nativeArtRect = RectF()
+
+    /** 3.6.0 Parts A+B: draw one island member's content inside
+     *  the tile's clip — the top member normally, or the outgoing
+     *  + incoming pair mid-cycle-slide (content slides vertically;
+     *  the tile, its matte and its clip stay put). */
+    private fun drawIslandMember(
+        c: Canvas, slot: IslandSlot, aInt: Int, eEase: Float,
+        icx: Float, icy: Float, cal: Calendar, rr: Float,
+    ) {
+        val from = slot.cycleFromIndex
+        if (from < 0 || from == slot.topIndex || slot.memberTokens.size <= 1) {
+            drawIslandMemberContent(c, slot, slot.topIndex, aInt, eEase, icx, icy, cal, rr)
+            return
+        }
+        val p = ((android.os.SystemClock.uptimeMillis() - slot.cycleStartMs) / 260f)
+            .coerceIn(0f, 1f)
+        if (p >= 1f) {
+            slot.cycleFromIndex = -1
+            drawIslandMemberContent(c, slot, slot.topIndex, aInt, eEase, icx, icy, cal, rr)
+            return
+        }
+        val hgt = slot.rect.height()
+        drawIslandMemberContent(c, slot, from, aInt, eEase, icx, icy - p * hgt, cal, rr)
+        drawIslandMemberContent(c, slot, slot.topIndex, aInt, eEase, icx, icy + (1f - p) * hgt, cal, rr)
+        postInvalidateOnAnimation()
+    }
+
+    private fun drawIslandMemberContent(
+        c: Canvas, slot: IslandSlot, index: Int, aInt: Int, eEase: Float,
+        icx: Float, icy: Float, cal: Calendar, rr: Float,
+    ) {
+        val token = slot.memberTokens.getOrNull(index) ?: return
+        val kind = IslandMembers.nativeKind(token)
+        if (kind != null) {
+            // Native member: drawn live into the tile rect, shifted
+            // with the cycle slide, clipped to the tile.
+            nativeRect.set(slot.rect)
+            nativeRect.offset(0f, icy - slot.rect.centerY())
+            c.save()
+            islandPath.reset()
+            islandPath.addRoundRect(slot.rect, rr, rr, Path.Direction.CW)
+            c.clipPath(islandPath)
+            drawNativeIslandContent(
+                c, kind, nativeRect, (aInt * eEase).toInt().coerceIn(0, 255), false,
+            )
+            c.restore()
+            return
+        }
+        val bmp = slot.bitmaps[token]
+        if (bmp != null && !bmp.isRecycled) {
+            c.save()
+            islandPath.reset()
+            islandPath.addRoundRect(slot.rect, rr, rr, Path.Direction.CW)
+            c.clipPath(islandPath)
+            // 3.2.2: fit, never crop — the whole widget stays
+            // visible; the tile matte frames it.
+            val scale = min(slot.rect.width() / bmp.width, slot.rect.height() / bmp.height)
+            val dw = bmp.width * scale
+            val dh = bmp.height * scale
+            islandDst.set(icx - dw / 2f, icy - dh / 2f, icx + dw / 2f, icy + dh / 2f)
+            bitmapPaint.alpha = (255 * eEase).toInt().coerceIn(0, 255)
+            c.drawBitmap(bmp, null, islandDst, bitmapPaint)
+            bitmapPaint.alpha = 255
+            c.restore()
+        } else {
+            text.textSize = sp(12f)
+            text.color = Color.argb((aInt * 0.8f * eEase).toInt(), 200, 210, 220)
+            val lbl = slot.label
+            c.drawText(lbl, icx - text.measureText(lbl) / 2f, icy + text.textSize * 0.35f, text)
+        }
+    }
+
+    /** Trim [s] with an ellipsis until it fits [maxW] under [p]. */
+    private fun ellipsizeTo(s: String, p: Paint, maxW: Float): String {
+        if (maxW <= 0f || p.measureText(s) <= maxW) return s
+        var t = s
+        while (t.isNotEmpty() && p.measureText("$t\u2026") > maxW) t = t.dropLast(1)
+        return "$t\u2026"
+    }
+
+    /**
+     * 3.6.0 Part A: draw a built-in native widget live into [rect]
+     * — the island tile, or the pod's enlarged content area when
+     * [detail]. Everything comes from state the view already
+     * holds (the wall clock, the step counter behind the existing
+     * ACTIVITY_RECOGNITION permission, battery / memory / storage
+     * ratios, the timer counters, the now-playing track), so the
+     * natives need no new permission; the layouts adapt the old
+     * widget-bubble renderers (drawWidgetBubble) to a wide tile.
+     * Public because NativePodView draws through it.
+     */
+    fun drawNativeIslandContent(
+        c: Canvas, kind: NativeKind, rect: RectF, aInt: Int, detail: Boolean,
+    ) {
+        if (rect.width() <= 6f || rect.height() <= 6f || aInt <= 0) return
+        val hgt = rect.height()
+        val pad = hgt * 0.14f
+        val left = rect.left + pad
+        val top = rect.top + pad * 0.8f
+        val bottom = rect.bottom - pad * 0.8f
+        val a = aInt.coerceIn(0, 255)
+        fun tinted(color: Int, f: Float): Int = Color.argb(
+            (a * f).toInt().coerceIn(0, 255),
+            Color.red(color), Color.green(color), Color.blue(color),
+        )
+        val white = tinted(Color.WHITE, 0.96f)
+        val grey = tinted(0xFFB9BEC9.toInt(), 0.85f)
+        val tint = tinted(kind.tint, 0.95f)
+        val cal = nativeCal.apply { timeInMillis = System.currentTimeMillis() }
+        nativeText.typeface = Typeface.DEFAULT
+        nativeText.textAlign = Paint.Align.LEFT
+        when (kind) {
+            NativeKind.CLOCK -> {
+                // Mini analog at the right: tick ring, seconds arc,
+                // hour/minute hands.
+                val r = hgt * 0.26f
+                val acx = rect.right - pad - r
+                val acy = rect.centerY()
+                nativeOval.set(acx - r, acy - r, acx + r, acy + r)
+                nativeStroke.color = tinted(kind.tint, 0.30f)
+                nativeStroke.strokeWidth = dp(1.6f)
+                c.drawOval(nativeOval, nativeStroke)
+                nativeStroke.color = tint
+                val secF = cal.get(Calendar.SECOND) + cal.get(Calendar.MILLISECOND) / 1000f
+                c.drawArc(nativeOval, -90f, secF * 6f, false, nativeStroke)
+                val hourA = Math.toRadians(
+                    ((cal.get(Calendar.HOUR) % 12) + cal.get(Calendar.MINUTE) / 60f) * 30.0,
+                )
+                val minA = Math.toRadians(cal.get(Calendar.MINUTE) * 6.0)
+                nativeStroke.color = white
+                nativeStroke.strokeWidth = dp(2.2f)
+                c.drawLine(
+                    acx, acy,
+                    acx + kotlin.math.sin(hourA).toFloat() * r * 0.55f,
+                    acy - kotlin.math.cos(hourA).toFloat() * r * 0.55f,
+                    nativeStroke,
+                )
+                nativeStroke.strokeWidth = dp(1.6f)
+                c.drawLine(
+                    acx, acy,
+                    acx + kotlin.math.sin(minA).toFloat() * r * 0.82f,
+                    acy - kotlin.math.cos(minA).toFloat() * r * 0.82f,
+                    nativeStroke,
+                )
+                nativeText.color = tint
+                nativeText.textSize = hgt * 0.13f
+                c.drawText(nativeDateFmt.format(cal.time), left, top + hgt * 0.13f, nativeText)
+                val timeStr = nativeTimeFmt.format(cal.time).substringBefore(' ')
+                nativeText.typeface = Typeface.DEFAULT_BOLD
+                nativeText.color = white
+                nativeText.textSize = hgt * 0.36f
+                c.drawText(timeStr, left, rect.centerY() + hgt * 0.15f, nativeText)
+                nativeText.typeface = Typeface.DEFAULT
+                val bat = info.battery
+                val alarm = info.nextAlarm
+                val foot = buildString {
+                    if (bat >= 0) {
+                        append("\uD83D\uDD0B "); append(bat); append('%')
+                        if (info.charging) append(" \u26A1")
+                    }
+                    if (detail && alarm != null) {
+                        if (isNotEmpty()) append("   ")
+                        append("\u23F0 "); append(timeText(alarm))
+                    }
+                }
+                if (foot.isNotEmpty()) {
+                    nativeText.color = grey
+                    nativeText.textSize = hgt * 0.115f
+                    c.drawText(foot, left, bottom, nativeText)
+                }
+            }
+            NativeKind.CALENDAR -> {
+                // Date + next alarm only — reading calendar events
+                // would need READ_CALENDAR, which 3.6.0 does not add.
+                nativeText.color = tint
+                nativeText.textSize = hgt * 0.125f
+                c.drawText(
+                    nativeWeekdayFmt.format(cal.time).uppercase(java.util.Locale.US),
+                    left, top + hgt * 0.125f, nativeText,
+                )
+                nativeText.typeface = Typeface.DEFAULT_BOLD
+                nativeText.color = white
+                nativeText.textSize = hgt * 0.50f
+                val dayStr = cal.get(Calendar.DAY_OF_MONTH).toString()
+                c.drawText(dayStr, left, rect.centerY() + hgt * 0.24f, nativeText)
+                val dayW = nativeText.measureText(dayStr)
+                val rx = left + dayW + pad * 0.8f
+                nativeText.typeface = Typeface.DEFAULT
+                nativeText.color = white
+                nativeText.textSize = hgt * 0.15f
+                c.drawText(nativeMonthFmt.format(cal.time), rx, rect.centerY() + hgt * 0.0f, nativeText)
+                nativeText.color = grey
+                nativeText.textSize = hgt * 0.115f
+                c.drawText(cal.get(Calendar.YEAR).toString(), rx, rect.centerY() + hgt * 0.17f, nativeText)
+                val alarm = info.nextAlarm
+                val foot = if (alarm != null) "\u23F0 Next alarm " + timeText(alarm)
+                    else if (detail) nativeFullDateFmt.format(cal.time) else ""
+                if (foot.isNotEmpty()) {
+                    nativeText.color = grey
+                    nativeText.textSize = hgt * 0.115f
+                    c.drawText(foot, left, bottom, nativeText)
+                }
+            }
+            NativeKind.TIMER -> {
+                val remMs = currentTimerRemainingMs()
+                val totalMs = (timerTotalSec * 1000).toLong().coerceAtLeast(1L)
+                val frac = (remMs.toFloat() / totalMs).coerceIn(0f, 1f)
+                val r = hgt * 0.30f
+                val acx = left + r
+                val acy = rect.centerY()
+                nativeOval.set(acx - r, acy - r, acx + r, acy + r)
+                nativeStroke.color = tinted(kind.tint, 0.28f)
+                nativeStroke.strokeWidth = dp(3f)
+                c.drawOval(nativeOval, nativeStroke)
+                nativeStroke.color = tint
+                c.drawArc(nativeOval, -90f, frac * 360f, false, nativeStroke)
+                val tx = acx + r + pad
+                nativeText.color = tint
+                nativeText.textSize = hgt * 0.115f
+                val state = when {
+                    timerRunning -> "COUNTING DOWN"
+                    remMs <= 0L -> "DONE"
+                    else -> "TIMER"
+                }
+                c.drawText(state, tx, rect.centerY() - hgt * 0.08f, nativeText)
+                val secs = (remMs / 1000L).toInt()
+                nativeText.typeface = Typeface.DEFAULT_BOLD
+                nativeText.color = white
+                nativeText.textSize = hgt * 0.30f
+                c.drawText("%d:%02d".format(secs / 60, secs % 60), tx, rect.centerY() + hgt * 0.20f, nativeText)
+                nativeText.typeface = Typeface.DEFAULT
+                if (detail) {
+                    nativeText.color = grey
+                    nativeText.textSize = hgt * 0.105f
+                    c.drawText(
+                        "of %d:%02d total \u2014 presets below".format(timerTotalSec / 60, timerTotalSec % 60),
+                        tx, bottom, nativeText,
+                    )
+                }
+            }
+            NativeKind.VITALS -> {
+                val steps = stepCount
+                nativeText.typeface = Typeface.DEFAULT_BOLD
+                nativeText.color = white
+                nativeText.textSize = hgt * 0.30f
+                val big: String
+                val small: String
+                if (steps > 0) {
+                    if (steps != nativeStepsCacheVal) {
+                        nativeStepsCacheVal = steps
+                        nativeStepsCacheText = "%,d".format(steps)
+                    }
+                    big = nativeStepsCacheText
+                    small = "steps"
+                } else {
+                    big = if (info.battery >= 0) "${info.battery}%" else "--"
+                    small = "battery"
+                }
+                c.drawText(big, left, rect.centerY() + hgt * 0.04f, nativeText)
+                nativeText.typeface = Typeface.DEFAULT
+                nativeText.color = grey
+                nativeText.textSize = hgt * 0.115f
+                c.drawText(small, left, rect.centerY() + hgt * 0.22f, nativeText)
+                // Concentric rings at the right: battery, free RAM,
+                // free storage (the bubble's three rings).
+                val r = hgt * 0.30f
+                val acx = rect.right - pad - r
+                val acy = rect.centerY()
+                val ringData = listOf(
+                    (if (info.battery >= 0) info.battery else 0) / 100f to 0xFF30D158.toInt(),
+                    (1f - ramUsedRatio) to 0xFF64D2FF.toInt(),
+                    (1f - storageUsedRatio) to 0xFFBF5AF2.toInt(),
+                )
+                var ringR = r
+                nativeStroke.strokeWidth = dp(2.6f)
+                for ((frac, colHex) in ringData) {
+                    nativeOval.set(acx - ringR, acy - ringR, acx + ringR, acy + ringR)
+                    nativeStroke.color = tinted(colHex, 0.25f)
+                    c.drawOval(nativeOval, nativeStroke)
+                    nativeStroke.color = tinted(colHex, 0.95f)
+                    c.drawArc(nativeOval, -90f, frac.coerceIn(0.05f, 1f) * 360f, false, nativeStroke)
+                    ringR *= 0.66f
+                }
+                if (detail) {
+                    nativeText.color = grey
+                    nativeText.textSize = hgt * 0.105f
+                    val foot = "Battery ${info.battery}% \u2022 RAM free " +
+                        "${((1f - ramUsedRatio) * 100).toInt()}% \u2022 Storage free " +
+                        "${((1f - storageUsedRatio) * 100).toInt()}%"
+                    c.drawText(foot, left, bottom, nativeText)
+                }
+            }
+            NativeKind.NOW_PLAYING -> {
+                val track = nowPlayingTrack
+                val art = track?.art
+                if (art != null) {
+                    val scale = maxOf(rect.width() / art.width, rect.height() / art.height)
+                    val dw = art.width * scale
+                    val dh = art.height * scale
+                    nativeArtRect.set(
+                        rect.centerX() - dw / 2f, rect.centerY() - dh / 2f,
+                        rect.centerX() + dw / 2f, rect.centerY() + dh / 2f,
+                    )
+                    bitmapPaint.alpha = (a * 0.40f).toInt()
+                    c.drawBitmap(art, null, nativeArtRect, bitmapPaint)
+                    bitmapPaint.alpha = 255
+                }
+                val r = hgt * 0.19f
+                val acx = left + r
+                val acy = rect.centerY()
+                nativeFill.color = tint
+                c.drawCircle(acx, acy, r, nativeFill)
+                nativeText.color = tinted(Color.WHITE, 0.98f)
+                nativeText.textSize = r * 1.02f
+                nativeText.textAlign = Paint.Align.CENTER
+                val glyph = if (track?.playing == true) "\u275A\u275A" else "\u25B6"
+                c.drawText(glyph, acx, acy + nativeText.textSize * 0.36f, nativeText)
+                nativeText.textAlign = Paint.Align.LEFT
+                val tx = acx + r + pad
+                var avail = rect.right - pad - tx
+                if (track != null) {
+                    if (track.playing) avail -= dp(34f)
+                    nativeText.typeface = Typeface.DEFAULT_BOLD
+                    nativeText.color = white
+                    nativeText.textSize = hgt * 0.145f
+                    c.drawText(
+                        ellipsizeTo(track.title, nativeText, avail),
+                        tx, rect.centerY() - hgt * 0.03f, nativeText,
+                    )
+                    nativeText.typeface = Typeface.DEFAULT
+                    nativeText.color = grey
+                    nativeText.textSize = hgt * 0.115f
+                    val artist = track.artist?.takeIf { it.isNotBlank() } ?: "Now Playing"
+                    c.drawText(
+                        ellipsizeTo(artist, nativeText, avail),
+                        tx, rect.centerY() + hgt * 0.16f, nativeText,
+                    )
+                    if (track.playing) {
+                        val bw = dp(3f)
+                        val tSec = System.currentTimeMillis() / 300f
+                        nativeFill.color = tint
+                        for (i in 0 until 4) {
+                            val bh = hgt * (0.10f + 0.10f *
+                                (0.5f + 0.5f * kotlin.math.sin(tSec * 2.1f + i * 1.7f)))
+                            val bx = rect.right - pad - i * (bw + dp(2.5f)) - bw
+                            c.drawRect(
+                                bx, acy - bh / 2f + hgt * 0.06f,
+                                bx + bw, acy + bh / 2f + hgt * 0.06f, nativeFill,
+                            )
+                        }
+                    }
+                } else {
+                    nativeText.color = grey
+                    nativeText.textSize = hgt * 0.13f
+                    c.drawText("Nothing playing", tx, rect.centerY() + hgt * 0.05f, nativeText)
+                }
+            }
+        }
+    }
+
+    /** 3.6.0: the native island pod's chips speak the widget
+     *  pod's action vocabulary — route them through the same
+     *  handler (timer presets, media transport, calendar / alarm /
+     *  battery intents via the card-action callback). */
+    fun onNativePodAction(actionId: String) {
+        handleWidgetPodAction(actionId)
     }
 
     private fun handleWidgetPodAction(actionId: String) {

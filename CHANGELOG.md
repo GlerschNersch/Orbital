@@ -1,5 +1,40 @@
 # Changelog
 
+## 3.6.0 — 2026-10-27
+- **Built-in native widgets.** The widget picker gains a Built-in
+  section: Clock, Calendar, Timer, Vitals and Now Playing — the
+  widget bubbles retired in 2.5.0, revived as islands drawn live
+  on the canvas, so they fisheye, slosh and scale with the field
+  instead of riding a snapshot. Clock shows the time, date,
+  battery and a working mini analog dial; Vitals shows steps
+  with the battery / memory / storage rings; Now Playing shows
+  the live track with artwork. Tapping a native island opens its
+  pod with an enlarged rendering and its actions (timer presets,
+  media transport, calendar / alarms, battery settings). No new
+  permissions: Calendar is the date and your next alarm only —
+  reading calendar events would need READ_CALENDAR, which this
+  release does not add. The old Control Cluster bubble is not
+  revived: it had no live renderer left, and its surface was the
+  Control Center removed in 3.0.0.
+- **Island stacks.** An island can now hold a stack of widgets —
+  system widgets and built-ins in any mix. The tile shows the top
+  member; dots along its bottom edge show how many members it has
+  and which is showing, and tapping the dots cycles to the next
+  with a slide. In edit mode an island's menu gains "Add to
+  Stack…" and, when stacked, "Remove … from Stack" (removing down
+  to one member makes it a plain island again; a removed system
+  widget's id is released only when no other island or face
+  still uses it). Stacks ride face snapshots and layout backups
+  like everything else.
+- **Quadrant snap placement.** In edit mode, dragging an island
+  toward a corner or edge of the field engages a snap zone —
+  corners are screen quadrants, a single edge is that side's
+  half — previewed as an outlined wash with the tile's drop ghost
+  centred inside it. Release there and the island lands with its
+  centre at the zone's centre, fitted to the field; release
+  anywhere else and it drops freely, exactly as before. Sizing is
+  unchanged — the grip and its presets still own that.
+
 ## 3.5.0 — 2026-10-27
 - **Multiple faces — saved cluster layouts.** Settings → More Options
   gains a Faces section: every face is a named snapshot of the whole

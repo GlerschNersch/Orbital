@@ -60,12 +60,30 @@ object Faces {
             ?.get("cluster_topology") as? String
     }.getOrNull()
 
-    /** The appWidgetIds a snapshot's island set references
-     *  (the watch store's comma-joined island_ids entry). */
+    /** The appWidgetIds a snapshot's island set references.
+     *  (3.6.0: membership-aware — a snapshot's slots are named by
+     *  the watch store's comma-joined island_ids entry; a slot
+     *  WITH an island_<id>_members entry (3.6.0 stacks / native
+     *  islands) references the SYSTEM members of that list, not
+     *  the slot id itself — a native slot's id is a negative
+     *  sequence number, never an appWidgetId. Pre-3.6.0 slots have
+     *  no members entry and reference their own (positive) id, so
+     *  old snapshots read exactly as before.) */
     fun islandIdsOf(data: String): Set<Int> = runCatching {
-        val raw = LayoutBackup.parse(data).stores[LayoutBackup.STORE_WATCH]
-            ?.get("island_ids") as? String ?: return emptySet()
-        raw.split(',').mapNotNull { it.trim().toIntOrNull() }.toSet()
+        val watch = LayoutBackup.parse(data).stores[LayoutBackup.STORE_WATCH]
+            ?: return emptySet()
+        val raw = watch["island_ids"] as? String ?: return emptySet()
+        val out = HashSet<Int>()
+        for (part in raw.split(',')) {
+            val slotId = part.trim().toIntOrNull() ?: continue
+            val members = watch["island_${slotId}_members"] as? String
+            if (members != null) {
+                out += IslandMembers.systemIdsOfRaw(members)
+            } else if (slotId > 0) {
+                out += slotId
+            }
+        }
+        out
     }.getOrDefault(emptySet())
 
     /**

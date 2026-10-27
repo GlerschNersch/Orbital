@@ -91,6 +91,22 @@ class FacesTest {
         assertEquals(emptySet<Int>(), Faces.islandIdsOf(snapshot(stores("RIVER", "", 1.0f, true))))
     }
 
+    @Test fun islandIdsOfReadsStackMembersNotSlotIds() {
+        // 3.6.0: slot 11 is a stack (system members 21 + 22), slot
+        // -1 is a native island (no widget ids at all), slot 8 is a
+        // legacy single-widget island.
+        val stores = mapOf(
+            LayoutBackup.STORE_WATCH to mapOf<String, Any?>(
+                "cluster_topology" to "FORCE_FIELD",
+                "island_ids" to "8,11,-1",
+                "island_11_members" to "s:21,n:CLOCK,s:22",
+                "island_-1_members" to "n:VITALS",
+            ),
+            LayoutBackup.STORE_APPS to emptyMap<String, Any?>(),
+        )
+        assertEquals(setOf(8, 21, 22), Faces.islandIdsOf(snapshot(stores)))
+    }
+
     @Test fun deleteSharedWidgetIdsAreRetained() {
         // 10 and 11 are shared with a surviving face: only 8 is orphaned.
         val orphans = Faces.orphanedWidgetIds(
