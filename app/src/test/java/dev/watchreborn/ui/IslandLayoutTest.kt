@@ -151,6 +151,60 @@ class IslandLayoutTest {
         assertEquals(1.3f, IslandLayout.nextPresetScale(1.12f), 0.001f)
     }
 
+    @Test fun obstacleForIsIdentityAtTheCentre() {
+        val o = IslandLayout.obstacleFor(0.5f, -1.25f, 1.1f, 0.55f, 1f)
+        assertEquals(0.5f, o.centerX, 0.001f)
+        assertEquals(-1.25f, o.centerY, 0.001f)
+        assertEquals(1.1f, o.halfW, 0.001f)
+        assertEquals(0.55f, o.halfH, 0.001f)
+    }
+
+    @Test fun obstacleForInflatesByTheInverseFalloff() {
+        // At a 0.5 fisheye factor the tile renders twice as wide as
+        // the world rect the old solver cleared for — so the
+        // obstacle doubles, centre untouched.
+        val o = IslandLayout.obstacleFor(2f, 3f, 1.1f, 0.55f, 0.5f)
+        assertEquals(2f, o.centerX, 0.001f)
+        assertEquals(3f, o.centerY, 0.001f)
+        assertEquals(2.2f, o.halfW, 0.001f)
+        assertEquals(1.1f, o.halfH, 0.001f)
+    }
+
+    @Test fun obstacleForCapsTheInflation() {
+        // The fisheye table runs to 0 at the extreme rim; the
+        // compensation floors at MIN_COMPENSATED_FISHEYE instead of
+        // dividing by ~0 and clearing the whole field.
+        val o = IslandLayout.obstacleFor(0f, 0f, 0.9f, 0.9f, 0.05f)
+        assertEquals(
+            0.9f / IslandLayout.MIN_COMPENSATED_FISHEYE, o.halfW, 0.001f)
+        // Factors above 1 and NaN are not real falloffs: no change.
+        assertEquals(0.9f, IslandLayout.obstacleFor(0f, 0f, 0.9f, 0.9f, 1.4f).halfW, 0.001f)
+        assertEquals(0.9f, IslandLayout.obstacleFor(0f, 0f, 0.9f, 0.9f, Float.NaN).halfW, 0.001f)
+    }
+
+    @Test fun rimIslandObstacleClearsBubblesForTheFullFootprint() {
+        // End-to-end: with the inflated obstacle, every assigned
+        // slot is clear of the FULL rect, not just the nominal one.
+        val homes = Hex.spiral(61)
+        val radii = FloatArray(61) { 0.55f }
+        val nominal = IslandLayout.Obstacle(2.05f, 0f, 1.55f, 1.05f)
+        val inflated = IslandLayout.obstacleFor(2.05f, 0f, 1.55f, 1.05f, 0.6f)
+        val assigned = IslandLayout.assign(homes, 1f, radii, listOf(inflated))
+        assertEquals(61, assigned.toSet().size)
+        val assignedCenters = centers(assigned, 1f)
+        for (i in homes.indices) {
+            if (i == 0) continue // the protected centre may stay by design
+            assertFalse(
+                "item $i intersects the inflated island",
+                IslandLayout.circleIntersects(
+                    assignedCenters[i].first, assignedCenters[i].second, radii[i], inflated),
+            )
+        }
+        // And the inflation has teeth: the nominal rect alone would
+        // have left at least the inflated-only ring occupied.
+        assertTrue(inflated.halfW > nominal.halfW)
+    }
+
     @Test fun gravityScaleKeepsAssignmentsUniqueAndClear() {
         val homes = Hex.spiral(91)
         val radii = FloatArray(91) { i -> if (i == 0) 0.80f else 0.58f }

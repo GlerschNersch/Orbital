@@ -1187,6 +1187,11 @@ class WatchView(
             mix(slot.anchorY.toRawBits().toLong())
             mix(slot.halfW.toRawBits().toLong())
             mix(slot.halfH.toRawBits().toLong())
+            // 3.6.3: the solver obstacle also depends on the fisheye
+            // factor at the anchor (view geometry) — mix it so a
+            // geometry change re-solves instead of serving a stale
+            // assignment.
+            mix(islandFisheyeSize(slot).toRawBits().toLong())
         }
         return h
     }
@@ -1248,8 +1253,11 @@ class WatchView(
             for (slot in islands) {
                 val cxI = slot.anchorX * pitchOv
                 val cyI = slot.anchorY * pitchOv
-                val hw = slot.halfW * pitchOv * 0.88f
-                val hh = slot.halfH * pitchOv * 0.88f
+                // 3.6.3: islands render at full size in overview too
+                // (the 0.88 mirrored the retired overview shrink),
+                // so the fit measures their full extents.
+                val hw = slot.halfW * pitchOv
+                val hh = slot.halfH * pitchOv
                 if (cxI - hw < minX) minX = cxI - hw
                 if (cxI + hw > maxX) maxX = cxI + hw
                 if (cyI - hh < minY) minY = cyI - hh
@@ -1271,13 +1279,35 @@ class WatchView(
         return OverviewFit.fitZoom(extentX, extentY, availHalfW, availHalfH)
     }
 
+    /** 3.6.3: the fisheye size factor at an island's anchor, in
+     *  the draw pass's own terms (rest state: no pan, no overview
+     *  blend) — how much smaller the tile used to render there. The
+     *  lattice solver inflates the island's obstacle by its inverse
+     *  so the clearance it arranges matches the tile's full-size
+     *  rendering. 1 when the view has no geometry yet. */
+    private fun islandFisheyeSize(slot: IslandSlot): Float {
+        val u = unit
+        val w = width.toFloat()
+        val h = height.toFloat()
+        if (u <= 0f || w <= 0f || h <= 0f) return 1f
+        val bp = Metrics.GRID_PITCH * u * 1.10f
+        val sx = max(1f, w / u)
+        val sy = max(1f, (h / u) / Metrics.WATCH_ASPECT)
+        val dI = hypot((slot.anchorX * bp / u) / sx, (slot.anchorY * bp / u) / sy)
+        return Fisheye.size(dI)
+    }
+
     private fun islandAssignedHexes(items: List<GridItem>): List<Hex> {
         val fp = islandLayoutFingerprintFor(items)
         if (fp != islandLayoutFingerprint || islandLayoutHexes.size != items.size) {
             val scale = if (clusterTopology == ClusterTopology.GRAVITY) 1.10f else 1f
             val radii = FloatArray(items.size) { islandClearanceRadius(it, items[it]) }
             val obstacles = islands.map {
-                IslandLayout.Obstacle(it.anchorX, it.anchorY, it.halfW, it.halfH)
+                // 3.6.3: clear bubbles for the tile's full-size
+                // rendered footprint, not its nominal rect.
+                IslandLayout.obstacleFor(
+                    it.anchorX, it.anchorY, it.halfW, it.halfH, islandFisheyeSize(it),
+                )
             }
             islandLayoutHexes = IslandLayout.assign(gridHexes, scale, radii, obstacles)
             islandLayoutFingerprint = fp
@@ -3567,7 +3597,8 @@ class WatchView(
             // 3.2.0 Anchor Islands: widget tiles under the bubbles. They
             // take pan + zoom but not the fisheye — islands are furniture,
             // and their stillness is what makes the field read as flowing
-            // around them.
+            // around them. (3.6.3: their SIZE rejoins that rule fully —
+            // see the draw loop below.)
             // 3.2.2: replay the island entrance when an island layout
             // becomes visible again (topology switch back).
             val islandsShownNow = (isForce || isHoneycomb || isGravity) && islands.isNotEmpty()
@@ -3578,11 +3609,10 @@ class WatchView(
             islandsShownLastFrame = islandsShownNow
             if ((isForce || isHoneycomb || isGravity) && islands.isNotEmpty()) {
                 for (slot in islands) {
-                    // In the lattice layouts the island rides the same
-                    // fisheye as its bubbles, so the clearance the slot
-                    // solver arranged in world space survives the trip
-                    // to the screen. Force Field islands stay unwarped:
-                    // there they are furniture in a simulated field.
+                    // Position: in the lattice layouts the island's
+                    // centre rides the fisheye pull like its bubbles.
+                    // Force Field islands stay unwarped: there they are
+                    // furniture in a simulated field.
                     val wx = slot.anchorX * basePitch
                     val wy = slot.anchorY * basePitch
                     val dxI = (wx + panX.value * (1f - ov)) / u
@@ -3590,7 +3620,13 @@ class WatchView(
                     val dI = hypot(dxI / sx, dyI / sy)
                     val pullK = if (!isForce && dI > 1e-4f) Fisheye.pulled(dI) / dI else 1f
                     val kI = pullK * (1f - ov) + 1f * ov
-                    val sizeK = if (!isForce) Fisheye.size(dI) * (1f - ov) + 0.88f * ov else 1f - 0.12f * ov
+                    // 3.6.3: NO size factor. An island's size is its
+                    // nominal size x camera zoom x user scale, wherever
+                    // it sits — the fisheye size falloff (and Force
+                    // Field's overview 0.88) used to shrink a rim-parked
+                    // tile to unreadability. Bubbles still shrink, so
+                    // the lattice solver clears them for this full
+                    // footprint (IslandLayout.obstacleFor).
                     var icx = cx + dxI * kI * u * effZoom
                     var icy = cy + dyI * kI * u * effZoom
                     // 3.2.2 entrance: a fresh island scales/fades in
@@ -3599,13 +3635,13 @@ class WatchView(
                     val eT = eAge / 400f
                     val eEase = 1f - (1f - eT) * (1f - eT)
                     if (eT < 1f) postInvalidateOnAnimation()
-                    var hw = slot.halfW * basePitch * effZoom * sizeK * (0.82f + 0.18f * eEase)
-                    var hh = slot.halfH * basePitch * effZoom * sizeK * (0.82f + 0.18f * eEase)
+                    var hw = slot.halfW * basePitch * effZoom * (0.82f + 0.18f * eEase)
+                    var hh = slot.halfH * basePitch * effZoom * (0.82f + 0.18f * eEase)
                     // 3.4.0: on a topology switch the tile glides from
                     // the rect it was last drawn at to its natural rect
-                    // in the new layout — the two genuinely differ
+                    // in the new layout — the centres genuinely differ
                     // (Force Field's tile is unwarped; the lattice
-                    // layouts fisheye it) — on the morph's clock and
+                    // layouts pull theirs) — on the morph's clock and
                     // the island's own stagger.
                     val morphFrom = morphIslandFrom[slot.id]
                     if (morphFrom != null) {
@@ -3627,7 +3663,10 @@ class WatchView(
                             motionAnimating = true
                         }
                     }
-                    slot.dragScale = basePitch * effZoom * sizeK * kI
+                    // 3.6.3: finger->anchor conversion carries the
+                    // position factor only — no size factor, so the
+                    // dragged tile holds its size under the finger.
+                    slot.dragScale = basePitch * effZoom * kI
                     islandPxPerUnit = slot.dragScale
                     if (hw <= 2f || hh <= 2f) { slot.rect.setEmpty(); continue }
                     slot.rect.set(icx - hw, icy - hh, icx + hw, icy + hh)

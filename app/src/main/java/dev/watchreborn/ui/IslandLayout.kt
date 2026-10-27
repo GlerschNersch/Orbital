@@ -40,6 +40,34 @@ object IslandLayout {
         return false
     }
 
+    // ── Island footprint vs the fisheye (3.6.3) ─────────────────
+    // Islands no longer shrink with the fisheye size falloff: a tile
+    // renders at its nominal size wherever it sits. Bubbles still
+    // shrink, and every centre rides the pull — under the old
+    // rendering both sides of the clearance scaled together, so
+    // world-space clearance survived the trip to the screen. Now
+    // the solver clears bubbles for the tile's RENDERED footprint:
+    // the obstacle is the nominal rect inflated by the inverse of
+    // the fisheye size factor at the island's anchor — the world
+    // rect whose old fisheye-scaled rendering equals the tile's new
+    // full-size rendering.
+
+    /** The smallest fisheye factor the solver compensates for;
+     *  past it the inflation is capped, so an extreme-corner island
+     *  cannot clear the whole field. */
+    const val MIN_COMPENSATED_FISHEYE = 0.45f
+
+    /** The solver obstacle for an island centred at ([centerX],
+     *  [centerY]) with nominal half extents, given the fisheye size
+     *  factor at its anchor ([fisheyeSize], 1 at the centre). */
+    fun obstacleFor(
+        centerX: Float, centerY: Float, halfW: Float, halfH: Float, fisheyeSize: Float,
+    ): Obstacle {
+        val s = if (fisheyeSize.isNaN()) 1f
+            else fisheyeSize.coerceIn(MIN_COMPENSATED_FISHEYE, 1f)
+        return Obstacle(centerX, centerY, halfW / s, halfH / s)
+    }
+
     /**
      * Assigns each item a lattice slot. [original] is the item order's
      * home slots (a prefix of the hex spiral); [radii] is each item's

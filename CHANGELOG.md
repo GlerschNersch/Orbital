@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.6.3 — 2026-10-27
+- **Islands hold their size anywhere.** The fisheye size falloff
+  no longer applies to island tiles: a widget parked at the rim
+  renders at its nominal size x camera zoom x its resize-grip
+  scale, exactly as it does at the centre (a rim-parked calendar
+  had shrunk until its rows were unreadable). The fisheye still
+  positions the tile centres; only the size falloff goes, in
+  Honeycomb, Gravity and Force Field alike — and Force Field's
+  overview-only 0.88 island shrink is retired with it, so in
+  overview the islands scale only with the whole canvas. Because
+  bubbles still shrink toward the rim, the lattice solver now
+  clears them for the tile's full rendered footprint (the
+  island's obstacle is inflated by the inverse falloff at its
+  anchor, capped), keeping the island zone empty at centre and
+  rim alike. The overview fit measures islands at their full
+  extents, and a dragged island — and its drop ghost — now stays
+  constant-size under your finger.
+
 ## 3.6.2 — 2026-10-27
 - **Island quadrant snap removed.** The snap placement added in
   3.6.0 (and reworked in 3.6.1) is gone, at Matt's call: dragging
