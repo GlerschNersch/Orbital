@@ -1060,58 +1060,53 @@ class MainActivity : Activity(), SensorEventListener {
                 continue
             }
             validIds += id
+            // 3.0.2 (Matt's call): no card — the widget sits clean on
+            // the page at full width: no panel, padding, or header.
+            // Removal moved to a long-press on the widget itself.
             val card = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(dpPx(12f), dpPx(10f), dpPx(12f), dpPx(12f))
-                background = GradientDrawable().apply {
-                    setColor(Color.rgb(34, 36, 44))
-                    cornerRadius = dpPx(18f).toFloat()
-                }
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply { bottomMargin = dpPx(10f) }
+                ).apply { bottomMargin = dpPx(16f) }
             }
-            val hdr = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-            val lbl = TextView(this).apply {
-                text = info.loadLabel(packageManager) ?: "App Widget"
-                textSize = 12.5f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(view.accent)
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            }
-            val rem = TextView(this).apply {
-                text = "✕ Remove"
-                textSize = 11f
-                setTextColor(Color.rgb(255, 100, 100))
-                setPadding(dpPx(12f), dpPx(8f), dpPx(12f), dpPx(8f))
-                setOnClickListener {
-                    runCatching { appWidgetHost.deleteAppWidgetId(id) }
-                    prefs.edit().remove("appwidget_h_$id").apply()
-                    saveWidgetIds(savedWidgetIds().filter { it != id })
-                    populateWidgetsPage()
-                }
-            }
-            hdr.addView(lbl)
-            hdr.addView(rem)
-            card.addView(hdr)
+            val widgetLabel = info.loadLabel(packageManager) ?: "App Widget"
             val heightDp = widgetHeightDp(id, info)
             runCatching {
                 val hv = appWidgetHost.createView(this, id, info)
                 hv.setAppWidget(id, info)
-                card.addView(
+                // A hosted widget's own buttons swallow a plain
+                // long-click, so a frame around the widget steals the
+                // long-press first (see WidgetLongPressFrame below).
+                val frame = WidgetLongPressFrame(this)
+                frame.onLongPress = {
+                    android.app.AlertDialog.Builder(this@MainActivity)
+                        .setTitle(widgetLabel)
+                        .setMessage("Remove this widget from the page?")
+                        .setPositiveButton("Remove") { _, _ ->
+                            runCatching { appWidgetHost.deleteAppWidgetId(id) }
+                            prefs.edit().remove("appwidget_h_$id").apply()
+                            saveWidgetIds(savedWidgetIds().filter { it != id })
+                            populateWidgetsPage()
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                }
+                frame.addView(
                     hv,
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    ),
+                )
+                card.addView(
+                    frame,
                     LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, dpPx(heightDp.toFloat()),
-                    ).apply {
-                        topMargin = dpPx(6f)
-                    },
+                    ),
                 )
                 sendWidgetSize(id, heightDp)
-                card.addView(buildResizeHandle(id, hv))
+                card.addView(buildResizeHandle(id, frame))
             }.onFailure {
                 val err = TextView(this).apply {
                     text = "Widget preview unavailable"
@@ -1149,7 +1144,7 @@ class MainActivity : Activity(), SensorEventListener {
      *  stayed blank here while simpler widgets rendered fine. */
     private fun sendWidgetSize(id: Int, heightDp: Int) {
         val dm = resources.displayMetrics
-        val wDp = ((dm.widthPixels / dm.density) - 60f).toInt().coerceAtLeast(40)
+        val wDp = ((dm.widthPixels / dm.density) - 36f).toInt().coerceAtLeast(40)
         val opts = android.os.Bundle().apply {
             putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, wDp)
             putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, wDp)
@@ -1157,6 +1152,57 @@ class MainActivity : Activity(), SensorEventListener {
             putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, heightDp)
         }
         runCatching { appWidgetManager.updateAppWidgetOptions(id, opts) }
+    }
+
+
+    /** Frame around a hosted widget that steals long-presses before
+     *  the widget's own content can consume them (3.0.2): hold anywhere
+     *  on the widget ~450ms without moving and [onLongPress] fires;
+     *  interception cancels the child's pending click, so its buttons
+     *  never trigger. Short taps and scrolls pass straight through. */
+    private inner class WidgetLongPressFrame(ctx: android.content.Context) : FrameLayout(ctx) {
+        var onLongPress: (() -> Unit)? = null
+        private var downX = 0f
+        private var downY = 0f
+        private var fired = false
+        private val fireRunnable = Runnable {
+            if (!fired) {
+                fired = true
+                performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                onLongPress?.invoke()
+            }
+        }
+
+        override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = ev.x
+                    downY = ev.y
+                    fired = false
+                    removeCallbacks(fireRunnable)
+                    postDelayed(fireRunnable, 450L)
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (Math.abs(ev.x - downX) > dpPx(10f) || Math.abs(ev.y - downY) > dpPx(10f)) {
+                        removeCallbacks(fireRunnable)
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> removeCallbacks(fireRunnable)
+            }
+            return fired
+        }
+
+        override fun onTouchEvent(ev: MotionEvent): Boolean {
+            if (fired) {
+                if (ev.actionMasked == MotionEvent.ACTION_UP ||
+                    ev.actionMasked == MotionEvent.ACTION_CANCEL
+                ) {
+                    fired = false
+                }
+                return true
+            }
+            return super.onTouchEvent(ev)
+        }
     }
 
     /** Bottom-edge drag handle (1.21.0, Matt's pick): a slim grip at

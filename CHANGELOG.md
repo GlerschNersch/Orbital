@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.0.2 — 2026-10-26
+
+Widgets page: the card is gone (Matt's call). Widgets now sit clean on the page at full width — no panel background, no padding, no name/Remove header strip. The resize grip stays under each widget (drag or tap to resize). Removal moved to a long-press on the widget, which asks first ("Remove this widget from the page?"). Providers are now told the true full width (the old card padding is no longer subtracted).
+
 ## 3.0.1 — 2026-10-26
 
 Application ID renamed `dev.watchreborn` -> `dev.orbital` (Matt's call, made while it is still free: the ID is permanent from the first Play upload). Only the store/install identity changes — the code namespace and packages stay `dev.watchreborn`, so nothing in the source moves. Android treats the renamed app as a new app: it installs alongside the old one with fresh data (usage history, settings and notification access start over), and the old `dev.watchreborn` build can be uninstalled once the new one is confirmed.
