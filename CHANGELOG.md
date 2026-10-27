@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.2.1 — 2026-10-26
+- Anchor Islands now live in **Classic Honeycomb** and **Gravity Sizes** too,
+  not just Force Field. Bubbles whose home slots would collide with a widget
+  island are reassigned to the nearest free lattice slots (new IslandLayout
+  solver, unit-tested): every bubble keeps an exact lattice position, no two
+  share a slot, and unaffected bubbles never move. Wake wobble and the bloom
+  shockwave pause while an island layout is active so solved slots hold.
+- Islands ride the same fisheye as their bubbles in the lattice layouts, so
+  world-space clearance survives on screen; tap-to-open pod and edit-mode
+  island dragging (fisheye-aware) work there too. Adding an island no longer
+  switches layouts when the current one already supports islands.
+
 ## 3.2.0 — 2026-10-26
 - Anchor Islands (Matt's pick): a new ninth topology, **Force Field** — every
   bubble is a light body on a spring to its hex home; neighbours repel, fast

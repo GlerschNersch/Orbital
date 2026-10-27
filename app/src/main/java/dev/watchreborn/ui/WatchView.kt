@@ -731,6 +731,9 @@ class WatchView(
     ) {
         var bitmap: android.graphics.Bitmap? = null
         val rect = RectF()
+        /** Screen px per pitch unit at the last draw; converts drag
+         *  deltas back into anchor units (fisheye-aware). */
+        var dragScale: Float = 0f
     }
     var islands: List<IslandSlot> = emptyList()
     var onIslandTap: (Int) -> Unit = {}
@@ -743,8 +746,13 @@ class WatchView(
     private val islandDst = RectF()
     private val islandInset = RectF()
 
+    private fun islandsSupportedHere(): Boolean =
+        clusterTopology == ClusterTopology.FORCE_FIELD ||
+            clusterTopology == ClusterTopology.HONEYCOMB ||
+            clusterTopology == ClusterTopology.GRAVITY
+
     private fun islandAt(x: Float, y: Float): IslandSlot? =
-        if (clusterTopology == ClusterTopology.FORCE_FIELD)
+        if (islandsSupportedHere())
             islands.lastOrNull { !it.rect.isEmpty && it.rect.contains(x, y) }
         else null
 
@@ -776,6 +784,58 @@ class WatchView(
         ffVelX[index] = 0f
         ffVelY[index] = 0f
         ffSeeded[index] = true
+    }
+
+    // ── 3.2.1: islands in the lattice layouts (Honeycomb / Gravity) ────
+    // Bubbles whose home slots collide with an island are reassigned to
+    // the nearest free lattice slots (see IslandLayout); the assignment
+    // is cached against a fingerprint of everything that can change it.
+    private var islandLayoutFingerprint = Long.MIN_VALUE
+    private var islandLayoutHexes: List<Hex> = emptyList()
+
+    private fun islandLayoutFingerprintFor(items: List<GridItem>): Long {
+        var h = 1125899906842597L
+        fun mix(v: Long) { h = (h xor v) * 1099511628211L }
+        mix(clusterTopology.ordinal.toLong())
+        mix(items.size.toLong())
+        for ((index, item) in items.withIndex()) {
+            mix(item.key.hashCode().toLong())
+            mix(growthFor(item).toRawBits().toLong())
+            if (clusterTopology == ClusterTopology.GRAVITY) {
+                mix(gravityWeightFor(index, item).toRawBits().toLong())
+            }
+        }
+        for (slot in islands) {
+            mix(slot.id.toLong())
+            mix(slot.anchorX.toRawBits().toLong())
+            mix(slot.anchorY.toRawBits().toLong())
+            mix(slot.halfW.toRawBits().toLong())
+            mix(slot.halfH.toRawBits().toLong())
+        }
+        return h
+    }
+
+    /** Clearance radius (pitch units) a bubble needs from an island. */
+    private fun islandClearanceRadius(index: Int, item: GridItem): Float {
+        val raw = growthFor(item)
+        val growth = if (raw > 1f) 1f + (raw - 1f) * 0.55f else raw
+        var r = 0.45f * growth
+        if (clusterTopology == ClusterTopology.GRAVITY) r *= gravityWeightFor(index, item)
+        return r + 0.04f
+    }
+
+    private fun islandAssignedHexes(items: List<GridItem>): List<Hex> {
+        val fp = islandLayoutFingerprintFor(items)
+        if (fp != islandLayoutFingerprint || islandLayoutHexes.size != items.size) {
+            val scale = if (clusterTopology == ClusterTopology.GRAVITY) 1.10f else 1f
+            val radii = FloatArray(items.size) { islandClearanceRadius(it, items[it]) }
+            val obstacles = islands.map {
+                IslandLayout.Obstacle(it.anchorX, it.anchorY, it.halfW, it.halfH)
+            }
+            islandLayoutHexes = IslandLayout.assign(gridHexes, scale, radii, obstacles)
+            islandLayoutFingerprint = fp
+        }
+        return islandLayoutHexes
     }
     private val nebulaHeaderRects = ArrayList<Triple<RectF, Float, Float>>()
     private val constellationChipRects = ArrayList<Pair<RectF, String>>()
@@ -2633,10 +2693,17 @@ class WatchView(
         val isDock = clusterTopology == ClusterTopology.MAGNETIC_DOCK
         val isPool = clusterTopology == ClusterTopology.LIQUID_POOL
         val isForce = clusterTopology == ClusterTopology.FORCE_FIELD
+        val isHoneycomb = clusterTopology == ClusterTopology.HONEYCOMB
+        val isGravity = clusterTopology == ClusterTopology.GRAVITY
 
         ensureWakeCapacity(items.size)
         val bubbleDepthAlpha = gridBufDepth
         bubbleDepthAlpha.fill(1f, 0, items.size)
+
+        // 3.2.1: lattice slots after island reassignment (null when no
+        // island is in play, so the stock layouts are untouched).
+        val assignedHexes = if ((isHoneycomb || isGravity) && islands.isNotEmpty())
+            islandAssignedHexes(items) else null
 
         for (i in items.indices) {
             val item = items[i]
@@ -2644,6 +2711,11 @@ class WatchView(
             computeTopologyWorldPos(i, items.size, basePitch, tmp)
             var worldX = tmp[0]
             var worldY = tmp[1]
+            if (assignedHexes != null && i in assignedHexes.indices) {
+                pointyCenter(assignedHexes[i], basePitch * (if (isGravity) 1.10f else 1f), tmp)
+                worldX = tmp[0]
+                worldY = tmp[1]
+            }
 
             // Position glide: when an item's slot changes (placement, filing, a
             // layout switch), its world position springs to the new slot instead
@@ -2656,7 +2728,7 @@ class WatchView(
             }
 
             // Apply Jello / Wake Wave spring displacement & tilt parallax when physics is enabled
-            if (!isPool && !isForce && i in wakeDispX.indices) {
+            if (!isPool && !isForce && assignedHexes == null && i in wakeDispX.indices) {
                 worldX += wakeDispX[i] * (1f - 0.5f * ov)
                 worldY += wakeDispY[i] * (1f - 0.5f * ov)
                 val ringDist = if (i in gridHexes.indices) {
@@ -2668,7 +2740,7 @@ class WatchView(
                 worldY += tiltY * parallax
             }
 
-            if (bVal > 0.001f && i != bloomAnchorIndex) {
+            if (bVal > 0.001f && assignedHexes == null && i != bloomAnchorIndex) {
                 val vx = worldX - anchorX
                 val vy = worldY - anchorY
                 val dist = hypot(vx, vy)
@@ -2866,13 +2938,28 @@ class WatchView(
             // take pan + zoom but not the fisheye — islands are furniture,
             // and their stillness is what makes the field read as flowing
             // around them.
-            if (isForce && islands.isNotEmpty()) {
-                islandPxPerUnit = basePitch * effZoom
+            if ((isForce || isHoneycomb || isGravity) && islands.isNotEmpty()) {
                 for (slot in islands) {
-                    val icx = cx + (slot.anchorX * basePitch + panX.value * (1f - ov)) * effZoom
-                    val icy = cy + (slot.anchorY * basePitch + panY.value * (1f - ov)) * effZoom
-                    val hw = slot.halfW * basePitch * effZoom
-                    val hh = slot.halfH * basePitch * effZoom
+                    // In the lattice layouts the island rides the same
+                    // fisheye as its bubbles, so the clearance the slot
+                    // solver arranged in world space survives the trip
+                    // to the screen. Force Field islands stay unwarped:
+                    // there they are furniture in a simulated field.
+                    val wx = slot.anchorX * basePitch
+                    val wy = slot.anchorY * basePitch
+                    val dxI = (wx + panX.value * (1f - ov)) / u
+                    val dyI = (wy + panY.value * (1f - ov)) / u
+                    val dI = hypot(dxI / sx, dyI / sy)
+                    val pullK = if (!isForce && dI > 1e-4f) Fisheye.pulled(dI) / dI else 1f
+                    val kI = pullK * (1f - ov) + 1f * ov
+                    val sizeK = if (!isForce) Fisheye.size(dI) * (1f - ov) + 0.88f * ov else 1f
+                    val icx = cx + dxI * kI * u * effZoom
+                    val icy = cy + dyI * kI * u * effZoom
+                    val hw = slot.halfW * basePitch * effZoom * sizeK
+                    val hh = slot.halfH * basePitch * effZoom * sizeK
+                    slot.dragScale = basePitch * effZoom * sizeK * kI
+                    islandPxPerUnit = slot.dragScale
+                    if (hw <= 2f || hh <= 2f) { slot.rect.setEmpty(); continue }
                     slot.rect.set(icx - hw, icy - hh, icx + hw, icy + hh)
                     val rr = dp(18f) * effZoom.coerceIn(0.7f, 1.3f)
                     fill.color = Color.argb((aInt * 0.92f).toInt(), 18, 22, 30)
@@ -3872,7 +3959,7 @@ class WatchView(
             if (sheetExpanded) {
                 add(Triple(null, "ACTIONS", ""))
                 add(Triple(ClusterOption.SET_DEFAULT_HOME, "Default Phone Launcher", "Set Orbital as Home app"))
-                add(Triple(ClusterOption.ADD_ISLAND, "Add Widget Island", "Place a widget in the Force Field cluster"))
+                add(Triple(ClusterOption.ADD_ISLAND, "Add Widget Island", "Place a widget in Honeycomb, Gravity, or Force Field"))
                 if (pinnedItemKeys.isNotEmpty()) {
                     add(Triple(ClusterOption.CLEAR_PINS, "Pinned Hex Slots (${pinnedItemKeys.size})", "Tap to unpin all bubbles"))
                 }
@@ -5079,9 +5166,10 @@ class WatchView(
                 if (pinching) return true
                 if (islandDragId != null) {
                     val slot = islands.firstOrNull { it.id == islandDragId }
-                    if (slot != null && islandPxPerUnit > 0f) {
-                        slot.anchorX += (e.x - lastX) / islandPxPerUnit
-                        slot.anchorY += (e.y - lastY) / islandPxPerUnit
+                    val dragScale = slot?.dragScale?.takeIf { it > 0f } ?: islandPxPerUnit
+                    if (slot != null && dragScale > 0f) {
+                        slot.anchorX += (e.x - lastX) / dragScale
+                        slot.anchorY += (e.y - lastY) / dragScale
                         if (hypot(e.x - downX, e.y - downY) > slop) islandDragMoved = true
                         lastX = e.x
                         lastY = e.y

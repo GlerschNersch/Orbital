@@ -1,0 +1,106 @@
+package dev.watchreborn.ui
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class IslandLayoutTest {
+
+    private fun centers(hexes: List<Hex>, scale: Float): List<Pair<Float, Float>> {
+        val out = FloatArray(2)
+        return hexes.map { h ->
+            pointyCenter(h, scale, out)
+            out[0] to out[1]
+        }
+    }
+
+    @Test fun noObstaclesKeepsEveryHomeSlot() {
+        val homes = Hex.spiral(37)
+        val radii = FloatArray(37) { 0.55f }
+        val assigned = IslandLayout.assign(homes, 1f, radii, emptyList())
+        assertEquals(homes, assigned)
+    }
+
+    @Test fun islandAtCenterDisplacesOnlyBlockedItems() {
+        val homes = Hex.spiral(61)
+        val radii = FloatArray(61) { 0.55f }
+        // A Focus-Bar-sized island centred on the cluster.
+        val island = IslandLayout.Obstacle(0f, 0f, 1.55f, 1.05f)
+        val assigned = IslandLayout.assign(homes, 1f, radii, listOf(island))
+
+        // Nobody is lost and nobody shares a slot.
+        assertEquals(61, assigned.size)
+        assertEquals(61, assigned.toSet().size)
+
+        val homeCenters = centers(homes, 1f)
+        val assignedCenters = centers(assigned, 1f)
+        var moved = 0
+        for (i in homes.indices) {
+            val wasBlocked = IslandLayout.circleIntersects(
+                homeCenters[i].first, homeCenters[i].second, radii[i], island)
+            if (wasBlocked) {
+                moved++
+                // A displaced item must land somewhere clear.
+                assertFalse(
+                    "item $i still intersects the island",
+                    IslandLayout.circleIntersects(
+                        assignedCenters[i].first, assignedCenters[i].second, radii[i], island),
+                )
+                assertTrue("item $i should have moved", assigned[i] != homes[i])
+            } else {
+                // An unaffected item keeps its exact home slot.
+                assertEquals("item $i moved unnecessarily", homes[i], assigned[i])
+            }
+        }
+        assertTrue("the island should displace a ring of bubbles", moved in 6..24)
+    }
+
+    @Test fun islandOffCenterLeavesTheCoreAlone() {
+        val homes = Hex.spiral(61)
+        val radii = FloatArray(61) { 0.55f }
+        // Left edge at x=1.9: the core (max |x| = 1) plus its clearance
+        // radius (0.55) still falls short of the island, so indices 0..6
+        // keep their slots — while slots under the island do move.
+        val island = IslandLayout.Obstacle(2.6f, 0f, 0.7f, 0.8f)
+        val assigned = IslandLayout.assign(homes, 1f, radii, listOf(island))
+        for (i in 0..6) assertEquals(homes[i], assigned[i])
+        assertEquals(61, assigned.toSet().size)
+        assertTrue(homes.indices.any { assigned[it] != homes[it] })
+    }
+
+    @Test fun biggerBubblesNeedMoreClearance() {
+        val homes = Hex.spiral(19)
+        val island = IslandLayout.Obstacle(0f, 0f, 0.9f, 0.9f)
+        val small = IslandLayout.assign(homes, 1f, FloatArray(19) { 0.40f }, listOf(island))
+        val large = IslandLayout.assign(homes, 1f, FloatArray(19) { 0.80f }, listOf(island))
+        val smallMoved = homes.indices.count { small[it] != homes[it] }
+        val largeMoved = homes.indices.count { large[it] != homes[it] }
+        assertTrue("large bubbles should displace at least as many", largeMoved >= smallMoved)
+        // Every large bubble's assigned centre really is clear at its radius.
+        val largeCenters = centers(large, 1f)
+        for (i in homes.indices) {
+            assertFalse(
+                IslandLayout.circleIntersects(
+                    largeCenters[i].first, largeCenters[i].second, 0.80f, island),
+            )
+        }
+    }
+
+    @Test fun gravityScaleKeepsAssignmentsUniqueAndClear() {
+        val homes = Hex.spiral(91)
+        val radii = FloatArray(91) { i -> if (i == 0) 0.80f else 0.58f }
+        val island = IslandLayout.Obstacle(0f, 2.05f, 1.55f, 1.05f)
+        val assigned = IslandLayout.assign(homes, 1.10f, radii, listOf(island))
+        assertEquals(91, assigned.size)
+        assertEquals(91, assigned.toSet().size)
+        val assignedCenters = centers(assigned, 1.10f)
+        for (i in homes.indices) {
+            assertFalse(
+                "gravity item $i intersects the island",
+                IslandLayout.circleIntersects(
+                    assignedCenters[i].first, assignedCenters[i].second, radii[i], island),
+            )
+        }
+    }
+}

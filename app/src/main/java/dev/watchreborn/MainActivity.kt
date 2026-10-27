@@ -1754,7 +1754,10 @@ class MainActivity : Activity(), SensorEventListener {
         val old = slot.bitmap
         slot.bitmap = bmp
         if (old != null && old !== bmp) old.recycle()
-        if (view.clusterTopology == ClusterTopology.FORCE_FIELD) view.invalidate()
+        if (view.clusterTopology == ClusterTopology.FORCE_FIELD ||
+            view.clusterTopology == ClusterTopology.HONEYCOMB ||
+            view.clusterTopology == ClusterTopology.GRAVITY
+        ) view.invalidate()
     }
 
     private fun finishAddIsland(widgetId: Int) {
@@ -1773,12 +1776,14 @@ class MainActivity : Activity(), SensorEventListener {
         if (info != null) createIslandView(widgetId, info)
         pushIslandsToView()
         hideWidgetPicker()
-        if (view.clusterTopology != ClusterTopology.FORCE_FIELD) {
+        val islandTopologies = setOf(
+            ClusterTopology.HONEYCOMB, ClusterTopology.GRAVITY, ClusterTopology.FORCE_FIELD)
+        if (view.clusterTopology !in islandTopologies) {
             prefs.edit().putString(KEY_CLUSTER_TOPOLOGY, ClusterTopology.FORCE_FIELD.name).apply()
             view.clusterTopology = ClusterTopology.FORCE_FIELD
         }
         view.invalidate()
-        Toast.makeText(this, "Widget island added to the Force Field", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, "Widget island added", Toast.LENGTH_LONG).show()
     }
 
     private fun openIslandPod(id: Int) {
