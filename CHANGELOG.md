@@ -1,5 +1,27 @@
 # Changelog
 
+## 3.7.0 — 2026-10-27
+- **Bubbles hug islands.** In Honeycomb and Gravity, bubbles
+  near a widget island now leave their hex slots and pack
+  against the tile: after the usual slot assignment, a
+  refinement pass slides each bubble in the island's
+  neighbourhood toward the tile until it sits ~0.10 of a
+  pitch from the tile's true edge — judged in screen space
+  with the same fisheye-pull math as the 3.6.4 clearance,
+  never overlapping the tile or each other, and any bubble
+  that can't satisfy both keeps its lattice slot. Three
+  rounds of margin tuning (3.6.3–3.6.5) couldn't close the
+  moat around islands because it was structural: the ring
+  around a tile is other bubbles' homes, and displaced
+  bubbles land beyond them. The lattice is now relaxed
+  locally around islands only — the rest of the field stays
+  exactly on-grid, the centre app is never refined, and
+  Force Field (which already packs physically) is untouched.
+  The solve stays deterministic and cached: the hug is
+  computed once per layout, not per frame. On the dense-field
+  solver measure, the gap around a rim island closes from
+  1.01 pitch to under 0.35.
+
 ## 3.6.5 — 2026-10-27
 - **Island clearance margin shaved — just a hair tighter.** The
   fixed screen-space margin the bubble solver keeps between an
