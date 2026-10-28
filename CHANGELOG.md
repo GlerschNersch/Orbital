@@ -1,5 +1,34 @@
 # Changelog
 
+## 3.7.5 — 2026-10-28
+
+- **Themed Icons (opt-in).** Cluster Options → More Options → Behavior
+  gains a Themed Icons toggle, off by default. On, apps that ship a
+  monochrome icon layer are drawn in the system palette (Launcher3's
+  pairing: light accent plate by day, dark neutral plate at night);
+  apps without one keep their own colours. The icon style and palette
+  are part of the startup cache fingerprint, so toggling it or a new
+  wallpaper palette re-renders the icons.
+- **Uninstalled apps are cleaned up.** Pins (every scope), usage scores,
+  group overrides and folder-order entries of uninstalled apps used to
+  linger forever. They are pruned whenever the package set changes (and
+  once on first launch of 3.7.5). "Uninstalled" means the system says
+  the package is not installed for that user, never just "missing from
+  the last load", so an app mid-update keeps its pins. Custom folder
+  membership is left alone (display already skips missing members, and
+  pruning could dissolve a two-app folder). Pure rules in `StalePrefs`,
+  unit-tested.
+- **CI.** A GitHub Actions workflow runs the unit tests and a debug build
+  on every push and pull request; `gradlew` is now executable in git.
+- **Settings sheet fits again.** The expanded sheet with more than one
+  face overflowed even at its 34dp row floor, tucking Done under the dock
+  (and the Themed Icons row added one more). When 34dp rows can't fit, the
+  sheet now drops the slot it reserves for the Clear Pins row and lets rows
+  go down to 30dp. A scrolling sheet remains the real fix for many faces.
+- The loader-thread fields `apps`, `cacheFingerprint` and
+  `cachePaintPosted` are `@Volatile` (they were read across threads
+  without a happens-before edge).
+
 ## 3.7.4 — 2026-10-28
 
 - **Vitals pod footer fits.** The "Battery • RAM free • Storage free"

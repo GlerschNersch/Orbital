@@ -55,22 +55,23 @@ object StartupCacheLogic {
     /** Stable, order-independent fingerprint of the package set
      *  plus everything else that shapes the cached field (icon
      *  size, locale — labels are locale-dependent; night mode —
-     *  adaptive icons may carry -night resources; [roles] — the
-     *  default dialer/SMS/camera/browser/email apps decide their
-     *  folder group, 3.7.4). */
+     *  adaptive icons may carry -night resources; [extras] — the
+     *  default dialer/SMS/camera/browser/email apps, which decide
+     *  their folder group (3.7.4), and the icon style with its
+     *  palette (3.7.5)). */
     fun fingerprint(
         stamps: List<PkgStamp>,
         iconPx: Int,
         localeTag: String,
         night: Boolean = false,
-        roles: String = "",
+        extras: String = "",
     ): String {
         val sb = StringBuilder()
         sb.append("schema=").append(SCHEMA)
             .append(";px=").append(iconPx)
             .append(";locale=").append(localeTag)
             .append(";night=").append(night)
-            .append(";roles=").append(roles)
+            .append(";extras=").append(extras)
         for (s in stamps.sortedWith(compareBy({ it.userSerial }, { it.component }))) {
             sb.append('\n').append(s.userSerial).append('|').append(s.component)
                 .append('|').append(s.versionCode).append('|').append(s.lastUpdateTime)
@@ -174,8 +175,9 @@ object StartupCacheLogic {
  */
 class StartupCache(
     private val context: Context,
-    /** The default-app roles as a stable string ([AppRepo.roleStamp]). */
-    private val roleStamp: () -> String,
+    /** Everything else that shapes the field, as a stable string
+     *  (default-app roles + icon style; see MainActivity). */
+    private val fieldStamp: () -> String,
 ) {
     private val launcherApps = context.getSystemService(LauncherApps::class.java)
     private val users = context.getSystemService(UserManager::class.java)
@@ -212,7 +214,7 @@ class StartupCache(
         return StartupCacheLogic.fingerprint(
             stamps, iconPx, Locale.getDefault().toLanguageTag(),
             night = uiMode == Configuration.UI_MODE_NIGHT_YES,
-            roles = roleStamp(),
+            extras = fieldStamp(),
         )
     }
 

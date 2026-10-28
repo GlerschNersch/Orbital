@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.LauncherActivityInfo
 import android.content.pm.LauncherApps
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -23,6 +25,7 @@ import android.provider.MediaStore
 import dev.watchreborn.listedProfiles
 import dev.watchreborn.ui.CustomFolders
 import dev.watchreborn.ui.Frecency
+import dev.watchreborn.ui.StalePrefs
 import java.text.Collator
 import kotlin.math.cos
 import kotlin.math.sin
@@ -647,6 +650,31 @@ class AppRepo(private val context: Context) {
         }.distinct()
     }
 
+    /**
+     * 3.7.5: drops pins, usage, group overrides and folder-order entries
+     * of apps that are no longer installed (rules in [StalePrefs]). "Gone"
+     * means the system says the package isn't installed for that user (or
+     * the user no longer exists) — never merely "absent from the last
+     * load", so an app mid-update keeps its pins. Returns the number of
+     * keys removed or rewritten. Call off the main thread (one IPC per app).
+     */
+    fun pruneUninstalled(): Int {
+        val plan = StalePrefs.plan(prefs.all) { appKey ->
+            val user = users.getUserForSerialNumber(StalePrefs.serialOf(appKey))
+                ?: return@plan true
+            val err = runCatching {
+                launcherApps.getApplicationInfo(StalePrefs.packageOf(appKey), 0, user)
+            }.exceptionOrNull()
+            err is PackageManager.NameNotFoundException
+        }
+        if (plan.isEmpty) return 0
+        val e = prefs.edit()
+        plan.remove.forEach { e.remove(it) }
+        plan.rewrite.forEach { (k, v) -> e.putString(k, v) }
+        e.apply()
+        return plan.remove.size + plan.rewrite.size
+    }
+
     fun markOpened(key: String) {
         val now = System.currentTimeMillis()
         val count = prefs.getInt("n:$key", 0)
@@ -670,12 +698,50 @@ class AppRepo(private val context: Context) {
         return Frecency.seedFromLegacy(prefs.getInt("n:$key", 0), last, now)
     }
 
+    /** 3.7.5 Themed Icons: when on, apps that ship a monochrome layer are
+     *  drawn in the system palette; the rest keep their own colours (as
+     *  the stock Pixel launcher does). Set before [load]. */
+    @Volatile var themedIcons: Boolean = false
+
+    private fun isNight(): Boolean =
+        (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+
+    /** Background and glyph colours for a themed icon — Launcher3's
+     *  pairing: dark neutral plate with a light accent glyph at night,
+     *  light accent plate with a dark neutral glyph by day. */
+    private fun themedColors(): Pair<Int, Int> =
+        if (isNight()) {
+            context.getColor(android.R.color.system_neutral1_800) to
+                context.getColor(android.R.color.system_accent1_100)
+        } else {
+            context.getColor(android.R.color.system_accent1_100) to
+                context.getColor(android.R.color.system_neutral2_700)
+        }
+
+    /** The icon style as a stable string for the startup cache
+     *  fingerprint: off, or on plus the palette (wallpaper-derived, so
+     *  a new wallpaper re-renders the themed icons). */
+    fun iconStyleStamp(): String {
+        if (!themedIcons) return "plain"
+        val (bg, fg) = themedColors()
+        return "themed:" + Integer.toHexString(bg) + ":" + Integer.toHexString(fg)
+    }
+
     private fun roundIcon(info: LauncherActivityInfo, otherUser: UserHandle?, px: Int): Bitmap {
         val bmp = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
         c.clipPath(Path().apply { addCircle(px / 2f, px / 2f, px / 2f, Path.Direction.CW) })
         val d = info.getIcon(0)
-        if (d is AdaptiveIconDrawable) {
+        val mono = if (themedIcons && d is AdaptiveIconDrawable) d.monochrome else null
+        if (mono != null) {
+            val (bg, fg) = themedColors()
+            c.drawColor(bg)
+            val bleed = px / 4
+            mono.mutate().setTint(fg)
+            mono.setBounds(-bleed, -bleed, px + bleed, px + bleed)
+            mono.draw(c)
+        } else if (d is AdaptiveIconDrawable) {
             val bleed = px / 4
             for (layer in listOfNotNull(d.background, d.foreground)) {
                 layer.setBounds(-bleed, -bleed, px + bleed, px + bleed)

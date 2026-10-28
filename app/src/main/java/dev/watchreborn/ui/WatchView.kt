@@ -69,6 +69,7 @@ enum class ClusterOption {
     CLUSTER_TOPOLOGY,
     PER_LAYOUT_PINS,
     USAGE_GROWTH,
+    THEMED_ICONS,
     CATEGORY_CLUSTERING,
     BLOOM_MODE,
     CONSTELLATION_SEARCH,
@@ -813,6 +814,10 @@ class WatchView(
 
     /** Usage growth: bubbles scale with how much their app is used. */
     var usageGrowth: Boolean = true
+
+    /** 3.7.5: monochrome icons in the system palette (the bitmaps come
+     *  from AppRepo; this only drives the sheet row). */
+    var themedIcons: Boolean = false
 
     /** Per-item diameter multipliers from [UsageScale], keyed by GridItem.key. Set by the activity. */
     var usageFactors: Map<String, Float> = emptyMap()
@@ -4763,6 +4768,7 @@ class WatchView(
                 add(Triple(ClusterOption.BLOOM_MODE, "Folder Open Style", if (bloomFolders) "Bloom in place" else "Full-screen folder"))
                 add(Triple(ClusterOption.PER_LAYOUT_PINS, "Per-Layout Pins", if (perLayoutPins) "Separate pins per layout" else "One pin set everywhere"))
                 add(Triple(ClusterOption.USAGE_GROWTH, "Usage Growth", if (usageGrowth) "Bubbles grow with use" else "Uniform bubble sizes"))
+                add(Triple(ClusterOption.THEMED_ICONS, "Themed Icons", if (themedIcons) "Monochrome, in your system colours" else "Each app's own colours"))
                 add(Triple(ClusterOption.CATEGORY_CLUSTERING, "Category Clustering", if (autoFolders) "Apps grouped into category folders" else "All apps loose"))
             }
             if (sheetExpanded) {
@@ -4788,14 +4794,23 @@ class WatchView(
         // the row height (and therefore every row's position) is identical
         // whether or not that conditional row is present. It used to change
         // the compression and shift every row by up to ~40px between opens.
-        val layoutCount = optionCount + if (sheetExpanded && pinnedItemKeys.isEmpty()) 1 else 0
+        var layoutCount = optionCount + if (sheetExpanded && pinnedItemKeys.isEmpty()) 1 else 0
         var sheetH = dp(74f) + layoutCount * (rowH + gap) + headerCount * headerH + dp(52f)
         // 2.6.0: the page must also clear the dock, which now stays visible.
         val availH = (if (!dockSegs[0].isEmpty) dockSegs[0].top - dp(10f) else h - dp(36f)) - (top + dp(6f))
         if (sheetH > availH && layoutCount > 0) {
             // Short screen: compress rows so the sheet — including its Done
             // button — always fits.
-            rowH = ((availH - dp(74f) - headerCount * headerH - dp(52f)) / layoutCount - gap).coerceAtLeast(dp(34f))
+            fun fitRowH(n: Int) = (availH - dp(74f) - headerCount * headerH - dp(52f)) / n - gap
+            rowH = fitRowH(layoutCount).coerceAtLeast(dp(34f))
+            // 3.7.5: an expanded sheet with several faces overflowed even
+            // at 34dp rows, tucking Done under the dock. Then give up the
+            // reserved Clear Pins slot (row stability matters less than
+            // fitting) and let rows go down to 30dp.
+            if (fitRowH(layoutCount) < dp(34f)) {
+                layoutCount = optionCount
+                rowH = fitRowH(layoutCount).coerceIn(dp(30f), dp(34f))
+            }
             sheetH = dp(74f) + layoutCount * (rowH + gap) + headerCount * headerH + dp(52f)
         }
 
@@ -4871,6 +4886,7 @@ class WatchView(
                 ClusterOption.FIXED_NEIGHBORHOODS -> fixedNeighborhoods
                 ClusterOption.PER_LAYOUT_PINS -> perLayoutPins
                 ClusterOption.USAGE_GROWTH -> usageGrowth
+                ClusterOption.THEMED_ICONS -> themedIcons
                 ClusterOption.CATEGORY_CLUSTERING -> autoFolders
                 ClusterOption.BLOOM_MODE -> bloomFolders
                 else -> null
@@ -5294,6 +5310,12 @@ class WatchView(
                 path.lineTo(cx + s * 0.12f, cy + s * 0.10f)
                 path.lineTo(cx + s * 0.42f, cy - s * 0.32f)
                 c.drawPath(path, stroke)
+            }
+            ClusterOption.THEMED_ICONS -> {
+                // A bubble, half filled: one colour standing in for all.
+                c.drawCircle(cx, cy, s * 0.36f, stroke)
+                fill.color = color
+                c.drawArc(cx - s * 0.36f, cy - s * 0.36f, cx + s * 0.36f, cy + s * 0.36f, 90f, 180f, true, fill)
             }
             ClusterOption.SET_DEFAULT_HOME -> {
                 path.moveTo(cx - s * 0.42f, cy + s * 0.02f)

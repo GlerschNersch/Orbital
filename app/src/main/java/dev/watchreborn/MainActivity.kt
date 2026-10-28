@@ -101,7 +101,9 @@ class MainActivity : Activity(), SensorEventListener {
     // Fingerprint of the package set the painted field reflects
     // (from the cache file, or from the probe that accompanied the
     // last fresh load). Null until one of those lands.
-    private var cacheFingerprint: String? = null
+    // Volatile: written on the loader thread, read on main (and the
+    // reverse for [apps]) — see reload().
+    @Volatile private var cacheFingerprint: String? = null
     // Bumped whenever a material input changes outside a push
     // (today: a launch, which changes frecency). onResume compares
     // it against [pushedVersion] to decide the fast path.
@@ -122,7 +124,7 @@ class MainActivity : Activity(), SensorEventListener {
     private var islandHostsKicked = false
     // Set by reload's first task when a cache paint was posted;
     // read by its second task on the same loader thread.
-    private var cachePaintPosted = false
+    @Volatile private var cachePaintPosted = false
 
     private fun startElapsed(): Long = android.os.SystemClock.uptimeMillis() - procStartUptime
     private lateinit var nowPlaying: NowPlaying
@@ -161,7 +163,7 @@ class MainActivity : Activity(), SensorEventListener {
     /** 3.5.0: the faces store — never part of a snapshot, so the
      *  active face id survives the switch it drives. */
     private val facesPrefs by lazy { getSharedPreferences(Faces.STORE, Context.MODE_PRIVATE) }
-    private var apps: List<App> = emptyList()
+    @Volatile private var apps: List<App> = emptyList()
     private var battery = -1
     private var charging = false
 
@@ -194,7 +196,8 @@ class MainActivity : Activity(), SensorEventListener {
         super.onCreate(savedInstanceState)
         Log.i(START_TAG, "process create: onCreate at +" + startElapsed() + "ms")
         repo = AppRepo(this)
-        startupCache = StartupCache(this, repo::roleStamp)
+        repo.themedIcons = prefs.getBoolean(KEY_THEMED_ICONS, false)
+        startupCache = StartupCache(this) { repo.roleStamp() + ";" + repo.iconStyleStamp() }
         ensureFacesMigrated()
         view = WatchView(
             context = this,
@@ -223,6 +226,7 @@ class MainActivity : Activity(), SensorEventListener {
         view.fixedNeighborhoods = prefs.getBoolean(KEY_FIXED_NEIGHBORHOODS, true)
         view.perLayoutPins = prefs.getBoolean(KEY_PER_LAYOUT_PINS, false)
         view.usageGrowth = prefs.getBoolean(KEY_USAGE_GROWTH, true)
+        view.themedIcons = repo.themedIcons
         val savedTopo = prefs.getString(KEY_CLUSTER_TOPOLOGY, ClusterTopology.HONEYCOMB.name)
         view.clusterTopology = runCatching { ClusterTopology.valueOf(savedTopo ?: ClusterTopology.HONEYCOMB.name) }
             .getOrDefault(ClusterTopology.HONEYCOMB)
@@ -764,6 +768,7 @@ class MainActivity : Activity(), SensorEventListener {
             val probe = runCatching { startupCache.probeFingerprint(px) }.getOrNull()
             if (StartupCacheLogic.canSkipFreshLoad(cacheFingerprint, probe, apps.isNotEmpty() || cachePaintPosted)) {
                 Log.i(START_TAG, "reconcile: package set unchanged — fresh load skipped")
+                if (!prefs.getBoolean(KEY_PRUNED_ONCE, false)) pruneStaleAppPrefs()
                 return@execute
             }
             val loaded = runCatching { repo.load(px) }
@@ -780,7 +785,17 @@ class MainActivity : Activity(), SensorEventListener {
                     .onFailure { Log.w(TAG, "Startup cache write failed", it) }
                 cacheFingerprint = probe
             }
+            // The package set changed, so something may be uninstalled.
+            pruneStaleAppPrefs()
         }
+    }
+
+    /** Loader thread only. Uninstalled apps' entries never show, so no re-push. */
+    private fun pruneStaleAppPrefs() {
+        runCatching { repo.pruneUninstalled() }
+            .onSuccess { n -> if (n > 0) Log.i(TAG, "Pruned $n entries of uninstalled apps") }
+            .onFailure { Log.w(TAG, "Pruning uninstalled apps failed", it) }
+        prefs.edit().putBoolean(KEY_PRUNED_ONCE, true).apply()
     }
 
     private enum class PushSource { CACHE, FRESH, ACTION }
@@ -1008,6 +1023,16 @@ class MainActivity : Activity(), SensorEventListener {
                 val next = !view.usageGrowth
                 prefs.edit().putBoolean(KEY_USAGE_GROWTH, next).apply()
                 view.usageGrowth = next
+            }
+            ClusterOption.THEMED_ICONS -> {
+                val next = !view.themedIcons
+                prefs.edit().putBoolean(KEY_THEMED_ICONS, next).apply()
+                view.themedIcons = next
+                repo.themedIcons = next
+                // The painted icons are the other style: force the
+                // fresh load (it rewrites the cache under the new style).
+                cacheFingerprint = null
+                reload()
             }
             ClusterOption.BLOOM_MODE -> {
                 val next = !view.bloomFolders
@@ -3161,6 +3186,7 @@ class MainActivity : Activity(), SensorEventListener {
         const val TAG = "WatchReborn"
         const val START_TAG = "OrbitalStart"
         const val REQ_STEPS = 37
+        const val KEY_PRUNED_ONCE = "pruned_uninstalled_v375"
         const val APPWIDGET_HOST_ID = 2048
 
         // One AppWidgetHost for the whole process (1.19.1). The host
@@ -3196,6 +3222,7 @@ class MainActivity : Activity(), SensorEventListener {
         const val KEY_CLUSTER_TOPOLOGY = "cluster_topology"
         const val KEY_PER_LAYOUT_PINS = "per_layout_pins"
         const val KEY_USAGE_GROWTH = "usage_growth"
+        const val KEY_THEMED_ICONS = "themed_icons"
         const val KEY_HINTS_SEEN = "hints_seen"
         const val KEY_APPWIDGET_IDS = "appwidget_ids"
         const val KEY_ISLAND_IDS = "island_ids"

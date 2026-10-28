@@ -76,12 +76,12 @@ class StartupCacheTest {
     }
 
     @Test
-    fun fingerprintChangesWithNightModeAndRoles() {
+    fun fingerprintChangesWithNightModeAndExtras() {
         val base = listOf(stamp())
-        val fp = StartupCacheLogic.fingerprint(base, 168, "en-US", night = false, roles = "com.a=DIALER")
-        assertNotEquals(fp, StartupCacheLogic.fingerprint(base, 168, "en-US", night = true, roles = "com.a=DIALER"))
-        assertNotEquals(fp, StartupCacheLogic.fingerprint(base, 168, "en-US", night = false, roles = "com.b=DIALER"))
-        assertEquals(fp, StartupCacheLogic.fingerprint(base, 168, "en-US", night = false, roles = "com.a=DIALER"))
+        val fp = StartupCacheLogic.fingerprint(base, 168, "en-US", night = false, extras = "com.a=DIALER")
+        assertNotEquals(fp, StartupCacheLogic.fingerprint(base, 168, "en-US", night = true, extras = "com.a=DIALER"))
+        assertNotEquals(fp, StartupCacheLogic.fingerprint(base, 168, "en-US", night = false, extras = "com.b=DIALER"))
+        assertEquals(fp, StartupCacheLogic.fingerprint(base, 168, "en-US", night = false, extras = "com.a=DIALER"))
     }
 
     @Test
