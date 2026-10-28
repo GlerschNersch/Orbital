@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.pm.LauncherApps
 import android.content.pm.PackageInfo
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Process
@@ -53,12 +54,23 @@ object StartupCacheLogic {
 
     /** Stable, order-independent fingerprint of the package set
      *  plus everything else that shapes the cached field (icon
-     *  size, locale — labels are locale-dependent). */
-    fun fingerprint(stamps: List<PkgStamp>, iconPx: Int, localeTag: String): String {
+     *  size, locale — labels are locale-dependent; night mode —
+     *  adaptive icons may carry -night resources; [roles] — the
+     *  default dialer/SMS/camera/browser/email apps decide their
+     *  folder group, 3.7.4). */
+    fun fingerprint(
+        stamps: List<PkgStamp>,
+        iconPx: Int,
+        localeTag: String,
+        night: Boolean = false,
+        roles: String = "",
+    ): String {
         val sb = StringBuilder()
         sb.append("schema=").append(SCHEMA)
             .append(";px=").append(iconPx)
             .append(";locale=").append(localeTag)
+            .append(";night=").append(night)
+            .append(";roles=").append(roles)
         for (s in stamps.sortedWith(compareBy({ it.userSerial }, { it.component }))) {
             sb.append('\n').append(s.userSerial).append('|').append(s.component)
                 .append('|').append(s.versionCode).append('|').append(s.lastUpdateTime)
@@ -160,7 +172,11 @@ object StartupCacheLogic {
  * Writes go to a temp file renamed over the target, so a process
  * death mid-write can never leave a torn cache behind.
  */
-class StartupCache(private val context: Context) {
+class StartupCache(
+    private val context: Context,
+    /** The default-app roles as a stable string ([AppRepo.roleStamp]). */
+    private val roleStamp: () -> String,
+) {
     private val launcherApps = context.getSystemService(LauncherApps::class.java)
     private val users = context.getSystemService(UserManager::class.java)
 
@@ -192,8 +208,11 @@ class StartupCache(private val context: Context) {
                 )
             }
         }
+        val uiMode = context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
         return StartupCacheLogic.fingerprint(
             stamps, iconPx, Locale.getDefault().toLanguageTag(),
+            night = uiMode == Configuration.UI_MODE_NIGHT_YES,
+            roles = roleStamp(),
         )
     }
 

@@ -194,7 +194,7 @@ class MainActivity : Activity(), SensorEventListener {
         super.onCreate(savedInstanceState)
         Log.i(START_TAG, "process create: onCreate at +" + startElapsed() + "ms")
         repo = AppRepo(this)
-        startupCache = StartupCache(this)
+        startupCache = StartupCache(this, repo::roleStamp)
         ensureFacesMigrated()
         view = WatchView(
             context = this,

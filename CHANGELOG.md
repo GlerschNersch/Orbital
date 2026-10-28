@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.7.4 — 2026-10-28
+
+- **Vitals pod footer fits.** The "Battery • RAM free • Storage free"
+  line ran past the pod's right edge ("Storage f…"); it now shrinks to
+  fit, and an unknown battery reads "--" instead of "-1%".
+- **Startup cache catches dark mode and default apps.** The cache
+  fingerprint now includes night mode (adaptive icons can carry -night
+  resources, and a mode switch recreates the activity, which painted
+  the cached day icons and then skipped the reload) and the default
+  dialer / SMS / camera / browser / email apps (they decide those
+  apps' folder group). Either changing now forces the fresh load.
+
 ## 3.7.3 — 2026-10-28
 
 Steps fix. The Vitals widget never showed steps: the manifest declared

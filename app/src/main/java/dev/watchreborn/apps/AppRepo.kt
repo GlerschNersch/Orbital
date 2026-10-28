@@ -626,6 +626,11 @@ class AppRepo(private val context: Context) {
         return out
     }
 
+    /** [detectRoles] as a stable string, for the startup cache fingerprint (3.7.4). */
+    fun roleStamp(): String =
+        detectRoles().entries.sortedBy { it.key }
+            .joinToString(",") { (pkg, roles) -> pkg + "=" + roles.map { it.name }.sorted().joinToString("+") }
+
     private fun essentialPackages(): List<String> {
         val pm = context.packageManager
         val intents = listOf(

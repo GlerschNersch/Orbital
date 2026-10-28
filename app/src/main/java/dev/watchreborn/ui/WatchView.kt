@@ -7044,9 +7044,15 @@ class WatchView(
                 if (detail) {
                     nativeText.color = grey
                     nativeText.textSize = hgt * 0.105f
-                    val foot = "Battery ${info.battery}% \u2022 RAM free " +
+                    val bat = if (info.battery >= 0) "${info.battery}%" else "--"
+                    val foot = "Battery $bat \u2022 RAM free " +
                         "${((1f - ramUsedRatio) * 100).toInt()}% \u2022 Storage free " +
                         "${((1f - storageUsedRatio) * 100).toInt()}%"
+                    // 3.7.4: shrink to fit \u2014 at pod width the line ran
+                    // past the right edge ("Storage f\u2026").
+                    val avail = rect.right - pad - left
+                    val wide = nativeText.measureText(foot)
+                    if (wide > avail) nativeText.textSize *= avail / wide
                     c.drawText(foot, left, bottom, nativeText)
                 }
             }

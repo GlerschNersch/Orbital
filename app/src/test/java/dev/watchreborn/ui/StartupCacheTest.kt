@@ -76,6 +76,15 @@ class StartupCacheTest {
     }
 
     @Test
+    fun fingerprintChangesWithNightModeAndRoles() {
+        val base = listOf(stamp())
+        val fp = StartupCacheLogic.fingerprint(base, 168, "en-US", night = false, roles = "com.a=DIALER")
+        assertNotEquals(fp, StartupCacheLogic.fingerprint(base, 168, "en-US", night = true, roles = "com.a=DIALER"))
+        assertNotEquals(fp, StartupCacheLogic.fingerprint(base, 168, "en-US", night = false, roles = "com.b=DIALER"))
+        assertEquals(fp, StartupCacheLogic.fingerprint(base, 168, "en-US", night = false, roles = "com.a=DIALER"))
+    }
+
+    @Test
     fun entryRoundTripsThroughEncoding() {
         val tricky = entry(label = "A;B:C\nD — ünïcode ✓")
         assertEquals(tricky, StartupCacheLogic.decodeEntry(StartupCacheLogic.encodeEntry(tricky)))
