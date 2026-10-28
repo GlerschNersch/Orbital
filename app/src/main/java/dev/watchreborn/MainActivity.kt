@@ -20,7 +20,9 @@ import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.Manifest
 import android.content.pm.LauncherApps
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.RectF
 import android.graphics.Typeface
@@ -80,7 +82,9 @@ import dev.watchreborn.ui.Faces
 import dev.watchreborn.ui.LayoutBackup
 import dev.watchreborn.ui.FaceInfo
 import dev.watchreborn.ui.Metrics
+import dev.watchreborn.ui.StepsToday
 import dev.watchreborn.ui.WatchView
+import java.time.LocalDate
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
@@ -294,11 +298,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         nowPlaying.start()
 
-        runCatching {
-            sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)?.let {
-                sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
-            }
-        }
+        registerStepSensor()
 
         launcherApps.registerCallback(appsChanged)
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -331,6 +331,8 @@ class MainActivity : Activity(), SensorEventListener {
         super.onResume()
         view.refreshMotionScale() // 2.7.0 (audit #1)
         refreshInfo()
+        // Midnight may have passed with no step event to reset the count.
+        view.stepCount = StepsToday.stepsOn(stepsState, LocalDate.now().toEpochDay()).toInt()
         if (apps.isNotEmpty()) {
             // 3.7.2 warm-resume fast path: pushAppsToView rebuilds
             // both grids from scratch, and a plain return home has
@@ -654,7 +656,12 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onSensorChanged(event: SensorEvent?) {
         if (event?.sensor?.type == Sensor.TYPE_STEP_COUNTER) {
-            val steps = event.values.firstOrNull()?.toInt() ?: 0
+            val counter = event.values.firstOrNull()?.toLong() ?: return
+            val day = LocalDate.now().toEpochDay()
+            val next = StepsToday.fold(stepsState, counter, day)
+            if (StepsToday.worthSaving(stepsSaved, next)) saveStepsState(next)
+            stepsState = next
+            val steps = StepsToday.stepsOn(next, day).toInt()
             if (steps != view.stepCount) {
                 view.stepCount = steps
             }
@@ -662,6 +669,70 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+    // ── 3.7.3 Steps ─────────────────────────────────────────────────────
+    // TYPE_STEP_COUNTER needs the runtime ACTIVITY_RECOGNITION grant;
+    // until 3.7.3 nothing asked for it, so the Vitals tile never had
+    // steps. The Vitals pod's "Enable step count" chip asks now.
+
+    /** Its own store, so layout backups (the watch store) never carry it. */
+    private val stepsPrefs by lazy { getSharedPreferences("steps", Context.MODE_PRIVATE) }
+    private var stepsSaved: StepsToday.State? = null
+    private var stepsState: StepsToday.State? = null
+    private var stepSensorRegistered = false
+
+    private fun hasStepPermission(): Boolean =
+        checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED
+
+    private fun registerStepSensor() {
+        if (stepsState == null && stepsPrefs.contains("day")) {
+            stepsState = StepsToday.State(
+                stepsPrefs.getLong("day", 0L),
+                stepsPrefs.getLong("base", 0L),
+                stepsPrefs.getLong("carried", 0L),
+                stepsPrefs.getLong("last", 0L),
+            )
+            stepsSaved = stepsState
+        }
+        if (stepSensorRegistered || !hasStepPermission()) return
+        val sensor = sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_COUNTER) ?: return
+        // Non-wakeup and batched (10 s): steps don't need frame-rate delivery.
+        stepSensorRegistered = sensorManager.registerListener(
+            this, sensor, SensorManager.SENSOR_DELAY_NORMAL, 10_000_000,
+        )
+    }
+
+    private fun saveStepsState(s: StepsToday.State) {
+        stepsPrefs.edit()
+            .putLong("day", s.day).putLong("base", s.base)
+            .putLong("carried", s.carried).putLong("last", s.last)
+            .apply()
+        stepsSaved = s
+    }
+
+    private fun requestStepPermission() {
+        if (hasStepPermission()) {
+            registerStepSensor()
+            return
+        }
+        requestPermissions(arrayOf(Manifest.permission.ACTIVITY_RECOGNITION), REQ_STEPS)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQ_STEPS) return
+        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            registerStepSensor()
+            Toast.makeText(this, "Counting today's steps from now", Toast.LENGTH_SHORT).show()
+        } else if (!shouldShowRequestPermissionRationale(Manifest.permission.ACTIVITY_RECOGNITION)) {
+            // Denied for good: Android won't show the dialog again, so
+            // the only way left is the app's own permission page.
+            Toast.makeText(this, "Allow Physical activity for Orbital to show steps", Toast.LENGTH_LONG).show()
+            runCatching {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
+            }
+        }
+    }
 
     private fun reload() {
         val px = iconPx
@@ -1385,6 +1456,7 @@ class MainActivity : Activity(), SensorEventListener {
                     apps.firstOrNull { it.label.contains("Calendar", ignoreCase = true) }?.let { launch(it, RectF()) }
                 }
             }
+            CardAction.ENABLE_STEPS -> requestStepPermission()
         }
     }
 
@@ -3088,6 +3160,7 @@ class MainActivity : Activity(), SensorEventListener {
     private companion object {
         const val TAG = "WatchReborn"
         const val START_TAG = "OrbitalStart"
+        const val REQ_STEPS = 37
         const val APPWIDGET_HOST_ID = 2048
 
         // One AppWidgetHost for the whole process (1.19.1). The host

@@ -1,5 +1,26 @@
 # Changelog
 
+## 3.7.3 — 2026-10-28
+
+Steps fix. The Vitals widget never showed steps: the manifest declared
+ACTIVITY_RECOGNITION but nothing ever asked for it, so the step
+sensor delivered nothing and the tile always fell back to battery.
+
+- **Enable step count.** While the permission is missing, the Vitals
+  pod carries an "Enable step count" chip that asks for it; once
+  granted the chip goes away. If Android has stopped showing the
+  dialog (denied twice), the chip opens Orbital's App Info page
+  instead.
+- **Today's steps, not since-boot.** TYPE_STEP_COUNTER is cumulative
+  since the last reboot. A pure `StepsToday` fold (unit-tested) keeps
+  a daily baseline in its own `steps` prefs store (never part of a
+  layout backup), carries the day's count across a reboot, and resets
+  at midnight on the next reading or return home.
+- **Lighter listener.** The step sensor registers only when granted,
+  at SENSOR_DELAY_NORMAL with 10 s batching (was SENSOR_DELAY_UI).
+- README: download link, app name and the dev.watchreborn → dev.orbital
+  upgrade note brought up to date.
+
 ## 3.7.2 — 2026-10-28
 
 Cold-start performance release. Returning home showed a blank/black

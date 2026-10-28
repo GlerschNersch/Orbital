@@ -89,6 +89,7 @@ enum class ClusterOption {
 enum class CardAction {
     MEDIA_PREV, MEDIA_PLAY_PAUSE, MEDIA_NEXT, MEDIA_OPEN,
     OPEN_ALARMS, OPEN_BATTERY, OPEN_CALENDAR,
+    ENABLE_STEPS,
 }
 
 /**
@@ -7137,6 +7138,7 @@ class WatchView(
             "MEDIA_NEXT" -> onCardAction(CardAction.MEDIA_NEXT)
             "MEDIA_OPEN" -> onCardAction(CardAction.MEDIA_OPEN)
             "VITALS_BATTERY" -> onCardAction(CardAction.OPEN_BATTERY)
+            "VITALS_STEPS" -> onCardAction(CardAction.ENABLE_STEPS)
             "CAL_OPEN" -> onCardAction(CardAction.OPEN_CALENDAR)
             "CAL_ALARMS" -> onCardAction(CardAction.OPEN_ALARMS)
             "TIMER_60" -> setTimerPreset(60)

@@ -5,15 +5,18 @@ grid, the List view and the Smart Stack. It is a clean-room rebuild: the layout 
 measured from screen recordings of a real watch (see [docs/RE_NOTES.md](docs/RE_NOTES.md)), and
 every face, icon shape and drawing is our own. No Apple code, artwork or fonts are included.
 
-(Formerly Watch Reborn — renamed 2026-10-26. The internal package name remains dev.watchreborn.)
+(Formerly Watch Reborn — renamed 2026-10-26. The app ID is `dev.orbital` from 3.0.1; the Kotlin
+package name remains dev.watchreborn.)
 
 Sibling of XMB, PS4, X360, Switch, C64U, VCS and TSF Reborn.
 
 ## Download
 
-Grab the latest signed APK from the [Releases page](https://github.com/GlerschNersch/WatchReborn/releases/latest) — open the `.apk` on your phone and allow installs from your browser or file manager when Android asks. Requires Android 13 or newer.
+Grab the latest signed APK from the [Releases page](https://github.com/GlerschNersch/Orbital/releases/latest) — open the `.apk` on your phone and allow installs from your browser or file manager when Android asks. Requires Android 13 or newer.
 
-After installing, open **WatchReborn** from your app drawer. To make it your launcher, go to **Settings → Apps → Default apps → Home app** and pick WatchReborn. Notification access (Settings → Notifications → Notification access) is optional — it only powers the notification dots, pulse rings and the Now Playing stack card.
+After installing, open **Orbital** from your app drawer. To make it your launcher, go to **Settings → Apps → Default apps → Home app** and pick Orbital. Notification access (Settings → Notifications → Notification access) is optional — it only powers the notification dots, pulse rings and the Now Playing stack card. The Physical activity permission is optional too: tap **Enable step count** in the Vitals widget to show today's steps.
+
+Upgrading from WatchReborn 1.3.0 or earlier: Orbital has a new app ID, so it installs alongside the old app rather than over it. Set Orbital as your Home app, then uninstall WatchReborn.
 
 ## Using it
 

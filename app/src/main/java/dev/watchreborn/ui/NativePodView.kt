@@ -1,6 +1,8 @@
 package dev.watchreborn.ui
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -26,7 +28,9 @@ class NativePodView(
     /** Chip action ids (WatchView.handleWidgetPodAction's vocabulary). */
     var onAction: (String) -> Unit = {}
 
-    private val chipRows: List<List<Pair<String, String>>> = when (kind) {
+    // A getter so the Vitals "Enable step count" chip disappears as
+    // soon as the grant lands (3.7.3), without reopening the pod.
+    private val chipRows: List<List<Pair<String, String>>> get() = when (kind) {
         NativeKind.CLOCK -> listOf(listOf("⏰  Alarms" to "CAL_ALARMS"))
         NativeKind.CALENDAR -> listOf(
             listOf("Open Calendar" to "CAL_OPEN", "⏰  Alarms" to "CAL_ALARMS"),
@@ -38,7 +42,13 @@ class NativePodView(
             ),
             listOf("⏯  Start / Pause" to "TIMER_TOGGLE", "↺  Reset" to "TIMER_RESET"),
         )
-        NativeKind.VITALS -> listOf(listOf("🔋  Battery settings" to "VITALS_BATTERY"))
+        NativeKind.VITALS -> if (context.checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            listOf(listOf("🔋  Battery settings" to "VITALS_BATTERY"))
+        } else {
+            listOf(listOf("👟  Enable step count" to "VITALS_STEPS", "🔋  Battery" to "VITALS_BATTERY"))
+        }
         NativeKind.NOW_PLAYING -> listOf(
             listOf(
                 "⏮" to "MEDIA_PREV", "⏯" to "MEDIA_PLAY",
