@@ -1,5 +1,35 @@
 # Changelog
 
+## 3.7.2 — 2026-10-28
+
+Cold-start performance release. Returning home showed a blank/black
+screen first, then the field: the process is killed in the background
+(OxygenOS), so every return was paying the full startup — icon
+rasterization plus the per-icon blur pass measured ~78% of the app
+load, and AppWidgetHost view creation added ~0.5s more.
+
+- **Startup cache.** The last-built field's inputs (app metadata plus
+  the rasterized and blurred icons) persist in private storage,
+  fingerprinted by the installed package set (packages +
+  versionCodes/lastUpdateTime + icon size + locale). A cold start
+  paints from the cache immediately, then reconciles: a cheap
+  icon-free package probe re-fingerprints the live set, and the
+  expensive fresh load is skipped entirely when nothing changed.
+  Any cache doubt (corrupt file, schema/size mismatch) degrades to
+  the plain fresh load, never a crash or a stale field.
+- **Warm-resume fast path.** onResume no longer rebuilds both grids
+  on every return; the push is skipped when the painted field
+  already reflects the current apps and state (a launch, a new load
+  or a mid-flight push still rebuilds). The cheap refreshes
+  (clock/battery info, badges, motion scale) still run.
+- **First frame first.** Only the grid in use is built before the
+  first paint; the other grid builds a beat later and swaps in.
+  Island host views (and their snapshots) likewise land just past
+  the first frame — the island slots themselves are unchanged.
+- **Instrumentation.** Cold-start milestones log under the
+  `OrbitalStart` tag (process create, first frame drawn, field from
+  cache / from fresh load, warm-resume skip) with elapsed ms.
+
 ## 3.7.1 — 2026-10-27
 - **Island hugging reverted.** The 3.7.0 off-lattice
   refinement is removed at Matt's call: on device, the

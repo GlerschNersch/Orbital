@@ -62,6 +62,8 @@ import android.window.OnBackInvokedDispatcher
 import dev.watchreborn.apps.App
 import dev.watchreborn.apps.AppGroup
 import dev.watchreborn.apps.AppRepo
+import dev.watchreborn.apps.StartupCache
+import dev.watchreborn.apps.StartupCacheLogic
 import dev.watchreborn.apps.Folder
 import dev.watchreborn.apps.GridItem
 import dev.watchreborn.apps.WidgetBubble
@@ -85,6 +87,40 @@ import kotlin.math.roundToInt
 class MainActivity : Activity(), SensorEventListener {
     private lateinit var view: WatchView
     private lateinit var repo: AppRepo
+    private lateinit var startupCache: StartupCache
+    // -- 3.7.2 cold-start fast paths --------------------------------
+    // Process-start clock for the OrbitalStart markers (0 when the
+    // platform can't report it; the markers then read large but
+    // stay ordered).
+    private val procStartUptime: Long =
+        runCatching { Process.getStartUptimeMillis() }.getOrDefault(0L)
+    // Fingerprint of the package set the painted field reflects
+    // (from the cache file, or from the probe that accompanied the
+    // last fresh load). Null until one of those lands.
+    private var cacheFingerprint: String? = null
+    // Bumped whenever a material input changes outside a push
+    // (today: a launch, which changes frecency). onResume compares
+    // it against [pushedVersion] to decide the fast path.
+    private var stateVersion = 0
+    private var pushedVersion = -1
+    private var pushedAppsRef: List<App>? = null
+    private var pushInFlight = false
+    private var pushSeq = 0
+    // The most recent grids, and the list they were built from —
+    // lets a deferred grid swap reuse them when the same list is
+    // re-pushed (e.g. an option toggle) instead of blanking.
+    private var lastFolderGrid: List<GridItem>? = null
+    private var lastFlatGrid: List<GridItem>? = null
+    private var lastGridsList: List<App>? = null
+    private var cacheFieldLogged = false
+    private var freshFieldLogged = false
+    private var frameLogged = false
+    private var islandHostsKicked = false
+    // Set by reload's first task when a cache paint was posted;
+    // read by its second task on the same loader thread.
+    private var cachePaintPosted = false
+
+    private fun startElapsed(): Long = android.os.SystemClock.uptimeMillis() - procStartUptime
     private lateinit var nowPlaying: NowPlaying
     private val loader = Executors.newSingleThreadExecutor()
     private val launcherApps by lazy { getSystemService(LauncherApps::class.java) }
@@ -152,7 +188,9 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Log.i(START_TAG, "process create: onCreate at +" + startElapsed() + "ms")
         repo = AppRepo(this)
+        startupCache = StartupCache(this)
         ensureFacesMigrated()
         view = WatchView(
             context = this,
@@ -264,8 +302,19 @@ class MainActivity : Activity(), SensorEventListener {
 
         launcherApps.registerCallback(appsChanged)
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        loadIslands()
+        // 3.7.2: the island SLOTS reach the view here (placement is
+        // prefs math), but the hosted widget views are created a
+        // beat later, past the first frame — AppWidgetHost
+        // .createView measured ~0.5s of the 3.7.1 cold path. Their
+        // snapshots land when creation does; a tap inside that
+        // first beat is a safe no-op (openIslandPod guards on the
+        // missing view).
+        pushIslandsToView()
         reload()
+        // Fallback only: the first field push kicks host creation
+        // promptly (see pushAppsToView); this covers a load that
+        // never lands a push. Idempotent either way.
+        view.postDelayed({ createIslandHostViews() }, 1500)
     }
 
     override fun onStart() {
@@ -282,7 +331,20 @@ class MainActivity : Activity(), SensorEventListener {
         super.onResume()
         view.refreshMotionScale() // 2.7.0 (audit #1)
         refreshInfo()
-        if (apps.isNotEmpty()) pushAppsToView(apps)
+        if (apps.isNotEmpty()) {
+            // 3.7.2 warm-resume fast path: pushAppsToView rebuilds
+            // both grids from scratch, and a plain return home has
+            // nothing new to show. Skip when the pushed field
+            // already reflects the current apps and state; anything
+            // material (a load landed, a launch changed frecency, a
+            // push is mid-flight) falls through to the rebuild.
+            if (apps === pushedAppsRef && stateVersion == pushedVersion && !pushInFlight) {
+                Log.i(START_TAG, "warm resume: rebuild skipped (fast path)")
+            } else {
+                Log.i(START_TAG, "warm resume: rebuild")
+                pushAppsToView(apps)
+            }
+        }
     }
 
     private var lastBackHandledMs = 0L
@@ -603,18 +665,56 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun reload() {
         val px = iconPx
+        // 3.7.2: two loader tasks. The first only reads the startup
+        // cache and posts the paint; the second probes the live
+        // package set and reconciles. Splitting them keeps the
+        // probe's enumeration off the paint's critical path — the
+        // paint's own grid build can queue ahead of it.
         loader.execute {
+            if (apps.isEmpty()) {
+                val cached = runCatching { startupCache.read(px) }.getOrNull()
+                if (cached != null && cached.apps.isNotEmpty()) {
+                    cacheFingerprint = cached.fingerprint
+                    cachePaintPosted = true
+                    val cachedApps = cached.apps
+                    view.post {
+                        if (apps.isEmpty()) {
+                            apps = cachedApps
+                            pushAppsToView(cachedApps, PushSource.CACHE)
+                        }
+                    }
+                }
+            }
+        }
+        loader.execute {
+            // Reconcile: when the live package set still fingerprints
+            // exactly as the painted field does, the fresh load can
+            // only reproduce it — skip the expensive pass entirely.
+            val probe = runCatching { startupCache.probeFingerprint(px) }.getOrNull()
+            if (StartupCacheLogic.canSkipFreshLoad(cacheFingerprint, probe, apps.isNotEmpty() || cachePaintPosted)) {
+                Log.i(START_TAG, "reconcile: package set unchanged — fresh load skipped")
+                return@execute
+            }
             val loaded = runCatching { repo.load(px) }
                 .onFailure { Log.e(TAG, "Loading apps failed", it) }
                 .getOrNull() ?: return@execute
             view.post {
                 apps = loaded
-                pushAppsToView(loaded)
+                pushAppsToView(loaded, PushSource.FRESH)
+            }
+            // Persist the new truth for the next cold start, still
+            // off the main thread and after the field has landed.
+            if (probe != null) {
+                runCatching { startupCache.write(loaded, probe, px) }
+                    .onFailure { Log.w(TAG, "Startup cache write failed", it) }
+                cacheFingerprint = probe
             }
         }
     }
 
-    private fun pushAppsToView(list: List<App>) {
+    private enum class PushSource { CACHE, FRESH, ACTION }
+
+    private fun pushAppsToView(list: List<App>, source: PushSource = PushSource.ACTION) {
         // 2.9.0 one-time: pins were stored against grids that had the
         // clock at slot 0; shift them down one so they keep their spots.
         val wprefs = getSharedPreferences("watch", Context.MODE_PRIVATE)
@@ -624,6 +724,10 @@ class MainActivity : Activity(), SensorEventListener {
         }
         val px = iconPx
         val fixedNeighborhoods = view.fixedNeighborhoods
+        val versionAtEntry = stateVersion
+        pushInFlight = true
+        val seq = ++pushSeq
+        val foldersFirst = view.autoFolders
         // 2.9.0: the centre slot belongs to the most-used app now — the
         // Core Clock hub is no longer placed in the grids (the builders
         // keep the parameter; the clock stays in the widget catalog).
@@ -633,21 +737,36 @@ class MainActivity : Activity(), SensorEventListener {
             val scope = pinScope()
             val rawUse = repo.byUse(list)
             val byUse = repo.applyPins(rawUse, scope)
-            val folders = repo.buildFolderGrid(list, rawUse, px, fixedNeighborhoods, coreClockHub, liveWidgets, scope)
-            val flatWithWidgets = repo.buildFlatGridWithWidgets(rawUse, px, coreClockHub, liveWidgets, scope)
+            // 3.7.2: only the grid the user will actually see is
+            // built before the first paint; the other is built in a
+            // chained task below and swapped in when it lands
+            // (3.7.1 built both up front — the folder grid was the
+            // bulk of the push cost).
+            val folders = if (foldersFirst) {
+                repo.buildFolderGrid(list, rawUse, px, fixedNeighborhoods, coreClockHub, liveWidgets, scope)
+            } else {
+                null
+            }
+            val flatWithWidgets = if (foldersFirst) {
+                null
+            } else {
+                repo.buildFlatGridWithWidgets(rawUse, px, coreClockHub, liveWidgets, scope)
+            }
             val pinnedKeys = HashSet<String>()
             list.forEach { if (repo.isPinned(it.key, scope)) pinnedKeys += it.key }
-            folders.forEach { if (repo.isPinned(it.key, scope)) pinnedKeys += it.key }
+            folders?.forEach { if (repo.isPinned(it.key, scope)) pinnedKeys += it.key }
             WidgetKind.entries.forEach { if (repo.isPinned(it.key, scope)) pinnedKeys += it.key }
             // Usage growth: diameter factors from the recency-decayed launch
             // scores; a folder grows with its most-used member.
             val maxScore = list.maxOfOrNull { repo.usageScore(it.key) } ?: 0f
             val factors = HashMap<String, Float>()
             list.forEach { factors[it.key] = dev.watchreborn.ui.UsageScale.factor(repo.usageScore(it.key), maxScore) }
-            folders.filterIsInstance<Folder>().forEach { f ->
+            val folderFactors = HashMap<String, Float>()
+            folders?.filterIsInstance<Folder>()?.forEach { f ->
                 val hottest = f.apps.maxOfOrNull { repo.usageScore(it.key) } ?: 0f
-                factors[f.key] = dev.watchreborn.ui.UsageScale.factor(hottest, maxScore)
+                folderFactors[f.key] = dev.watchreborn.ui.UsageScale.factor(hottest, maxScore)
             }
+            factors.putAll(folderFactors)
             view.post {
                 view.hiddenFolderCount = repo.hiddenGroups().size
                 view.pinnedItemKeys = pinnedKeys
@@ -657,7 +776,84 @@ class MainActivity : Activity(), SensorEventListener {
                     .map { it.key }
                     .toHashSet()
                 view.usageFactors = factors
-                view.setApps(list, byUse, folders, flatWithWidgets)
+                // The deferred grid reuses the previous build when it
+                // was made from this same list (e.g. an option-toggle
+                // re-push), else a safe stand-in until it lands.
+                val folderArg = folders ?: if (lastGridsList === list) {
+                    lastFolderGrid ?: emptyList()
+                } else {
+                    emptyList()
+                }
+                val flatArg = flatWithWidgets ?: if (lastGridsList === list) {
+                    lastFlatGrid ?: byUse
+                } else {
+                    byUse
+                }
+                if (folders != null) {
+                    lastFolderGrid = folders
+                    lastGridsList = list
+                }
+                if (flatWithWidgets != null) {
+                    lastFlatGrid = flatWithWidgets
+                    lastGridsList = list
+                }
+                view.setApps(list, byUse, folderArg, flatArg)
+                pushedAppsRef = list
+                pushedVersion = versionAtEntry
+                if (source == PushSource.CACHE && !cacheFieldLogged) {
+                    cacheFieldLogged = true
+                    Log.i(START_TAG, "field complete from cache: +" + startElapsed() + "ms since process start")
+                }
+                if (source == PushSource.FRESH && !freshFieldLogged) {
+                    freshFieldLogged = true
+                    Log.i(START_TAG, "field complete from fresh load: +" + startElapsed() + "ms since process start")
+                }
+                if (source != PushSource.ACTION && !frameLogged) {
+                    frameLogged = true
+                    val frameSrc = source.name.lowercase()
+                    android.view.Choreographer.getInstance().postFrameCallback {
+                        Log.i(START_TAG, "first frame drawn (" + frameSrc + "): +" +
+                            startElapsed() + "ms since process start")
+                    }
+                }
+                // The field is up: now the island host views may be
+                // created (their snapshots follow). See onCreate.
+                if (!islandHostsKicked) {
+                    islandHostsKicked = true
+                    view.post { createIslandHostViews() }
+                }
+            }
+            // The other grid, built once the field is on its way.
+            loader.execute {
+                if (seq != pushSeq) return@execute // superseded — drop it
+                if (foldersFirst) {
+                    val flat = repo.buildFlatGridWithWidgets(rawUse, px, coreClockHub, liveWidgets, scope)
+                    view.post {
+                        if (seq != pushSeq) return@post
+                        lastFlatGrid = flat
+                        lastGridsList = list
+                        pushInFlight = false
+                        view.setFlatGrid(flat)
+                    }
+                } else {
+                    val built = repo.buildFolderGrid(list, rawUse, px, fixedNeighborhoods, coreClockHub, liveWidgets, scope)
+                    val builtPinned = HashSet<String>()
+                    built.forEach { if (repo.isPinned(it.key, scope)) builtPinned += it.key }
+                    val builtFactors = HashMap<String, Float>()
+                    built.filterIsInstance<Folder>().forEach { f ->
+                        val hottest = f.apps.maxOfOrNull { repo.usageScore(it.key) } ?: 0f
+                        builtFactors[f.key] = dev.watchreborn.ui.UsageScale.factor(hottest, maxScore)
+                    }
+                    view.post {
+                        if (seq != pushSeq) return@post
+                        lastFolderGrid = built
+                        lastGridsList = list
+                        pushInFlight = false
+                        view.pinnedItemKeys = view.pinnedItemKeys + builtPinned
+                        view.usageFactors = view.usageFactors + builtFactors
+                        view.setFolderGrid(built)
+                    }
+                }
             }
         }
     }
@@ -1205,6 +1401,7 @@ class MainActivity : Activity(), SensorEventListener {
             val f = LaunchFrom.of(view, from)
             launcherApps.startMainActivity(app.component, app.user, f?.sourceBounds, f?.options)
             repo.markOpened(app.key)
+            stateVersion++ // 3.7.2: frecency changed — the next resume re-pushes
         } catch (e: ActivityNotFoundException) {
             Toast.makeText(this, "Can't open ${app.label}", Toast.LENGTH_SHORT).show()
         } catch (e: SecurityException) {
@@ -2286,13 +2483,21 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun loadIslands() {
+        createIslandHostViews()
+        pushIslandsToView()
+    }
+
+    /** Creates the hosted view for every system island member.
+     *  3.7.2: onCreate calls this deferred, past the first frame;
+     *  idempotent — members already hosted are skipped. */
+    private fun createIslandHostViews() {
         for (slotId in savedIslandIds()) {
             for (wid in IslandMembers.systemIds(islandMembersOf(slotId))) {
+                if (wid in islandViews) continue
                 val info = appWidgetManager.getAppWidgetInfo(wid) ?: continue
                 createIslandView(slotId, wid, info)
             }
         }
-        pushIslandsToView()
     }
 
     /** Host one system member of a slot (3.6.0: [slotId] owns the
@@ -2882,6 +3087,7 @@ class MainActivity : Activity(), SensorEventListener {
 
     private companion object {
         const val TAG = "WatchReborn"
+        const val START_TAG = "OrbitalStart"
         const val APPWIDGET_HOST_ID = 2048
 
         // One AppWidgetHost for the whole process (1.19.1). The host

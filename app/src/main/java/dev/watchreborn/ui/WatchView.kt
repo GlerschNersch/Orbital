@@ -1413,16 +1413,7 @@ class WatchView(
         byUse = use
         folderItems = folders
         flatWidgetItems = flatWithWidgets
-        // Prune glide state for items that no longer exist.
-        val liveKeys = HashSet<String>()
-        folders.forEach { item ->
-            liveKeys += item.key
-            if (item is Folder) item.apps.forEach { liveKeys += it.key }
-        }
-        flatWithWidgets.forEach { liveKeys += it.key }
-        use.forEach { liveKeys += it.key }
-        glidePosGrid.keys.retainAll(liveKeys)
-        glidePosFolder.keys.retainAll(liveKeys)
+        pruneGlideState()
         rebuildGridHexes()
         activeFolder?.let { cur ->
             val updated = folders.filterIsInstance<Folder>().firstOrNull { it.group == cur.group }
@@ -1432,6 +1423,45 @@ class WatchView(
                 folderHexes = Hex.spiral(updated.apps.size)
             }
         }
+        invalidate()
+    }
+
+    /** Prune glide state for items that no longer exist. */
+    private fun pruneGlideState() {
+        val liveKeys = HashSet<String>()
+        folderItems.forEach { item ->
+            liveKeys += item.key
+            if (item is Folder) item.apps.forEach { liveKeys += it.key }
+        }
+        flatWidgetItems.forEach { liveKeys += it.key }
+        byUse.forEach { liveKeys += it.key }
+        glidePosGrid.keys.retainAll(liveKeys)
+        glidePosFolder.keys.retainAll(liveKeys)
+    }
+
+    /** 3.7.2: swap in the folder grid when its build was deferred
+     *  behind the first field paint (see MainActivity). Mirrors
+     *  setApps' folder handling exactly. */
+    fun setFolderGrid(items: List<GridItem>) {
+        folderItems = items
+        pruneGlideState()
+        activeFolder?.let { cur ->
+            val updated = items.filterIsInstance<Folder>().firstOrNull { it.group == cur.group }
+            if (updated != null) {
+                activeFolder = updated
+                bloomAnchorIndex = activeGridItems.indexOf(updated)
+                folderHexes = Hex.spiral(updated.apps.size)
+            }
+        }
+        if (autoFolders) rebuildGridHexes()
+        invalidate()
+    }
+
+    /** 3.7.2: swap in the flat grid, likewise. */
+    fun setFlatGrid(items: List<GridItem>) {
+        flatWidgetItems = items
+        pruneGlideState()
+        if (!autoFolders) rebuildGridHexes()
         invalidate()
     }
 
