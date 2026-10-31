@@ -21,14 +21,31 @@ import dev.watchreborn.apps.AppGroup
  *   backfill (audio recorders, tuners, generators) once the handful of
  *   real Fitness apps ran out; the primary group stays uncapped, the
  *   helpers only get a few seats each.
+ * - 3.8.3 (batch 2 item 1): the Gym intent gets a purpose filter, because
+ *   sub-caps alone still seated the wrong Music apps (frecency only
+ *   counts launches through Orbital, so Spotify — usually launched over
+ *   Bluetooth/car — ranked below recently-tested utilities). For
+ *   WORKOUT only: Music seats require a playback/streaming signal and
+ *   deny audio creation/utility apps outright, and the primary Fitness
+ *   group is tiered — training / gym-use apps first, general health
+ *   (portals, wellness) only fills leftover seats. Candidates carrying
+ *   no label (unit fixtures) are unfiltered and tier-neutral: the
+ *   purpose rules only judge apps they can actually read.
  *
  * Future versions may learn context (time, place, recent activity), but
  * that is deliberately out of scope for this prototype.
  */
 object IntentLayer {
 
-    /** An app considered for an intent, identified by its stable [key]. */
-    data class IntentCandidate(val key: String, val group: AppGroup)
+    /** An app considered for an intent, identified by its stable [key].
+     *  [label] and [packageName] feed the WORKOUT purpose filter; they
+     *  default blank so callers without them stay unfiltered. */
+    data class IntentCandidate(
+        val key: String,
+        val group: AppGroup,
+        val label: String = "",
+        val packageName: String = "",
+    )
 
     /** One intent definition. [groups] is in priority order, first is best. */
     data class IntentDef(
@@ -115,6 +132,52 @@ object IntentLayer {
      */
     const val SECONDARY_GROUP_CAP = 3
 
+    // --- 3.8.3 WORKOUT purpose filter -------------------------------------
+
+    /** Tier-1 (core) signals for the Gym primary group: training and
+     *  gym-use apps. Device health trackers (Samsung Health, Health
+     *  Connect) count as gym-use via "health"; patient portals and
+     *  wellness apps carry none of these and fall to tier 2. */
+    private val GYM_CORE_KEYWORDS = listOf(
+        "workout", "gym", "train", "run", "cycle", "lift", "physique",
+        "fitbit", "zepp", "strava", "health", "fitness",
+    )
+
+    /** Audio creation / utility signals: denied a Gym Music seat even
+     *  when a playback keyword also matches ("Music Maker"). Checked
+     *  against the label first, before the playback requirement. */
+    private val GYM_MUSIC_DENY_KEYWORDS = listOf(
+        "record", "tuner", "voice", "generat", "assistant", "guitar",
+        "studio", "maker", "editor", "suno", "voicemod",
+    )
+
+    /** Playback / streaming signals a Gym Music seat requires. */
+    private val GYM_MUSIC_PLAYBACK_KEYWORDS = listOf(
+        "spotify", "music", "podcast", "radio", "audible", "tidal",
+        "deezer", "pandora", "soundcloud", "youtube",
+    )
+
+    private fun searchText(c: IntentCandidate): String =
+        (c.label + " " + c.packageName).lowercase()
+
+    /** 0 = training / gym-use core, 1 = general health. Label-less
+     *  candidates are tier-neutral (0) so plain frecency decides. */
+    private fun gymTier(c: IntentCandidate): Int {
+        val text = searchText(c)
+        if (text.isBlank()) return 0
+        return if (GYM_CORE_KEYWORDS.any { it in text }) 0 else 1
+    }
+
+    /** Whether a Music-group app may take a Gym seat: playback only.
+     *  Label-less candidates pass — there is nothing to judge. */
+    private fun gymMusicAllowed(c: IntentCandidate): Boolean {
+        if (c.label.isBlank()) return true
+        val label = c.label.lowercase()
+        if (GYM_MUSIC_DENY_KEYWORDS.any { it in label }) return false
+        val text = searchText(c)
+        return GYM_MUSIC_PLAYBACK_KEYWORDS.any { it in text }
+    }
+
     /**
      * Resolves [intent] against [candidatesInFrecencyOrder].
      *
@@ -124,6 +187,10 @@ object IntentLayer {
      * occurrence wins), then applies the caps: the primary group (index
      * 0) is uncapped, each secondary group contributes at most
      * [SECONDARY_GROUP_CAP] apps, and the total is capped at [cap].
+     *
+     * For [WORKOUT], the 3.8.3 purpose filter runs first (Music seats
+     * are playback-only) and the primary Fitness group sorts by purpose
+     * tier before frecency (see the class doc).
      *
      * Returns the ordered [IntentCandidate]s, not just keys, so callers
      * keep the group information alongside each key.
@@ -138,11 +205,21 @@ object IntentLayer {
         intent.groups.forEachIndexed { index, group -> priority[group] = index }
         val seen = HashSet<String>()
         val groupCounts = HashMap<AppGroup, Int>(intent.groups.size)
-        return candidatesInFrecencyOrder
+        val pool = if (intent == WORKOUT) {
+            candidatesInFrecencyOrder.filter { candidate ->
+                candidate.group != AppGroup.MUSIC || gymMusicAllowed(candidate)
+            }
+        } else {
+            candidatesInFrecencyOrder
+        }
+        fun tierOf(candidate: IntentCandidate): Int =
+            if (intent == WORKOUT && priority[candidate.group] == 0) gymTier(candidate) else 0
+        return pool
             .withIndex()
             .filter { (_, candidate) -> candidate.group in priority }
             .sortedWith(
                 compareBy<IndexedValue<IntentCandidate>> { priority.getValue(it.value.group) }
+                    .thenBy { tierOf(it.value) }
                     .thenBy { it.index }
             )
             .map { it.value }

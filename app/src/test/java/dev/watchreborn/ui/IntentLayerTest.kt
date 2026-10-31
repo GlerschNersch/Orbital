@@ -131,4 +131,80 @@ class IntentLayerTest {
         assertTrue(IntentLayer.resolve(IntentLayer.WORKOUT, candidates).isEmpty())
         assertTrue(IntentLayer.resolve(IntentLayer.WORKOUT, emptyList()).isEmpty())
     }
+
+    // 3.8.3 (batch 2 item 1): the Gym purpose filter.
+
+    private fun labelled(key: String, group: AppGroup, label: String, pkg: String = "") =
+        IntentLayer.IntentCandidate(key, group, label, pkg)
+
+    @Test fun gymPurposeFilterMirrorsMattsPhone() {
+        // Matt's real app list (3.8.1 phone screenshot), in the
+        // frecency order Orbital saw: recently-tested utilities ranked
+        // above Spotify, which is usually launched over Bluetooth/car
+        // and so barely registers in Orbital's own frecency.
+        val candidates = listOf(
+            labelled("guitartuna", AppGroup.MUSIC, "GuitarTuna"),
+            labelled("musicassistant", AppGroup.MUSIC, "Music Assistant"),
+            labelled("recorder", AppGroup.MUSIC, "Recorder"),
+            labelled("spotify", AppGroup.MUSIC, "Spotify"),
+            labelled("ytmusic", AppGroup.MUSIC, "YT Music"),
+            labelled("zepp", AppGroup.HEALTH, "Zepp"),
+            labelled("zenspace", AppGroup.HEALTH, "Zen Space"),
+            labelled("fitbitace", AppGroup.HEALTH, "Fitbit Ace"),
+            labelled("mychart", AppGroup.HEALTH, "MyChart"),
+            labelled("health", AppGroup.HEALTH, "Health"),
+            labelled("hims", AppGroup.HEALTH, "Hims"),
+            labelled("youtube", AppGroup.VIDEO, "YouTube"),
+            labelled("physique", AppGroup.HEALTH, "Physique", "dev.physique"),
+        )
+        val keys = IntentLayer.resolve(IntentLayer.WORKOUT, candidates).map { it.key }
+        // Physique is present; the training core leads the primary
+        // group in frecency order; general health (Zen Space, MyChart,
+        // Hims) only fills in behind it; the Music seats are Spotify
+        // and YT Music alone; YouTube closes under the total cap.
+        assertEquals(
+            listOf(
+                "zepp", "fitbitace", "health", "physique",
+                "zenspace", "mychart", "hims",
+                "spotify", "ytmusic",
+                "youtube",
+            ),
+            keys,
+        )
+        assertTrue(keys.size <= IntentLayer.TOTAL_CAP)
+    }
+
+    @Test fun gymMusicDenyBeatsPlaybackSignal() {
+        // "Music Maker" carries the playback keyword "music" but is a
+        // creation app: the deny list is checked first.
+        val candidates = listOf(
+            labelled("maker", AppGroup.MUSIC, "Music Maker"),
+            labelled("voicerec", AppGroup.MUSIC, "Voice Recorder"),
+            labelled("podcasts", AppGroup.MUSIC, "Pocket Podcasts"),
+        )
+        val resolved = IntentLayer.resolve(IntentLayer.WORKOUT, candidates)
+        assertEquals(listOf("podcasts"), resolved.map { it.key })
+    }
+
+    @Test fun gymFilterIsScopedToWorkout() {
+        // The same Music utility keeps its seat in Drive: the purpose
+        // filter governs the Gym intent only.
+        val candidates = listOf(
+            labelled("recorder", AppGroup.MUSIC, "Recorder"),
+            labelled("maps", AppGroup.TRAVEL, "Maps"),
+        )
+        val resolved = IntentLayer.resolve(IntentLayer.DRIVE, candidates)
+        assertEquals(listOf("maps", "recorder"), resolved.map { it.key })
+    }
+
+    @Test fun gymTierFallsBackToFrecencyForUnlabelled() {
+        // Label-less candidates carry nothing to judge, so they stay
+        // tier-neutral and frecency order decides.
+        val candidates = listOf(
+            candidate("b", AppGroup.HEALTH),
+            candidate("a", AppGroup.HEALTH),
+        )
+        val resolved = IntentLayer.resolve(IntentLayer.WORKOUT, candidates)
+        assertEquals(listOf("b", "a"), resolved.map { it.key })
+    }
 }

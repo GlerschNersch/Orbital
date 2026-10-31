@@ -1090,6 +1090,13 @@ class WatchView(
     // per-item cascade factors live in cascadeBuf (drawGrid scratch).
     private var homecomingStartMs = 0L
     private var cascadeBuf = FloatArray(0)
+    // Launch Bloom (3.8.3, batch 2 item 3): tap-point origin + start
+    // clock; per-item pulse factors live in launchBuf (drawGrid
+    // scratch, same sizing discipline as cascadeBuf).
+    private var launchBloomStartMs = 0L
+    private var launchBloomX = 0f
+    private var launchBloomY = 0f
+    private var launchBuf = FloatArray(0)
     // Living Field (item 4): breathing phase, window visibility gate,
     // and the fling-ghost snapshot (capped, reused arrays).
     private var livingPhase = 0f
@@ -1493,7 +1500,7 @@ class WatchView(
         val tGlow = ThemePacks.glowAt(themePack, hour)
         val from = themeFadeFrom
         if (from != null) {
-            val raw = ((SystemClock.uptimeMillis() - themeFadeStartMs) / 300f).coerceIn(0f, 1f)
+            val raw = ((SystemClock.uptimeMillis() - themeFadeStartMs) / MotionTokens.THEME_FADE_MS).coerceIn(0f, 1f)
             val e = 1f - (1f - raw) * (1f - raw) * (1f - raw)
             val na = ThemePacks.blend(from[0], tAccent, e)
             if (accent != na) accent = na
@@ -3472,6 +3479,13 @@ class WatchView(
             val item = items[i]
             drawIcon(c, item.blurred, x, y, d * item.blurredScale, alpha * (1f - sharpness), false, false)
             drawGridItem(c, item, x, y, d, alpha * sharpness, cal)
+            if (i == 0) {
+                // 3.8.3 (batch 2 item 5): the centre ring takes the
+                // effective accent here too, same as in the full grid.
+                stroke.strokeWidth = dp(1.8f)
+                stroke.color = withAlpha(accent, (alpha * 127).toInt())
+                c.drawCircle(x, y, d * 0.57f, stroke)
+            }
             hits += Hit(x, y, d / 2, item, i)
         }
         drawGridHeader(c, w, top, items.firstOrNull(), 0f, alpha * sharpness)
@@ -3552,6 +3566,8 @@ class WatchView(
         }
         if (cascadeBuf.size < items.size) cascadeBuf = FloatArray(items.size + 32)
         cascadeBuf.fill(1f, 0, items.size)
+        if (launchBuf.size < items.size) launchBuf = FloatArray(items.size + 32)
+        launchBuf.fill(0f, 0, items.size)
         // 3.8.1 Homecoming Bloom clock: elapsed since the resume that
         // started it; past the envelope the cascade parks itself.
         val homeElapsed = if (homecomingStartMs > 0L)
@@ -3714,11 +3730,26 @@ class WatchView(
                 bubbleY[i] += tiltY * dp(3.5f) * d
             }
             if (homeElapsed >= 0f && cVal <= 0.05f) {
-                val hp = ((homeElapsed - d * 150f) / 240f).coerceIn(0f, 1f)
+                val hp = ((homeElapsed - d * MotionTokens.HOMECOMING_DELAY_PER_UNIT_MS) / MotionTokens.HOMECOMING_DURATION_MS).coerceIn(0f, 1f)
                 val he = 1f - (1f - hp) * (1f - hp) * (1f - hp)
                 cascadeBuf[i] = he
                 if (hp < 1f) motionAnimating = true
                 lfMul *= 0.45f + 0.55f * he
+            }
+            // 3.8.3 Launch Bloom: neighbours of a just-launched bubble
+            // pulse in distance order (MotionTokens.launchPulse); the
+            // factor rides the same scale multiplier as the cascade.
+            if (launchBloomStartMs > 0L) {
+                val lbElapsed = (SystemClock.uptimeMillis() - launchBloomStartMs).toFloat()
+                if (lbElapsed > MotionTokens.LAUNCH_BLOOM_TOTAL_MS) {
+                    launchBloomStartMs = 0L
+                } else {
+                    val lbRing = hypot(bubbleX[i] - launchBloomX, bubbleY[i] - launchBloomY) / basePitch
+                    val lbPulse = MotionTokens.launchPulse(lbElapsed, lbRing)
+                    launchBuf[i] = lbPulse
+                    if (lbPulse > 0f) lfMul *= 1f + 0.10f * lbPulse
+                    motionAnimating = true
+                }
             }
             val scaleMod = 1f - 0.55f * cVal
             // In the pool, Usage Growth is damped (1.4.0): at full size the
@@ -3761,6 +3792,10 @@ class WatchView(
             val aInt = (itemAlpha * 255).toInt().coerceIn(0, 255)
 
             // Topology-specific backdrop art: orbital rings, river tracks, helix strands, dock arcs, pool tank
+            // 3.8.3 (batch 2 item 5): those guide strokes speak the
+            // pack's lattice token (themeLattice, crossfaded) instead
+            // of the accent, so the field's line work changes identity
+            // with the theme. Widths and alphas are unchanged.
             when (clusterTopology) {
                 ClusterTopology.ORBITALS -> {
                     val sunX = if (items.isNotEmpty() && bubbleDia[0] > 0f) bubbleX[0] else cx + panX.value * (1f - ov) * effZoom
@@ -3770,7 +3805,7 @@ class WatchView(
                     for (rIdx in 0 until ringTotal) {
                         val rad = basePitch * (1.06f + rIdx * 0.92f) * effZoom
                         stroke.strokeWidth = dp(if (rIdx == 0) 1.8f else 1.3f)
-                        stroke.color = withAlpha(accent, (aInt * (0.36f - rIdx * 0.07f).coerceAtLeast(0.08f)).toInt())
+                        stroke.color = withAlpha(themeLattice, (aInt * (0.36f - rIdx * 0.07f).coerceAtLeast(0.08f)).toInt())
                         c.drawCircle(sunX, sunY, rad, stroke)
                         // Astrolabe degree tick marks around each orbital ring
                         stroke.strokeWidth = dp(1.2f)
@@ -3786,7 +3821,7 @@ class WatchView(
                 ClusterTopology.RIVER -> {
                     val railOffset = basePitch * 1.38f * effZoom
                     stroke.strokeWidth = dp(1.6f)
-                    stroke.color = withAlpha(accent, (aInt * 0.28f).toInt())
+                    stroke.color = withAlpha(themeLattice, (aInt * 0.28f).toInt())
                     c.drawLine(cx - railOffset, top + dp(52f), cx - railOffset, h - dp(80f), stroke)
                     c.drawLine(cx + railOffset, top + dp(52f), cx + railOffset, h - dp(80f), stroke)
                 }
@@ -3796,10 +3831,10 @@ class WatchView(
                     var idx = 1
                     while (idx + 1 < items.size) {
                         if (bubbleDia[idx] > 2f && bubbleDia[idx + 1] > 2f) {
-                            stroke.color = withAlpha(accent, (aInt * 0.34f).toInt())
+                            stroke.color = withAlpha(themeLattice, (aInt * 0.34f).toInt())
                             c.drawLine(bubbleX[idx], bubbleY[idx], bubbleX[idx + 1], bubbleY[idx + 1], stroke)
                             // Central base-pair node dot
-                            fill.color = withAlpha(accent, (aInt * 0.58f).toInt())
+                            fill.color = withAlpha(themeLattice, (aInt * 0.58f).toInt())
                             c.drawCircle((bubbleX[idx] + bubbleX[idx + 1]) * 0.5f, (bubbleY[idx] + bubbleY[idx + 1]) * 0.5f, dp(3f), fill)
                         }
                         idx += 2
@@ -3810,7 +3845,7 @@ class WatchView(
                         var cur = strandStart
                         while (cur + 2 < items.size) {
                             if (bubbleDia[cur] > 2f && bubbleDia[cur + 2] > 2f) {
-                                stroke.color = if (strandStart == 1) withAlpha(accent, (aInt * 0.42f).toInt()) else Color.argb((aInt * 0.34f).toInt(), 100, 210, 255)
+                                stroke.color = if (strandStart == 1) withAlpha(themeLattice, (aInt * 0.42f).toInt()) else Color.argb((aInt * 0.34f).toInt(), 100, 210, 255)
                                 c.drawLine(bubbleX[cur], bubbleY[cur], bubbleX[cur + 2], bubbleY[cur + 2], stroke)
                             }
                             cur += 2
@@ -3827,7 +3862,7 @@ class WatchView(
                         val rArc = basePitch * (1.28f + aIdx * 0.88f) * effZoom
                         arcRect.set(cx - rArc, pivotY - rArc, cx + rArc, pivotY + rArc)
                         stroke.strokeWidth = dp(if (aIdx == 0) 1.8f else 1.2f)
-                        stroke.color = withAlpha(accent, (aInt * (0.34f - aIdx * 0.06f).coerceAtLeast(0.07f)).toInt())
+                        stroke.color = withAlpha(themeLattice, (aInt * (0.34f - aIdx * 0.06f).coerceAtLeast(0.07f)).toInt())
                         c.drawArc(arcRect, -162f, 144f, false, stroke)
                     }
                 }
@@ -3837,11 +3872,11 @@ class WatchView(
                     fill.color = Color.argb((aInt * 0.25f).toInt(), 12, 22, 32)
                     c.drawCircle(cx, cy, tankR, fill)
                     stroke.strokeWidth = dp(2.2f)
-                    stroke.color = withAlpha(accent, (aInt * 0.55f).toInt())
+                    stroke.color = withAlpha(themeLattice, (aInt * 0.55f).toInt())
                     c.drawCircle(cx, cy, tankR, stroke)
                     // Subtle inner sonar grid rings
                     stroke.strokeWidth = dp(1.0f)
-                    stroke.color = withAlpha(accent, (aInt * 0.16f).toInt())
+                    stroke.color = withAlpha(themeLattice, (aInt * 0.16f).toInt())
                     c.drawCircle(cx, cy, tankR * 0.66f, stroke)
                     c.drawCircle(cx, cy, tankR * 0.33f, stroke)
                 }
@@ -3867,13 +3902,13 @@ class WatchView(
             // bubbles scattering across the whole screen.
             if (isPool) {
                 val tankScreenR = PoolMath.tankRadius(Metrics.GRID_PITCH * u) * effZoom
-                fill.color = withAlpha(accent, (aInt * 0.05f).toInt())
+                fill.color = withAlpha(themeLattice, (aInt * 0.05f).toInt())
                 c.drawCircle(cx, cy, tankScreenR, fill)
                 stroke.strokeWidth = dp(2.2f)
-                stroke.color = withAlpha(accent, (aInt * 0.55f).toInt())
+                stroke.color = withAlpha(themeLattice, (aInt * 0.55f).toInt())
                 c.drawCircle(cx, cy, tankScreenR, stroke)
                 stroke.strokeWidth = dp(1f)
-                stroke.color = withAlpha(accent, (aInt * 0.20f).toInt())
+                stroke.color = withAlpha(themeLattice, (aInt * 0.20f).toInt())
                 c.drawCircle(cx, cy, tankScreenR * 0.965f, stroke)
             }
 
@@ -4040,11 +4075,11 @@ class WatchView(
             // snapshot, drifting a little against the fling direction.
             if (ghostStartMs > 0L) {
                 val gAge = SystemClock.uptimeMillis() - ghostStartMs
-                if (gAge >= 300L) {
+                if (gAge >= MotionTokens.GHOST_FADE_MS.toLong()) {
                     ghostStartMs = 0L
                     ghostCount = 0
                 } else {
-                    val gFade = 1f - gAge / 300f
+                    val gFade = 1f - gAge / MotionTokens.GHOST_FADE_MS
                     val gOff = gAge / 1000f * 0.05f
                     for (gi in 0 until ghostCount) {
                         val gItem = ghostItems[gi] ?: continue
@@ -4108,6 +4143,44 @@ class WatchView(
                     c.drawRoundRect(lRect, dp(7f), dp(7f), stroke)
                     text.color = Color.argb(ovInt, 255, 255, 255)
                     c.drawText(lbl, x + shiftX - lw / 2, lRect.centerY() + text.textSize * 0.35f, text)
+                }
+            }
+            // 3.8.3 (batch 2 item 5): the centre ring and the centred
+            // item's halo take the effective accent (crossfaded, like
+            // all pack chrome). Restrained alphas: the field keeps its
+            // clean order, the theme just gains a heartbeat at centre.
+            if (bVal < 0.5f && items.isNotEmpty() && bubbleDia[0] > 2f) {
+                stroke.strokeWidth = dp(1.8f)
+                stroke.color = withAlpha(accent, (aInt * 0.55f).toInt())
+                c.drawCircle(bubbleX[0], bubbleY[0], bubbleDia[0] * 0.57f, stroke)
+                val nIdx = nearest?.let { items.indexOf(it) } ?: -1
+                if (nIdx > 0 && bubbleDia[nIdx] > 2f) {
+                    fill.color = withAlpha(accent, (aInt * 0.08f).toInt())
+                    c.drawCircle(bubbleX[nIdx], bubbleY[nIdx], bubbleDia[nIdx] * 0.64f, fill)
+                    stroke.strokeWidth = dp(1.2f)
+                    stroke.color = withAlpha(accent, (aInt * 0.30f).toInt())
+                    c.drawCircle(bubbleX[nIdx], bubbleY[nIdx], bubbleDia[nIdx] * 0.64f, stroke)
+                }
+            }
+            // 3.8.3 (batch 2 item 3): Launch Bloom overlay — glow
+            // rings on the pulsing neighbours plus the expanding
+            // ripple from the tap point. Pure flair over the bubbles
+            // drawn above; the launch itself already fired in tap().
+            if (launchBloomStartMs > 0L) {
+                val lbElapsed2 = (SystemClock.uptimeMillis() - launchBloomStartMs).toFloat()
+                if (lbElapsed2 <= MotionTokens.LAUNCH_BLOOM_TOTAL_MS) {
+                    for (i in items.indices) {
+                        if (launchBuf[i] <= 0.01f || bubbleDia[i] <= 2f) continue
+                        stroke.strokeWidth = dp(2f)
+                        stroke.color = withAlpha(accent, (aInt * 0.55f * launchBuf[i]).toInt())
+                        c.drawCircle(bubbleX[i], bubbleY[i], bubbleDia[i] * 0.56f, stroke)
+                    }
+                    val ripR = MotionTokens.launchRippleRings(lbElapsed2) * basePitch
+                    if (ripR > 1f) {
+                        stroke.strokeWidth = dp(2.2f)
+                        stroke.color = withAlpha(accent, (aInt * 0.5f * MotionTokens.launchRippleAlpha(lbElapsed2)).toInt())
+                        c.drawCircle(launchBloomX, launchBloomY, ripR, stroke)
+                    }
                 }
             }
             c.restore() // 3.8.1: end of the header-zone clip
@@ -4381,7 +4454,7 @@ class WatchView(
             exitStartMs = bloomNow
         }
         val bloomElapsed = if (activeIntent != null && !reducedMotion) (bloomNow - bloomStartMs).toFloat() else 9999f
-        val bloomT = (bloomElapsed / 650f).coerceIn(0f, 1f)
+        val bloomT = (bloomElapsed / MotionTokens.INTENT_BLOOM_TOTAL_MS).coerceIn(0f, 1f)
         if (activeIntent != null && bloomT < 1f) motionAnimating = true
         val bloomPulse = if (activeIntent != null && bloomT < 1f) sin(bloomT * 3.14159f) else 0f
         val intentStars: List<App>? = activeIntent?.let { intent ->
@@ -4390,7 +4463,7 @@ class WatchView(
             val frecencyOrdered = alphabetical.sortedWith(
                 compareBy<App> { byUseIndex[it.key] ?: Int.MAX_VALUE }.thenBy { it.label }
             )
-            val candidates = frecencyOrdered.map { IntentLayer.IntentCandidate(it.key, it.defaultGroup) }
+            val candidates = frecencyOrdered.map { IntentLayer.IntentCandidate(it.key, it.defaultGroup, it.label, it.component.packageName) }
             val appByKey = alphabetical.associateBy { it.key }
             IntentLayer.resolve(intent, candidates).mapNotNull { appByKey[it.key] }
         }
@@ -4467,7 +4540,7 @@ class WatchView(
             // order, MorphMath's springy overshoot), instead of riding
             // the shared unravel value. Settled, it is exactly cVal.
             val bloomE = if (activeIntent != null && bloomT < 1f) {
-                val local = ((bloomElapsed - min(i * 28f, 220f)) / 430f).coerceIn(0f, 1f)
+                val local = ((bloomElapsed - min(i * MotionTokens.INTENT_BLOOM_STAGGER_MS, MotionTokens.INTENT_BLOOM_STAGGER_CAP_MS)) / MotionTokens.INTENT_BLOOM_FLY_MS).coerceIn(0f, 1f)
                 if (i == 0) bloomLocal0 = local
                 if (local >= 1f) 1f else MorphMath.ease(local)
             } else cVal
@@ -4501,10 +4574,10 @@ class WatchView(
         // and fades over ~200ms under the arriving stars.
         if (exitStartMs > 0L && activeIntent != null && !reducedMotion) {
             val eAge = (bloomNow - exitStartMs).toFloat()
-            if (eAge >= 200f) {
+            if (eAge >= MotionTokens.INTENT_BLOOM_EXIT_MS) {
                 exitStartMs = 0L
             } else {
-                val ep = eAge / 200f
+                val ep = eAge / MotionTokens.INTENT_BLOOM_EXIT_MS
                 for (ei in 0 until exitStarCount) {
                     val eApp = exitStarItems[ei] ?: continue
                     val eDia = exitStarD[ei] * (1f - ep * 0.55f)
@@ -7011,6 +7084,18 @@ class WatchView(
         folderPanY.target = -tmp[1]
     }
 
+    /** 3.8.3 Launch Bloom: arm the ripple at a field tap point.
+     *  Decoration only — tap() fires the launch immediately, so the
+     *  app open is never delayed by the animation. Reduced motion
+     *  never arms it. */
+    private fun startLaunchBloom(x: Float, y: Float) {
+        if (reducedMotion) return
+        launchBloomX = x
+        launchBloomY = y
+        launchBloomStartMs = SystemClock.uptimeMillis()
+        invalidate()
+    }
+
     private fun tap(x: Float, y: Float) {
         // The Context Card is the topmost layer: a row tap runs its action
         // (the card closes either way); a tap anywhere else dismisses it.
@@ -7396,7 +7481,10 @@ class WatchView(
             }
 
             when (item) {
-                is App -> onLaunch(item, RectF(hit.x - hit.r, hit.y - hit.r, hit.x + hit.r, hit.y + hit.r))
+                is App -> {
+                    startLaunchBloom(hit.x, hit.y) // 3.8.3: overlay only; the launch below fires now
+                    onLaunch(item, RectF(hit.x - hit.r, hit.y - hit.r, hit.x + hit.r, hit.y + hit.r))
+                }
                 is WidgetBubble -> openWidgetPod(item)
                 is Folder -> openFolder(item)
             }
@@ -7515,7 +7603,14 @@ class WatchView(
         )
         val white = tinted(Color.WHITE, 0.96f)
         val grey = tinted(0xFFB9BEC9.toInt(), 0.85f)
-        val tint = tinted(kind.tint, 0.95f)
+        // 3.8.3 (batch 2 item 5): the Clock island's identity tint
+        // IS the stock accent green, so it follows the effective
+        // theme accent (crossfade included) instead of staying green
+        // under every pack — Matt's phone shot showed the date line
+        // and analog ring still green under XMB Purple. Other kinds
+        // keep their identity tints, the way category tints stay put.
+        val tintBase = if (kind == NativeKind.CLOCK) accent else kind.tint
+        val tint = tinted(tintBase, 0.95f)
         val cal = nativeCal.apply { timeInMillis = System.currentTimeMillis() }
         nativeText.typeface = Typeface.DEFAULT
         nativeText.textAlign = Paint.Align.LEFT
@@ -7527,7 +7622,7 @@ class WatchView(
                 val acx = rect.right - pad - r
                 val acy = rect.centerY()
                 nativeOval.set(acx - r, acy - r, acx + r, acy + r)
-                nativeStroke.color = tinted(kind.tint, 0.30f)
+                nativeStroke.color = tinted(tintBase, 0.30f)
                 nativeStroke.strokeWidth = dp(1.6f)
                 c.drawOval(nativeOval, nativeStroke)
                 nativeStroke.color = tint

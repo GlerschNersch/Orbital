@@ -87,7 +87,7 @@ object AppClassifier {
             "audiobook", "radio", "shazam", "audio", "sound", "tunein", "sirius"),
         AppGroup.PHOTOS to listOf("camera", "photo", "gallery", "snapseed", "lightroom", "picsart", "vsco", "image",
             "pixel", "selfie"),
-        AppGroup.HEALTH to listOf("health", "=fit", "fitbit", "zepp", "strava", "garmin", "sleep", "workout",
+        AppGroup.HEALTH to listOf("health", "=fit", "fitbit", "zepp", "strava", "garmin", "sleep", "workout", "physique",
             "peloton", "myfitnesspal", "=calm", "headspace", "meditat", "medical", "pharmacy", "doctor", "mychart",
             "=hims", "=hers", "=zen", "wellness", "=care"),
         AppGroup.NEWS to listOf("library", "libby", "hoopla", "news", "reader", "kindle", "books", "medium", "feedly", "magazine", "weather",

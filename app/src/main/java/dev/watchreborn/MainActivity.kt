@@ -251,7 +251,10 @@ class MainActivity : Activity(), SensorEventListener {
             prefs.edit().putStringSet(KEY_HINTS_SEEN, cur).apply()
             view.hintsSeen = cur
         }
-        view.onThemePackSelected = { id -> prefs.edit().putString(KEY_THEME_PACK, id).apply() } // 3.8.2
+        view.onThemePackSelected = { id -> // 3.8.2 persist; 3.8.3 (batch 2 item 5): hosted island snapshots repaint under the new pack at once instead of lagging to the next provider push
+            prefs.edit().putString(KEY_THEME_PACK, id).apply()
+            for (wid in islandViews.keys) scheduleIslandSnapshot(wid)
+        }
         view.onFaceSelected = ::switchFace
         view.onFaceMenu = ::showFaceMenu
         pushFacesToView()
