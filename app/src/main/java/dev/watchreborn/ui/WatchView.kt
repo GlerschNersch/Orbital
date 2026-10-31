@@ -88,6 +88,10 @@ enum class ClusterOption {
     THEME_SCHEDULE,
     THEME_DAY_PACK,
     THEME_NIGHT_PACK,
+    LIVING_THEMES,
+    CUSTOM_PACK,
+    EXPORT_PACK,
+    IMPORT_PACK,
     MORE_OPTIONS,
     CLOSE_SHEET,
 }
@@ -188,6 +192,49 @@ class WatchView(
                 if (!pickerBackRect.isEmpty) {
                     out += WatchAccessibilityProvider.Node(
                         "font:back", "Back",
+                        Rect(pickerBackRect.left.toInt(), pickerBackRect.top.toInt(), pickerBackRect.right.toInt(), pickerBackRect.bottom.toInt()),
+                        pickerBackRect.centerX(), pickerBackRect.centerY(),
+                    )
+                }
+                out += dockNodes(DOCK_SETTINGS)
+                return out
+            }
+            if (customEditorOpen) {
+                val out = ArrayList<WatchAccessibilityProvider.Node>()
+                fun node(key: String, label: String, rect: RectF) {
+                    if (rect.isEmpty) return
+                    out += WatchAccessibilityProvider.Node(
+                        key, label,
+                        Rect(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt()),
+                        rect.centerX(), rect.centerY(),
+                    )
+                }
+                node("custom:name", "Pack name, $editorName", editorNameRect)
+                for ((rect, i) in editorAccentRects) {
+                    node("custom:accent:$i", "Accent colour ${i + 1}" + if (i == editorAccentIdx) ", selected" else "", rect)
+                }
+                for ((rect, i) in editorGlowRects) {
+                    node("custom:glow:$i", "Glow colour ${i + 1}" + if (i == editorGlowIdx) ", selected" else "", rect)
+                }
+                for ((rect, i) in editorSurfaceRects) {
+                    node("custom:surface:$i", "Surface, ${CustomPacks.SURFACE_STEPS[i].label}", rect)
+                }
+                for ((rect, bg) in editorBgRects) {
+                    node("custom:bg:${bg.name}", "Background, ${bg.name.lowercase()}", rect)
+                }
+                for ((rect, raj) in editorFontRects) {
+                    node("custom:font:$raj", if (raj) "Font, Rajdhani" else "Font, System", rect)
+                }
+                node("custom:save", "Save pack", editorSaveRect)
+                for ((rect, pack) in editorApplyRects) {
+                    node("custom:apply:${pack.id}", "Apply ${pack.name}", rect)
+                }
+                for ((rect, id) in editorDeleteRects) {
+                    node("custom:delete:$id", "Delete custom pack", rect)
+                }
+                if (!pickerBackRect.isEmpty) {
+                    out += WatchAccessibilityProvider.Node(
+                        "custom:back", "Back",
                         Rect(pickerBackRect.left.toInt(), pickerBackRect.top.toInt(), pickerBackRect.right.toInt(), pickerBackRect.bottom.toInt()),
                         pickerBackRect.centerX(), pickerBackRect.centerY(),
                     )
@@ -895,6 +942,15 @@ class WatchView(
      *  Persisted by the activity as the living_field pref. */
     var livingField: Boolean = true
 
+    /** 3.11.0: Living Themes (Settings > Behavior, default on):
+     *  the accent warms toward amber, then red, as the battery
+     *  fades. See ThemePacks.livingAccent for the curve. */
+    var livingThemes: Boolean = true
+
+    /** Last known battery percentage (0..100), -1 when unknown;
+     *  fed by the activity's battery receiver and on resume. */
+    var batteryLevel: Int = -1
+
     /** 3.7.5: monochrome icons in the system palette (the bitmaps come
      *  from AppRepo; this only drives the sheet row). */
     var themedIcons: Boolean = false
@@ -1500,6 +1556,38 @@ class WatchView(
     private var fontPickerOpen = false
     private val fontRowRects = ArrayList<Pair<RectF, String>>()
 
+    // 3.11.0: the Custom Pack editor's state and hit rects (the
+    // editor is a sheet sub-panel like the pickers; see
+    // drawCustomPackEditor). Editor choices are session state
+    // until Save turns them into a persisted custom pack.
+    private var customEditorOpen = false
+    private var editorName = "Custom Pack"
+    private var editorAccentIdx = 9 // XMB Orange: a warm default
+    private var editorGlowIdx = 9
+    private var editorSurfaceStep = 0
+    private var editorBackground = BackgroundStyle.NONE
+    private var editorRajdhani = false
+    private val editorNameRect = RectF()
+    private val editorSaveRect = RectF()
+    private val editorAccentRects = ArrayList<Pair<RectF, Int>>()
+    private val editorGlowRects = ArrayList<Pair<RectF, Int>>()
+    private val editorSurfaceRects = ArrayList<Pair<RectF, Int>>()
+    private val editorBgRects = ArrayList<Pair<RectF, BackgroundStyle>>()
+    private val editorFontRects = ArrayList<Pair<RectF, Boolean>>()
+    private val editorApplyRects = ArrayList<Pair<RectF, ThemePack>>()
+    private val editorDeleteRects = ArrayList<Pair<RectF, String>>()
+
+    /** The editor's Save produced a pack: the activity registers
+     *  and persists it, then calls [applyCustomPack]. */
+    var onCustomPackSaved: (ThemePack) -> Unit = {}
+
+    /** A custom pack's delete cross in the editor list. */
+    var onCustomPackDeleted: (String) -> Unit = {}
+
+    /** The name row: the activity hosts a text dialog and calls
+     *  [setCustomEditorName] with the result. */
+    var onCustomPackNameRequested: (String) -> Unit = {}
+
     // 3.8.2 theme packs: the effective (day/night blended, crossfaded)
     // theme colours. `accent` stays the effective accent; these carry
     // the active pack's glow and surfaces. updateThemeColors() below
@@ -1548,6 +1636,37 @@ class WatchView(
             field = v
             invalidate()
         }
+
+    /** The pack rendering right now (schedule/Auto resolved):
+     *  what Export writes. */
+    fun currentEffectivePack(): ThemePack = effectivePack
+
+    /**
+     * 3.11.0: replay a pack transition after a Face switch. The
+     * switch recreates the activity, so this fresh view would
+     * otherwise snap from the default colours; instead the fade is
+     * seeded with the OUTGOING pack's current colours and the
+     * switch wave fires, and updateThemeColors crossfades to
+     * whatever pack the new Face resolved (its own slot, the
+     * schedule, or the restored manual pick). A Face switch never
+     * touches topology: no suggestion is consulted here.
+     */
+    fun replayThemeTransition(fromId: String) {
+        if (reducedMotion) return
+        val cal = Calendar.getInstance()
+        val month = cal.get(Calendar.MONTH)
+        val from = ThemePacks.resolvePack(fromId, month)
+        val hour = cal.get(Calendar.HOUR_OF_DAY) + cal.get(Calendar.MINUTE) / 60f
+        themeFadeFrom = intArrayOf(
+            ThemePacks.accentAt(from, hour, clusterTopology.name),
+            ThemePacks.glowAt(from, hour),
+            from.surface, from.surfaceAlt, from.latticeStroke,
+        )
+        themeFadeStartMs = SystemClock.uptimeMillis()
+        themeFadeDurationMs = MotionTokens.params(effectivePack.motionDialect).themeFadeMs
+        switchWaveStartMs = SystemClock.uptimeMillis()
+        invalidate()
+    }
 
     private val systemTypeface: Typeface = Typeface.create("sans-serif", Typeface.BOLD)
     private var rajdhaniTypeface: Typeface? = null
@@ -1606,7 +1725,12 @@ class WatchView(
         // its own accent inside the pack; every accent consumer
         // (centre ring, island interiors, pill rim, dock) reads the
         // single `accent` field this produces.
-        val tAccent = ThemePacks.accentAt(eff, hour, clusterTopology.name)
+        // 3.11.0: Living Themes warms the accent (and only the
+        // accent) as the battery fades; surfaces, lattice and glow
+        // below stay the pack's own.
+        val tAccent = ThemePacks.livingAccent(
+            ThemePacks.accentAt(eff, hour, clusterTopology.name), batteryLevel, livingThemes,
+        )
         val tGlow = ThemePacks.glowAt(eff, hour)
         val from = themeFadeFrom
         if (from != null) {
@@ -1805,7 +1929,7 @@ class WatchView(
         val state = NavState(
             cardMenuOpen = cardMenuOpen,
             searching = searching || gridSearching || searchQuery.isNotEmpty(),
-            topologyPickerOpen = (topologyPickerOpen || themePickerOpen || fontPickerOpen) && clusterSheet.target > 0f,
+            topologyPickerOpen = (topologyPickerOpen || themePickerOpen || fontPickerOpen || customEditorOpen) && clusterSheet.target > 0f,
             sheetOpen = clusterSheet.target > 0f,
             editMode = editMode,
             widgetOpen = widgetIn.target == 1f,
@@ -1827,6 +1951,7 @@ class WatchView(
                 topologyPickerOpen = false
                 themePickerOpen = false
                 fontPickerOpen = false
+                customEditorOpen = false
                 themePickerMode = ThemePickerMode.PACK
                 invalidate()
                 true
@@ -2721,6 +2846,7 @@ class WatchView(
         topologyPickerOpen = false
         themePickerOpen = false
         fontPickerOpen = false
+        customEditorOpen = false
         clusterSheet.target = 1f
         performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
         invalidate()
@@ -3780,10 +3906,13 @@ class WatchView(
         // The wave flashes in the NEW pack's accent at full strength
         // (the `accent` field is still mid-crossfade), resolved for
         // this frame's topology like updateThemeColors resolves it.
-        val waveAccent = ThemePacks.accentAt(
-            effectivePack,
-            cal.get(Calendar.HOUR_OF_DAY) + cal.get(Calendar.MINUTE) / 60f,
-            clusterTopology.name,
+        val waveAccent = ThemePacks.livingAccent(
+            ThemePacks.accentAt(
+                effectivePack,
+                cal.get(Calendar.HOUR_OF_DAY) + cal.get(Calendar.MINUTE) / 60f,
+                clusterTopology.name,
+            ),
+            batteryLevel, livingThemes,
         )
         // 3.8.1 Homecoming Bloom clock: elapsed since the resume that
         // started it; past the envelope the cascade parks itself.
@@ -4980,7 +5109,11 @@ class WatchView(
         fill.color = withAlpha(themeSurface, (aInt * 0.94f).toInt())
         c.drawRoundRect(searchBarRect, barH / 2, barH / 2, fill)
         stroke.strokeWidth = dp(1.6f)
-        stroke.color = withAlpha(catFilter?.tint ?: accent, aInt)
+        // 3.11.0: while an intent filter is live, the rim takes
+        // the intent's primary-group colour (the retint the chips
+        // and header join below); a category filter's tint is next,
+        // then the pack accent.
+        stroke.color = withAlpha(activeIntent?.groups?.firstOrNull()?.tint ?: catFilter?.tint ?: accent, aInt)
         c.drawRoundRect(searchBarRect, barH / 2, barH / 2, stroke)
 
         text.textSize = sp(13.5f)
@@ -4992,6 +5125,10 @@ class WatchView(
             else -> "✨ Unraveled (${stars.size} apps) • Tap to type"
         }
         text.color = if (q.isEmpty() && !searching) Color.argb((aInt * 0.85f).toInt(), 215, 220, 230) else Color.argb(aInt, 255, 255, 255)
+        if (activeIntent != null) {
+            // 3.11.0: the header names the intent in its own colour.
+            activeIntent.groups.firstOrNull()?.tint?.let { text.color = withAlpha(it, aInt) }
+        }
         c.drawText(displayStr, searchBarRect.left + dp(16f), searchBarRect.centerY() + text.textSize * 0.35f, text)
 
         searchClearRect.set(searchBarRect.right - barH, searchBarRect.top, searchBarRect.right, searchBarRect.bottom)
@@ -5025,7 +5162,9 @@ class WatchView(
             val active = activeIntent == intent
             val cl = padX + i * (eachW + chipGap)
             val cr = RectF(cl, intentY, cl + eachW, intentY + chipH)
-            fill.color = if (active) withAlpha(accent, aInt) else Color.argb((aInt * 0.88f).toInt(), 40, 42, 48)
+            // 3.11.0: the active chip fills with its own intent's
+            // primary-group colour, not the pack accent.
+            fill.color = if (active) withAlpha(intent.groups.firstOrNull()?.tint ?: accent, aInt) else Color.argb((aInt * 0.88f).toInt(), 40, 42, 48)
             c.drawRoundRect(cr, chipH / 2, chipH / 2, fill)
             text.color = if (active) Color.argb(aInt, 0, 0, 0) else Color.argb(aInt, 225, 228, 235)
             c.drawText(intent.chipLabel, cr.centerX() - text.measureText(intent.chipLabel) / 2, cr.centerY() + text.textSize * 0.35f, text)
@@ -5524,6 +5663,10 @@ class WatchView(
             drawTopologyPicker(c, w, h, top, t)
             return
         }
+        if (customEditorOpen) {
+            drawCustomPackEditor(c, w, h, top, t)
+            return
+        }
 
         val padX = dp(18f)
         val cardW = w - 2 * padX
@@ -5559,6 +5702,9 @@ class WatchView(
                     add(Triple(ClusterOption.THEME_DAY_PACK, "Day Pack", themeDayPackId))
                     add(Triple(ClusterOption.THEME_NIGHT_PACK, "Night Pack", themeNightPackId))
                 }
+                add(Triple(ClusterOption.CUSTOM_PACK, "Custom Pack", ""))
+                add(Triple(ClusterOption.EXPORT_PACK, "Export Theme Pack", ""))
+                add(Triple(ClusterOption.IMPORT_PACK, "Import Theme Pack", ""))
             }
             if (sheetExpanded) {
                 add(Triple(null, "BEHAVIOR", ""))
@@ -5567,6 +5713,7 @@ class WatchView(
                 add(Triple(ClusterOption.USAGE_GROWTH, "Usage Growth", if (usageGrowth) "Bubbles grow with use" else "Uniform bubble sizes"))
                 add(Triple(ClusterOption.THEMED_ICONS, "Themed Icons", if (themedIcons) "Monochrome, in your system colours" else "Each app's own colours"))
                 add(Triple(ClusterOption.LIVING_FIELD, "Living Field", if (livingField) "Field breathes and drifts" else "Field sits still"))
+                add(Triple(ClusterOption.LIVING_THEMES, "Living Themes", if (livingThemes) "Accent warms as the battery fades" else "Accent stays the pack's own"))
                 add(Triple(ClusterOption.CATEGORY_CLUSTERING, "Category Clustering", if (autoFolders) "Apps grouped into category folders" else "All apps loose"))
             }
             if (sheetExpanded) {
@@ -5690,6 +5837,7 @@ class WatchView(
                 ClusterOption.CATEGORY_CLUSTERING -> autoFolders
                 ClusterOption.BLOOM_MODE -> bloomFolders
                 ClusterOption.LIVING_FIELD -> livingField
+                ClusterOption.LIVING_THEMES -> livingThemes
                 ClusterOption.THEME_SCHEDULE -> themeSchedule
                 else -> null
             }
@@ -5710,6 +5858,10 @@ class WatchView(
                 ClusterOption.THEME_FONT -> themeFontLabel(themeFontPref)
                 ClusterOption.THEME_DAY_PACK -> ThemePacks.byId(themeDayPackId).name
                 ClusterOption.THEME_NIGHT_PACK -> ThemePacks.byId(themeNightPackId).name
+                ClusterOption.CUSTOM_PACK -> if (ThemePacks.customPacks.isEmpty()) "Build your own" else "${ThemePacks.customPacks.size} saved"
+                ClusterOption.EXPORT_PACK -> "Downloads"
+                ClusterOption.IMPORT_PACK -> "Import"
+
                 ClusterOption.CLEAR_PINS -> "Unpin all"
                 ClusterOption.BACKUP_LAYOUT -> "Export"
                 ClusterOption.RESTORE_LAYOUT -> "Import"
@@ -5764,7 +5916,7 @@ class WatchView(
             sheetRowLabels += r to when {
                 toggleOn != null -> "$label, ${if (toggleOn) "on" else "off"}"
                 opt == ClusterOption.CLUSTER_TOPOLOGY -> "$label, ${clusterTopology.fullTitle}"
-                opt == ClusterOption.THEME_PACK -> "$label, ${if (themeSchedule) "Scheduled" else themePack.name}"
+                opt == ClusterOption.THEME_PACK -> "$label, ${if (themeSchedule) "Scheduled, overrides Face themes" else themePack.name}"
                 opt == ClusterOption.THEME_FONT -> "$label, ${themeFontLabel(themeFontPref)}"
                 opt == ClusterOption.THEME_DAY_PACK -> "$label, ${ThemePacks.byId(themeDayPackId).name}"
                 opt == ClusterOption.THEME_NIGHT_PACK -> "$label, ${ThemePacks.byId(themeNightPackId).name}"
@@ -5941,7 +6093,7 @@ class WatchView(
         val cardW = w - 2 * padX
         val rowH = dp(50f)
         val gap = dp(4f)
-        val all = ThemePacks.ALL
+        val all = ThemePacks.allPacks()
         val sheetTop = top + dp(6f)
         sheetBoundsRect.set(0f, 0f, w, h)
 
@@ -6130,6 +6282,220 @@ class WatchView(
         val backStr = "\u2039 Back"
         c.drawText(backStr, w / 2 - text.measureText(backStr) / 2, pickerBackRect.centerY() + text.textSize * 0.35f, text)
         useSystemFont()
+    }
+
+    /** Called by the activity's name dialog with the entered name. */
+    fun setCustomEditorName(name: String) {
+        editorName = name
+        invalidate()
+    }
+
+    /**
+     * Applies a pack the activity has just registered and persisted
+     * (an editor save or a file import): the normal pick path, so
+     * the manual pref, the active Face's slot, the crossfade and
+     * the switch wave all behave exactly as for a picker pick.
+     * Customs suggest no topology, so the layout never moves.
+     */
+    fun applyCustomPack(pack: ThemePack) {
+        selectThemePack(pack)
+        invalidate()
+    }
+
+    /** The editor's Save: build the pack from the editor state and
+     *  hand it to the activity (which registers + persists it and
+     *  calls [applyCustomPack] back). The sheet closes onto the
+     *  cluster so the new pack is immediately visible. */
+    private fun saveCustomFromEditor() {
+        val pack = CustomPacks.buildPack(
+            name = editorName,
+            accent = CustomPacks.SWATCHES[editorAccentIdx],
+            glow = CustomPacks.SWATCHES[editorGlowIdx],
+            surfaceStep = editorSurfaceStep,
+            background = editorBackground,
+            rajdhani = editorRajdhani,
+            id = CustomPacks.newId(),
+        )
+        customEditorOpen = false
+        clusterSheet.target = 0f
+        onCustomPackSaved(pack)
+        invalidate()
+    }
+
+    /** Tapping a saved custom in the editor list applies it through
+     *  the normal pick path and closes onto the cluster. */
+    private fun applyCustomFromEditor(pack: ThemePack) {
+        customEditorOpen = false
+        clusterSheet.target = 0f
+        selectThemePack(pack)
+        invalidate()
+    }
+
+    /**
+     * The Custom Pack editor (3.11.0): a sheet sub-panel in the
+     * pickers' idiom. Name entry is the one thing a canvas does
+     * badly, so the name row hands off to the activity's text
+     * dialog; everything else (swatch grids, segmented rows, the
+     * saved-packs list) is drawn and hit-tested here.
+     */
+    private fun drawCustomPackEditor(c: Canvas, w: Float, h: Float, top: Float, t: Float) {
+        val a = (t * 255).toInt().coerceIn(0, 255)
+        editorNameRect.setEmpty()
+        editorSaveRect.setEmpty()
+        editorAccentRects.clear()
+        editorGlowRects.clear()
+        editorSurfaceRects.clear()
+        editorBgRects.clear()
+        editorFontRects.clear()
+        editorApplyRects.clear()
+        editorDeleteRects.clear()
+
+        val padX = dp(18f)
+        val cardW = w - 2 * padX
+        val sheetTop = top + dp(6f)
+        sheetBoundsRect.set(0f, 0f, w, h)
+        var ry = sheetTop + dp(68f)
+
+        useDisplayFont()
+        text.textSize = sp(18.5f)
+        text.color = Color.argb(a, 255, 255, 255)
+        val title = "Custom Pack"
+        c.drawText(title, w / 2 - text.measureText(title) / 2, sheetTop + dp(32f), text)
+        text.textSize = sp(12.5f)
+        text.color = Color.argb((a * 0.7f).toInt(), 188, 190, 198)
+        val hint = "Your colours, saved as a pack in the picker"
+        c.drawText(hint, w / 2 - text.measureText(hint) / 2, sheetTop + dp(55f), text)
+        useSystemFont()
+
+        // Name row: the value is the draft name; tap edits it.
+        val nameRow = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + dp(50f))
+        fill.color = withAlpha(themeSurface, a)
+        c.drawRoundRect(nameRow, dp(16f), dp(16f), fill)
+        text.textSize = sp(15.5f)
+        text.color = Color.argb(a, 255, 255, 255)
+        c.drawText("Name", nameRow.left + dp(16f), nameRow.centerY() + text.textSize * 0.35f, text)
+        text.textSize = sp(13f)
+        text.color = withAlpha(accent, a)
+        val nm = TextUtils.ellipsize(editorName, text, cardW * 0.52f, TextUtils.TruncateAt.END).toString()
+        c.drawText(nm, nameRow.right - dp(16f) - text.measureText(nm), nameRow.centerY() + text.textSize * 0.35f, text)
+        editorNameRect.set(nameRow)
+        ry += dp(56f)
+
+        ry = drawEditorSwatches(c, "ACCENT", editorAccentIdx, editorAccentRects, padX, cardW, ry, a)
+        ry = drawEditorSwatches(c, "GLOW", editorGlowIdx, editorGlowRects, padX, cardW, ry, a)
+        ry = drawEditorSegmented(c, "SURFACE", CustomPacks.SURFACE_STEPS.map { it.label }, editorSurfaceStep, padX, cardW, ry, a) { r, i ->
+            editorSurfaceRects += r to i
+        }
+        ry = drawEditorSegmented(c, "BACKGROUND", listOf("None", "Wave", "Grid"), editorBackground.ordinal, padX, cardW, ry, a) { r, i ->
+            editorBgRects += r to BackgroundStyle.entries[i]
+        }
+        ry = drawEditorSegmented(c, "FONT", listOf("System", "Rajdhani"), if (editorRajdhani) 1 else 0, padX, cardW, ry, a) { r, i ->
+            editorFontRects += r to (i == 1)
+        }
+
+        // Save: an accent-filled action row, like the sheet's Done.
+        val saveRow = RectF(padX + dp(12f), ry + dp(2f), padX + cardW - dp(12f), ry + dp(2f) + dp(50f))
+        fill.color = withAlpha(accent, a)
+        c.drawRoundRect(saveRow, dp(16f), dp(16f), fill)
+        text.textSize = sp(16f)
+        text.color = Color.argb(a, 0, 0, 0)
+        val saveStr = "Save Pack"
+        c.drawText(saveStr, w / 2 - text.measureText(saveStr) / 2, saveRow.centerY() + text.textSize * 0.35f, text)
+        editorSaveRect.set(saveRow)
+        ry += dp(58f)
+
+        // Saved customs: tap a row to apply it, tap the cross to
+        // delete it. The list is capped at three rows so the editor
+        // keeps to one page; the picker holds the full set.
+        val customs = ThemePacks.customPacks
+        if (customs.isNotEmpty()) {
+            text.textSize = sp(12f)
+            text.color = Color.argb((a * 0.85f).toInt(), 168, 170, 178)
+            c.drawText("YOUR PACKS - TAP TO APPLY", padX + dp(16f), ry + dp(15f), text)
+            ry += dp(22f)
+            for (pack in customs.take(3)) {
+                val r = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + dp(46f))
+                fill.color = withAlpha(themeSurface, a)
+                c.drawRoundRect(r, dp(16f), dp(16f), fill)
+                fill.color = withAlpha(pack.accentDay, a)
+                c.drawCircle(r.left + dp(24f), r.centerY(), dp(9f), fill)
+                text.textSize = sp(15f)
+                text.color = Color.argb(a, 255, 255, 255)
+                val pn = TextUtils.ellipsize(pack.name, text, cardW * 0.55f, TextUtils.TruncateAt.END).toString()
+                c.drawText(pn, r.left + dp(44f), r.centerY() + text.textSize * 0.35f, text)
+                val del = RectF(r.right - dp(46f), r.top, r.right, r.bottom)
+                text.textSize = sp(16f)
+                text.color = Color.argb((a * 0.8f).toInt(), 255, 130, 130)
+                val xs = "\u2715"
+                c.drawText(xs, del.centerX() - text.measureText(xs) / 2, r.centerY() + text.textSize * 0.35f, text)
+                editorApplyRects += r to pack
+                editorDeleteRects += del to pack.id
+                ry += dp(50f)
+            }
+        }
+
+        // Back, in the pickers' shared slot.
+        pickerBackRect.set(padX + dp(12f), ry + dp(4f), padX + cardW - dp(12f), ry + dp(4f) + dp(50f))
+        fill.color = withAlpha(themeSurface, a)
+        c.drawRoundRect(pickerBackRect, dp(16f), dp(16f), fill)
+        text.textSize = sp(16f)
+        text.color = Color.argb(a, 255, 255, 255)
+        val backStr = "\u2039 Back"
+        c.drawText(backStr, w / 2 - text.measureText(backStr) / 2, pickerBackRect.centerY() + text.textSize * 0.35f, text)
+    }
+
+    /** One labelled swatch grid of the editor; returns the y below it. */
+    private fun drawEditorSwatches(
+        c: Canvas, label: String, selected: Int, out: ArrayList<Pair<RectF, Int>>,
+        padX: Float, cardW: Float, ry0: Float, a: Int,
+    ): Float {
+        text.textSize = sp(12f)
+        text.color = Color.argb((a * 0.85f).toInt(), 168, 170, 178)
+        c.drawText(label, padX + dp(16f), ry0 + dp(15f), text)
+        val cols = 8
+        val cell = cardW / cols
+        val rad = dp(13f)
+        for (i in CustomPacks.SWATCHES.indices) {
+            val cx = padX + cell * (i % cols) + cell / 2
+            val cy = ry0 + dp(22f) + dp(19f) + (i / cols) * dp(38f)
+            fill.color = withAlpha(CustomPacks.SWATCHES[i], a)
+            c.drawCircle(cx, cy, rad, fill)
+            if (i == selected) {
+                stroke.strokeWidth = dp(2.5f)
+                stroke.color = Color.argb(a, 255, 255, 255)
+                c.drawCircle(cx, cy, rad + dp(3.5f), stroke)
+            }
+            out += RectF(cx - cell / 2, cy - dp(19f), cx + cell / 2, cy + dp(19f)) to i
+        }
+        return ry0 + dp(22f) + dp(78f)
+    }
+
+    /** One labelled segmented row of the editor; returns the y below it. */
+    private fun drawEditorSegmented(
+        c: Canvas, label: String, options: List<String>, selected: Int,
+        padX: Float, cardW: Float, ry0: Float, a: Int,
+        record: (RectF, Int) -> Unit,
+    ): Float {
+        text.textSize = sp(12f)
+        text.color = Color.argb((a * 0.85f).toInt(), 168, 170, 178)
+        c.drawText(label, padX + dp(16f), ry0 + dp(15f), text)
+        val r = RectF(padX + dp(12f), ry0 + dp(22f), padX + cardW - dp(12f), ry0 + dp(22f) + dp(46f))
+        fill.color = withAlpha(themeSurface, a)
+        c.drawRoundRect(r, dp(16f), dp(16f), fill)
+        val segW = r.width() / options.size
+        for (i in options.indices) {
+            val sr = RectF(r.left + i * segW, r.top, r.left + (i + 1) * segW, r.bottom)
+            if (i == selected) {
+                fill.color = withAlpha(accent, a)
+                c.drawRoundRect(RectF(sr.left + dp(4f), sr.top + dp(4f), sr.right - dp(4f), sr.bottom - dp(4f)), dp(12f), dp(12f), fill)
+            }
+            text.textSize = sp(13.5f)
+            text.color = if (i == selected) Color.argb(a, 0, 0, 0) else Color.argb(a, 235, 237, 242)
+            val s = options[i]
+            c.drawText(s, sr.centerX() - text.measureText(s) / 2, sr.centerY() + text.textSize * 0.35f, text)
+            record(sr, i)
+        }
+        return ry0 + dp(74f)
     }
 
     /** Applies a theme chosen in the theme picker to the slot the
@@ -6459,6 +6825,51 @@ class WatchView(
                 c.drawCircle(cx - s * 0.26f, cy, s * 0.13f, fill)
                 c.drawCircle(cx, cy, s * 0.13f, fill)
                 c.drawCircle(cx + s * 0.26f, cy, s * 0.13f, fill)
+            }
+            ClusterOption.LIVING_THEMES -> {
+                // A battery outline, filled low: the fading accent.
+                val bw = s * 0.62f
+                val bh = s * 0.36f
+                c.drawRect(cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2, stroke)
+                c.drawLine(cx + bw / 2 + s * 0.05f, cy - bh * 0.22f, cx + bw / 2 + s * 0.05f, cy + bh * 0.22f, stroke)
+                fill.color = color
+                c.drawRect(cx - bw / 2 + s * 0.05f, cy - bh / 2 + s * 0.05f, cx - bw * 0.10f, cy + bh / 2 - s * 0.05f, fill)
+            }
+            ClusterOption.CUSTOM_PACK -> {
+                // A swatch ring with a plus: build your own.
+                c.drawCircle(cx - s * 0.10f, cy - s * 0.06f, s * 0.30f, stroke)
+                fill.color = color
+                c.drawCircle(cx - s * 0.10f, cy - s * 0.06f, s * 0.10f, fill)
+                c.drawLine(cx + s * 0.16f, cy + s * 0.32f, cx + s * 0.40f, cy + s * 0.32f, stroke)
+                c.drawLine(cx + s * 0.28f, cy + s * 0.20f, cx + s * 0.28f, cy + s * 0.44f, stroke)
+            }
+            ClusterOption.EXPORT_PACK -> {
+                // Arrow rising out of a tray: the pack, written out.
+                c.drawLine(cx, cy + s * 0.02f, cx, cy - s * 0.36f, stroke)
+                path.moveTo(cx - s * 0.15f, cy - s * 0.20f)
+                path.lineTo(cx, cy - s * 0.36f)
+                path.lineTo(cx + s * 0.15f, cy - s * 0.20f)
+                c.drawPath(path, stroke)
+                path.reset()
+                path.moveTo(cx - s * 0.40f, cy + s * 0.06f)
+                path.lineTo(cx - s * 0.30f, cy + s * 0.36f)
+                path.lineTo(cx + s * 0.30f, cy + s * 0.36f)
+                path.lineTo(cx + s * 0.40f, cy + s * 0.06f)
+                c.drawPath(path, stroke)
+            }
+            ClusterOption.IMPORT_PACK -> {
+                // Arrow sinking into a tray: a pack file, read in.
+                c.drawLine(cx, cy - s * 0.36f, cx, cy + s * 0.16f, stroke)
+                path.moveTo(cx - s * 0.15f, cy)
+                path.lineTo(cx, cy + s * 0.16f)
+                path.lineTo(cx + s * 0.15f, cy)
+                c.drawPath(path, stroke)
+                path.reset()
+                path.moveTo(cx - s * 0.40f, cy + s * 0.06f)
+                path.lineTo(cx - s * 0.30f, cy + s * 0.36f)
+                path.lineTo(cx + s * 0.30f, cy + s * 0.36f)
+                path.lineTo(cx + s * 0.40f, cy + s * 0.06f)
+                c.drawPath(path, stroke)
             }
             ClusterOption.SET_DEFAULT_HOME -> {
                 path.moveTo(cx - s * 0.42f, cy + s * 0.02f)
@@ -7697,9 +8108,75 @@ class WatchView(
             if (dockHit != null) {
                 performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
                 when (dockHit) {
-                    DOCK_CLUSTER -> { topologyPickerOpen = false; themePickerOpen = false; fontPickerOpen = false; clusterSheet.target = 0f; invalidate() }
-                    DOCK_WIDGETS -> { topologyPickerOpen = false; themePickerOpen = false; fontPickerOpen = false; clusterSheet.target = 0f; onWidgetsPage() }
+                    DOCK_CLUSTER -> { topologyPickerOpen = false; themePickerOpen = false; fontPickerOpen = false; customEditorOpen = false; clusterSheet.target = 0f; invalidate() }
+                    DOCK_WIDGETS -> { topologyPickerOpen = false; themePickerOpen = false; fontPickerOpen = false; customEditorOpen = false; clusterSheet.target = 0f; onWidgetsPage() }
                     else -> { /* Settings segment: already here */ }
+                }
+                return
+            }
+            if (customEditorOpen) {
+                // Delete crosses sit inside their apply rows, so
+                // they are tested first.
+                editorDeleteRects.lastOrNull { it.first.contains(x, y) }?.let { (_, id) ->
+                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    onCustomPackDeleted(id)
+                    invalidate()
+                    return
+                }
+                editorApplyRects.lastOrNull { it.first.contains(x, y) }?.let { (_, pack) ->
+                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    applyCustomFromEditor(pack)
+                    return
+                }
+                if (!editorNameRect.isEmpty && editorNameRect.contains(x, y)) {
+                    onCustomPackNameRequested(editorName)
+                    return
+                }
+                editorAccentRects.lastOrNull { it.first.contains(x, y) }?.let { (_, i) ->
+                    editorAccentIdx = i
+                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    invalidate()
+                    return
+                }
+                editorGlowRects.lastOrNull { it.first.contains(x, y) }?.let { (_, i) ->
+                    editorGlowIdx = i
+                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    invalidate()
+                    return
+                }
+                editorSurfaceRects.lastOrNull { it.first.contains(x, y) }?.let { (_, i) ->
+                    editorSurfaceStep = i
+                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    invalidate()
+                    return
+                }
+                editorBgRects.lastOrNull { it.first.contains(x, y) }?.let { (_, bg) ->
+                    editorBackground = bg
+                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    invalidate()
+                    return
+                }
+                editorFontRects.lastOrNull { it.first.contains(x, y) }?.let { (_, raj) ->
+                    editorRajdhani = raj
+                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    invalidate()
+                    return
+                }
+                if (!editorSaveRect.isEmpty && editorSaveRect.contains(x, y)) {
+                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    saveCustomFromEditor()
+                    return
+                }
+                if (pickerBackRect.contains(x, y)) {
+                    customEditorOpen = false
+                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    invalidate()
+                    return
+                }
+                if (!sheetBoundsRect.contains(x, y)) {
+                    customEditorOpen = false
+                    clusterSheet.target = 0f
+                    invalidate()
                 }
                 return
             }
@@ -7785,6 +8262,10 @@ class WatchView(
                     ClusterOption.THEME_PACK -> {
                         openThemePicker(ThemePickerMode.PACK)
                     }
+                    ClusterOption.CUSTOM_PACK -> {
+                        customEditorOpen = true
+                        invalidate()
+                    }
                     ClusterOption.THEME_FONT -> {
                         fontPickerOpen = true
                         invalidate()
@@ -7799,7 +8280,7 @@ class WatchView(
                         sheetExpanded = !sheetExpanded
                         invalidate()
                     }
-                    ClusterOption.ADD_ISLAND, ClusterOption.BACKUP_LAYOUT, ClusterOption.RESTORE_LAYOUT, ClusterOption.NEW_FACE -> {
+                    ClusterOption.ADD_ISLAND, ClusterOption.BACKUP_LAYOUT, ClusterOption.RESTORE_LAYOUT, ClusterOption.NEW_FACE, ClusterOption.EXPORT_PACK, ClusterOption.IMPORT_PACK -> {
                         clusterSheet.target = 0f
                         onClusterOptionChanged(opt)
                         invalidate()

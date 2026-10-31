@@ -473,8 +473,23 @@ object ThemePacks {
         return if (s == currentTopology) null else s
     }
 
+    /**
+     * User-built and imported packs (3.11.0, phase C), registered
+     * by the activity at startup and whenever the set changes.
+     * Built-ins are consulted first, so a custom id can never
+     * shadow one; a deleted custom's id falls back to Orbital
+     * here, which is what makes deletion safe everywhere the id
+     * persists (manual pick, schedule slots, Face slots).
+     */
+    @Volatile
+    var customPacks: List<ThemePack> = emptyList()
+
+    /** Every pickable pack: the built-ins, then the customs. */
+    fun allPacks(): List<ThemePack> = ALL + customPacks
+
     /** The pack for a persisted [id], or the default when unknown. */
-    fun byId(id: String?): ThemePack = ALL.firstOrNull { it.id == id } ?: ORBITAL
+    fun byId(id: String?): ThemePack =
+        ALL.firstOrNull { it.id == id } ?: customPacks.firstOrNull { it.id == id } ?: ORBITAL
 
     /** The XMB pack for a calendar [month] (0 = January). */
     fun forMonth(month: Int): ThemePack = XMB_MONTHS[month.coerceIn(0, 11)]
@@ -592,4 +607,52 @@ object ThemePacks {
     /** The pack's effective glow colour at [hour], day/night blended. */
     fun glowAt(pack: ThemePack, hour: Float): Int =
         blend(pack.glowDay, pack.glowNight, nightness(hour))
+
+    // --- 3.11.0 (phase C): per-Face resolution + living themes -------
+
+    /**
+     * The pack-id resolution order, pure so the precedence is
+     * unit-testable: a live schedule beats the active Face's own
+     * pack, which beats the manual pick. Any level may be absent
+     * (null or blank); with nothing anywhere, the default pack.
+     * Settings states the rule on the Theme Pack row's spoken
+     * label while a schedule is on.
+     */
+    fun resolvePackId(
+        scheduleOn: Boolean,
+        scheduledId: String?,
+        facePackId: String?,
+        manualId: String?,
+    ): String = when {
+        scheduleOn && !scheduledId.isNullOrBlank() -> scheduledId
+        !facePackId.isNullOrBlank() -> facePackId
+        !manualId.isNullOrBlank() -> manualId
+        else -> DEFAULT_ID
+    }
+
+    val BATTERY_AMBER: Int = 0xFFFFB300.toInt()
+    val BATTERY_RED: Int = 0xFFFF5252.toInt()
+
+    /**
+     * Living Themes battery blend: at 30% charge and below, the
+     * accent warms toward amber by up to 40% (reached at 15%); at
+     * 15% and below it then warms on toward red by up to 60%
+     * (reached at 0%). Both ramps are linear in the level, so a
+     * one-point battery step moves the accent by at most ~2.7% of
+     * the amber distance: no visible jumps, and the pack crossfade
+     * machinery is never involved. Accent only: surfaces, lattice
+     * and glow never pass through here. An unknown level (< 0)
+     * leaves the accent alone.
+     */
+    fun livingAccent(accent: Int, levelPct: Int, enabled: Boolean): Int {
+        if (!enabled || levelPct < 0 || levelPct > 30) return accent
+        var out = accent
+        val amberF = 0.40f * ((30 - levelPct).coerceIn(0, 15) / 15f)
+        if (amberF > 0f) out = blend(out, BATTERY_AMBER, amberF)
+        if (levelPct <= 15) {
+            val redF = 0.60f * ((15 - levelPct).coerceIn(0, 15) / 15f)
+            if (redF > 0f) out = blend(out, BATTERY_RED, redF)
+        }
+        return out
+    }
 }

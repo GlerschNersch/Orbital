@@ -31,6 +31,14 @@ object Faces {
     fun keyName(id: String): String = "face_${id}_name"
     fun keyData(id: String): String = "face_${id}_data"
 
+    /** 3.11.0: the face's own theme pack id, in the faces store
+     *  like the name and snapshot: it must survive the store swap
+     *  a face switch performs, which a key inside the snapshot
+     *  could not do reliably (snapshots go stale between visits;
+     *  this slot is written the moment a pack is picked). Absent
+     *  means the face has no pack of its own. */
+    fun keyPack(id: String): String = "face_pack_$id"
+
     data class Face(val id: String, val name: String, val data: String)
 
     /** Migration: the one face a fresh faces store starts with —

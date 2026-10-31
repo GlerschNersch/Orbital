@@ -269,4 +269,92 @@ class ThemePacksTest {
             if (pack != ThemePacks.NIGHT_CITY) assertEquals(DisplayFont.SYSTEM, pack.displayFont)
         }
     }
+
+    // --- 3.11.0 (phase C) ------------------------------------------------
+
+    @Test fun packResolutionOrderIsScheduleThenFaceThenManual() {
+        // Schedule wins over both, whenever it is on and has a pack.
+        assertEquals("sched", ThemePacks.resolvePackId(true, "sched", "facepk", "manual"))
+        // A schedule that is on but empty falls through to the face.
+        assertEquals("facepk", ThemePacks.resolvePackId(true, null, "facepk", "manual"))
+        assertEquals("facepk", ThemePacks.resolvePackId(true, "  ", "facepk", "manual"))
+        // No schedule: the face's own pack beats the manual pick.
+        assertEquals("facepk", ThemePacks.resolvePackId(false, "sched", "facepk", "manual"))
+        // A face with no pack leaves the manual pick alone.
+        assertEquals("manual", ThemePacks.resolvePackId(false, null, null, "manual"))
+        assertEquals("manual", ThemePacks.resolvePackId(false, null, "", "manual"))
+        // Nothing anywhere: the default.
+        assertEquals(ThemePacks.DEFAULT_ID, ThemePacks.resolvePackId(false, null, null, null))
+    }
+
+    @Test fun livingAccentBatteryCurve() {
+        val accent = 0xFF3D9DD3.toInt() // XMB Blue
+        val amber = ThemePacks.BATTERY_AMBER
+        val red = ThemePacks.BATTERY_RED
+        // Full battery, the threshold itself, unknown level and the
+        // toggle off all leave the accent exactly alone.
+        assertEquals(accent, ThemePacks.livingAccent(accent, 100, true))
+        assertEquals(accent, ThemePacks.livingAccent(accent, 31, true))
+        assertEquals(accent, ThemePacks.livingAccent(accent, 30, true))
+        assertEquals(accent, ThemePacks.livingAccent(accent, -1, true))
+        assertEquals(accent, ThemePacks.livingAccent(accent, 10, false))
+        // Mid amber ramp: 22% is 8/15 of the way from 30 to 15.
+        assertEquals(
+            ThemePacks.blend(accent, amber, 0.40f * (8f / 15f)),
+            ThemePacks.livingAccent(accent, 22, true),
+        )
+        // At 15% the amber stage is complete (red has not started).
+        assertEquals(ThemePacks.blend(accent, amber, 0.40f), ThemePacks.livingAccent(accent, 15, true))
+        // Below 15% the red stage layers on top of the amber stage.
+        assertEquals(
+            ThemePacks.blend(ThemePacks.blend(accent, amber, 0.40f), red, 0.60f * (8f / 15f)),
+            ThemePacks.livingAccent(accent, 7, true),
+        )
+        // Flat battery: full amber stage, full red stage.
+        assertEquals(
+            ThemePacks.blend(ThemePacks.blend(accent, amber, 0.40f), red, 0.60f),
+            ThemePacks.livingAccent(accent, 0, true),
+        )
+        // The amber ramp is monotonic: lower battery never un-warms.
+        val warm22 = ThemePacks.livingAccent(accent, 22, true)
+        val warm20 = ThemePacks.livingAccent(accent, 20, true)
+        assertTrue(warm20 != warm22)
+        assertEquals(
+            ThemePacks.blend(accent, amber, 0.40f * (10f / 15f)),
+            warm20,
+        )
+    }
+
+    @Test fun customRegistryMergesAndFallsBack() {
+        val custom = ThemePack(
+            id = "custom_42",
+            name = "Mine",
+            subtitle = "Custom",
+            accentDay = 0xFFE1A308.toInt(),
+            accentNight = 0xFFE1A308.toInt(),
+            glowDay = 0xFFE1A308.toInt(),
+            glowNight = 0xFFE1A308.toInt(),
+            surface = 0xFF232529.toInt(),
+            surfaceAlt = 0xFF181A1E.toInt(),
+            latticeStroke = 0xFF60626A.toInt(),
+            displayFont = DisplayFont.SYSTEM,
+        )
+        try {
+            ThemePacks.customPacks = listOf(custom)
+            assertEquals(custom, ThemePacks.byId("custom_42"))
+            assertEquals(17, ThemePacks.allPacks().size)
+            assertEquals(ThemePacks.ALL, ThemePacks.allPacks().subList(0, 16))
+            assertEquals(custom, ThemePacks.allPacks().last())
+            // A custom id can never shadow a built-in.
+            assertEquals(ThemePacks.NIGHT_CITY, ThemePacks.byId("night_city"))
+            // XMB Auto still resolves through the merged registry.
+            assertEquals(ThemePacks.XMB_MONTHS[0], ThemePacks.resolvePack(ThemePacks.AUTO_ID, 0))
+        } finally {
+            ThemePacks.customPacks = emptyList()
+        }
+        // The deleted custom's id falls back to Orbital, which is
+        // what every persisted slot (manual, schedule, face) sees.
+        assertEquals(ThemePacks.ORBITAL, ThemePacks.byId("custom_42"))
+        assertEquals(16, ThemePacks.allPacks().size)
+    }
 }

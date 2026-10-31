@@ -17,6 +17,7 @@ import android.appwidget.AppWidgetProviderInfo
 import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.ContentUris
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -43,6 +44,7 @@ import android.os.StatFs
 import android.os.UserHandle
 import android.provider.AlarmClock
 import android.provider.CalendarContract
+import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
@@ -72,6 +74,9 @@ import dev.watchreborn.apps.WidgetBubble
 import dev.watchreborn.apps.WidgetKind
 import dev.watchreborn.ui.CardAction
 import dev.watchreborn.ui.ClusterOption
+import dev.watchreborn.ui.CustomPacks
+import dev.watchreborn.ui.PackException
+import dev.watchreborn.ui.ThemePack
 import dev.watchreborn.ui.ClusterTopology
 import dev.watchreborn.ui.IslandLayout
 import dev.watchreborn.ui.IslandMembers
@@ -198,6 +203,10 @@ class MainActivity : Activity(), SensorEventListener {
         Log.i(START_TAG, "process create: onCreate at +" + startElapsed() + "ms")
         repo = AppRepo(this)
         repo.themedIcons = prefs.getBoolean(KEY_THEMED_ICONS, false)
+        // 3.11.0: register saved custom packs up front, so every
+        // byId below (the manual pick, schedule slots, Face slots)
+        // can resolve them; a stale id falls back to Orbital.
+        ThemePacks.customPacks = CustomPacks.parseList(prefs.getString(KEY_CUSTOM_PACKS, null))
         startupCache = StartupCache(this) { repo.roleStamp() + ";" + repo.iconStyleStamp() }
         ensureFacesMigrated()
         view = WatchView(
@@ -228,6 +237,7 @@ class MainActivity : Activity(), SensorEventListener {
         view.perLayoutPins = prefs.getBoolean(KEY_PER_LAYOUT_PINS, false)
         view.usageGrowth = prefs.getBoolean(KEY_USAGE_GROWTH, true)
         view.livingField = prefs.getBoolean(KEY_LIVING_FIELD, true) // 3.8.1
+        view.livingThemes = prefs.getBoolean(KEY_LIVING_THEMES, true) // 3.11.0
         view.themedIcons = repo.themedIcons
         val savedTopo = prefs.getString(KEY_CLUSTER_TOPOLOGY, ClusterTopology.HONEYCOMB.name)
         view.clusterTopology = runCatching { ClusterTopology.valueOf(savedTopo ?: ClusterTopology.HONEYCOMB.name) }
@@ -253,8 +263,20 @@ class MainActivity : Activity(), SensorEventListener {
         }
         view.onThemePackSelected = { id -> // 3.8.2 persist; 3.8.3 (batch 2 item 5): hosted island snapshots repaint under the new pack at once instead of lagging to the next provider push
             prefs.edit().putString(KEY_THEME_PACK, id).apply()
+            // 3.11.0: a manual pick also becomes the active Face's
+            // own pack (its slot lives in the faces store, beside
+            // the face's name and snapshot).
+            activeFaceId()?.let { fid ->
+                facesPrefs.edit().putString(Faces.keyPack(fid), id).apply()
+            }
             for (wid in islandViews.keys) scheduleIslandSnapshot(wid)
         }
+        view.onCustomPackSaved = { pack -> // 3.11.0: register + persist, then apply
+            saveCustomPack(pack)
+            view.applyCustomPack(pack)
+        }
+        view.onCustomPackDeleted = { id -> deleteCustomPack(id) }
+        view.onCustomPackNameRequested = { current -> showCustomPackNameDialog(current) }
         view.onThemeFontSelected = { pref -> // 3.9.0: persist the font dimension
             prefs.edit().putString(KEY_THEME_FONT, pref).apply()
         }
@@ -264,6 +286,14 @@ class MainActivity : Activity(), SensorEventListener {
         view.onFaceSelected = ::switchFace
         view.onFaceMenu = ::showFaceMenu
         pushFacesToView()
+        // 3.11.0: a Face switch seeds the outgoing pack here (see
+        // switchFace); replay its crossfade + wave into whatever
+        // pack refreshAccent resolved for the incoming Face. The
+        // seed is consumed either way.
+        prefs.getString(KEY_THEME_SEED_PACK, null)?.let { seedId ->
+            prefs.edit().remove(KEY_THEME_SEED_PACK).apply()
+            view.replayThemeTransition(seedId)
+        }
         view.onWidgetsPage = { showWidgetsPage() }
         view.onWidgetsPageClosed = { hideWidgetsPage() }
         view.onIslandTap = { id -> openIslandPod(id) }
@@ -960,6 +990,7 @@ class MainActivity : Activity(), SensorEventListener {
     private fun refreshInfo() {
         val alarm = getSystemService(AlarmManager::class.java).nextAlarmClock?.triggerTime
         view.info = FaceInfo(battery, charging, alarm)
+        view.batteryLevel = battery // 3.11.0: Living Themes reads the level from here
         runCatching {
             val am = getSystemService(ActivityManager::class.java)
             val mem = ActivityManager.MemoryInfo()
@@ -985,7 +1016,16 @@ class MainActivity : Activity(), SensorEventListener {
         // old single-colour KEY_ACCENT pref is retired: no UI in the
         // current app ever wrote it, and the Orbital pack's accent is
         // that same green, so an un-themed install changes nothing.)
-        view.themePack = ThemePacks.byId(prefs.getString(KEY_THEME_PACK, ThemePacks.DEFAULT_ID))
+        // 3.11.0: the active Face's own pack beats the manual
+        // pick (ThemePacks.resolvePackId is the pure order; the
+        // schedule level still wins inside the view at draw time).
+        val facePackId = activeFaceId()?.let { facesPrefs.getString(Faces.keyPack(it), null) }
+        view.themePack = ThemePacks.byId(
+            ThemePacks.resolvePackId(
+                false, null, facePackId,
+                prefs.getString(KEY_THEME_PACK, ThemePacks.DEFAULT_ID),
+            ),
+        )
         // 3.9.0 theming phase A: the font dimension and the pack schedule.
         view.themeFontPref = prefs.getString(KEY_THEME_FONT, "pack") ?: "pack"
         view.themeSchedule = prefs.getBoolean(KEY_THEME_SCHEDULE, false)
@@ -1065,6 +1105,20 @@ class MainActivity : Activity(), SensorEventListener {
                 val next = !view.livingField
                 prefs.edit().putBoolean(KEY_LIVING_FIELD, next).apply()
                 view.livingField = next
+            }
+            ClusterOption.LIVING_THEMES -> {
+                val next = !view.livingThemes
+                prefs.edit().putBoolean(KEY_LIVING_THEMES, next).apply()
+                view.livingThemes = next
+            }
+            ClusterOption.CUSTOM_PACK -> {
+                // Handled inside WatchView: the row opens the editor.
+            }
+            ClusterOption.EXPORT_PACK -> {
+                exportThemePack()
+            }
+            ClusterOption.IMPORT_PACK -> {
+                startImportThemePack()
             }
             ClusterOption.THEMED_ICONS -> {
                 val next = !view.themedIcons
@@ -1154,6 +1208,107 @@ class MainActivity : Activity(), SensorEventListener {
         }
         runCatching { startActivityForResult(intent, REQ_RESTORE_LAYOUT) }
             .onFailure { Toast.makeText(this, "File picker unavailable on this device", Toast.LENGTH_SHORT).show() }
+    }
+
+    // --- 3.11.0: custom pack persistence, import & export --------
+
+    /** Registers [pack] as a custom pack and persists the set. */
+    private fun saveCustomPack(pack: ThemePack) {
+        val next = ThemePacks.customPacks.filter { it.id != pack.id } + pack
+        ThemePacks.customPacks = next
+        prefs.edit().putString(KEY_CUSTOM_PACKS, CustomPacks.serializeList(next)).apply()
+    }
+
+    /** Removes a custom pack. Any slot still naming it (manual,
+     *  schedule, a Face) resolves to Orbital via byId's fallback;
+     *  refreshAccent re-resolves the live pack immediately. */
+    private fun deleteCustomPack(id: String) {
+        val next = ThemePacks.customPacks.filter { it.id != id }
+        ThemePacks.customPacks = next
+        prefs.edit().putString(KEY_CUSTOM_PACKS, CustomPacks.serializeList(next)).apply()
+        refreshAccent()
+        Toast.makeText(this, "Custom pack deleted", Toast.LENGTH_SHORT).show()
+    }
+
+    /** The editor's name row hosts its text entry here: a canvas
+     *  sheet has no keyboard story of its own. */
+    private fun showCustomPackNameDialog(current: String) {
+        val input = EditText(this).apply {
+            setText(current)
+            setSingleLine(true)
+            selectAll()
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Pack name")
+            .setView(input)
+            .setPositiveButton("OK") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isNotEmpty()) view.setCustomEditorName(name.take(CustomPacks.MAX_NAME))
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** Export route (stated per the phase spec): the effective
+     *  pack's .orbitalpack.json goes straight to Downloads via
+     *  MediaStore - no picker round-trip, so the file is always in
+     *  the same place Import (and adb) can find it. */
+    private fun exportThemePack() {
+        val pack = view.currentEffectivePack()
+        val json = CustomPacks.toJson(pack)
+        val base = pack.name.replace(Regex("[^A-Za-z0-9 _-]"), "").trim().ifEmpty { "Orbital Pack" }
+        try {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, "$base.orbitalpack.json")
+                put(MediaStore.Downloads.MIME_TYPE, "application/json")
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            }
+            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw IllegalStateException("the media store refused the file")
+            contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray(Charsets.UTF_8)) }
+                ?: throw IllegalStateException("the file could not be opened for writing")
+            Toast.makeText(this, "Exported ${pack.name} to Downloads", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Export failed: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun startImportThemePack() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+        }
+        runCatching { startActivityForResult(intent, REQ_IMPORT_PACK) }
+            .onFailure { Toast.makeText(this, "File picker unavailable on this device", Toast.LENGTH_SHORT).show() }
+    }
+
+    /** Import: parse + validate through CustomPacks (a bad file is
+     *  a dialog with the reason, never a crash or a partial pack),
+     *  land the pack as a custom and apply it at once. */
+    private fun readPackImport(uri: Uri) {
+        try {
+            val text = contentResolver.openInputStream(uri)?.use { ins ->
+                val bytes = ins.readBytes()
+                if (bytes.size > 256 * 1024) throw PackException("That file is too large to be a theme pack")
+                String(bytes, Charsets.UTF_8)
+            } ?: throw PackException("That file could not be read")
+            val pack = CustomPacks.parse(text, CustomPacks.newId())
+            saveCustomPack(pack)
+            view.applyCustomPack(pack)
+            Toast.makeText(this, "Imported ${pack.name}", Toast.LENGTH_LONG).show()
+        } catch (e: PackException) {
+            showPackError(e.message ?: "That pack file could not be imported")
+        } catch (e: Exception) {
+            showPackError("Import failed: ${e.message}")
+        }
+    }
+
+    private fun showPackError(message: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Theme pack")
+            .setMessage(message)
+            .setPositiveButton("OK", null)
+            .show()
     }
 
     /** The live stores as one backup JSON — the file export and
@@ -1332,12 +1487,30 @@ class MainActivity : Activity(), SensorEventListener {
             Toast.makeText(this, "That face's saved layout is unreadable", Toast.LENGTH_LONG).show()
             return
         }
+        // 3.11.0: the outgoing effective pack, captured before the
+        // store swap (a live schedule resolves to its current slot).
+        val outgoingPackId = if (prefs.getBoolean(KEY_THEME_SCHEDULE, false)) {
+            val cal = java.util.Calendar.getInstance()
+            val hour = cal.get(java.util.Calendar.HOUR_OF_DAY) + cal.get(java.util.Calendar.MINUTE) / 60f
+            ThemePacks.scheduledPackId(
+                prefs.getString(KEY_THEME_DAY_PACK, ThemePacks.DEFAULT_ID),
+                prefs.getString(KEY_THEME_NIGHT_PACK, "night_city"),
+                hour,
+            )
+        } else {
+            prefs.getString(KEY_THEME_PACK, ThemePacks.DEFAULT_ID) ?: ThemePacks.DEFAULT_ID
+        }
         // The outgoing face remembers the live state first; the
         // active id flips in the faces store before the recreate,
         // so it survives the switch it drives.
         snapshotLiveIntoActiveFace()
         facesPrefs.edit().putString(Faces.KEY_ACTIVE, id).commit()
         writeBackupStores(backup)
+        // Seed the recreated view with the outgoing pack so the
+        // incoming Face's pack crossfades in (with the switch wave)
+        // instead of snapping from the default colours. Written
+        // into the restored store, after the swap, on purpose.
+        prefs.edit().putString(KEY_THEME_SEED_PACK, outgoingPackId).commit()
         recreate()
     }
 
@@ -2487,6 +2660,9 @@ class MainActivity : Activity(), SensorEventListener {
         } else if (requestCode == REQ_RESTORE_LAYOUT) {
             val uri = data?.data
             if (resultCode == RESULT_OK && uri != null) readBackupFrom(uri)
+        } else if (requestCode == REQ_IMPORT_PACK) {
+            val uri = data?.data
+            if (resultCode == RESULT_OK && uri != null) readPackImport(uri)
         }
     }
 
@@ -3257,6 +3433,7 @@ class MainActivity : Activity(), SensorEventListener {
         const val REQ_BIND_APPWIDGET = 403
         const val REQ_BACKUP_LAYOUT = 404
         const val REQ_RESTORE_LAYOUT = 405
+        const val REQ_IMPORT_PACK = 406
         const val KEY_ACCENT = "accent"
         const val KEY_FOLDERS = "auto_folders"
         const val KEY_BLOOM = "bloom_folders"
@@ -3265,6 +3442,9 @@ class MainActivity : Activity(), SensorEventListener {
         const val KEY_PER_LAYOUT_PINS = "per_layout_pins"
         const val KEY_USAGE_GROWTH = "usage_growth"
         const val KEY_LIVING_FIELD = "living_field"
+        const val KEY_LIVING_THEMES = "living_themes"
+        const val KEY_CUSTOM_PACKS = "custom_packs_json"
+        const val KEY_THEME_SEED_PACK = "theme_seed_pack"
         const val KEY_THEME_PACK = "theme_pack"
         const val KEY_THEME_FONT = "theme_font"
         const val KEY_THEME_SCHEDULE = "theme_schedule"

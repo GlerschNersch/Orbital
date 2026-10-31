@@ -145,6 +145,16 @@ class FacesTest {
         assertEquals(6, Faces.MAX_FACES)
     }
 
+    @Test fun packKeyLivesInTheFacesStoreScheme() {
+        // 3.11.0: a face's theme pack slot sits beside its name and
+        // snapshot keys, so it survives the store swap a switch
+        // performs; the key the spec names is face_pack_<faceId>.
+        assertEquals("face_pack_main", Faces.keyPack("main"))
+        assertEquals("face_pack_face2", Faces.keyPack("face2"))
+        assertTrue(Faces.keyPack("main") != Faces.keyData("main"))
+        assertTrue(Faces.keyPack("main") != Faces.keyName("main"))
+    }
+
     @Test fun nextFaceNameSkipsUsedNames() {
         assertEquals("Face 2", Faces.nextFaceName(listOf("Main")))
         assertEquals("Face 3", Faces.nextFaceName(listOf("Main", "Face 2", "Weekend")))
