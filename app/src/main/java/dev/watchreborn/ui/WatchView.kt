@@ -1018,6 +1018,7 @@ class WatchView(
     private var gridSearching = false
     private var constellationFilter = "ALL"
     private var constellationCategoryFilter: dev.watchreborn.apps.AppGroup? = null
+    private var constellationIntentFilter: IntentLayer.IntentDef? = null
     private val searchBarRect = RectF()
     private val searchClearRect = RectF()
     private val centerSearchPillRect = RectF()
@@ -1331,6 +1332,8 @@ class WatchView(
     private val nebulaHeaderRects = ArrayList<Triple<RectF, Float, Float>>()
     private val constellationChipRects = ArrayList<Pair<RectF, String>>()
     private val constellationCategoryChipRects = ArrayList<Pair<RectF, dev.watchreborn.apps.AppGroup>>()
+    // TODO: TalkBack nodes for the intent chips are a known gap for this prototype.
+    private val constellationIntentChipRects = ArrayList<Pair<RectF, IntentLayer.IntentDef>>()
     private val folderHeaderRect = RectF()
     private val sheetRowRects = ArrayList<Pair<RectF, ClusterOption>>()
     /** Spoken labels parallel to [sheetRowRects], for TalkBack (1.8.0). */
@@ -2450,6 +2453,7 @@ class WatchView(
         searchQuery = ""
         constellationFilter = "ALL"
         constellationCategoryFilter = null
+        constellationIntentFilter = null
         gridSearching = true
         constellationIn.target = 1f
         hideKeyboard()
@@ -4088,8 +4092,9 @@ class WatchView(
             }
             if (row.isNotEmpty()) catRows += row
         }
-        val catY = chipY + chipH + dp(5f)
-        val headerBottom = if (catRows.isEmpty()) chipY + chipH else catY + catRows.size * chipH + (catRows.size - 1) * chipGap
+        val intentY = chipY + chipH + dp(5f)
+        val catY = intentY + chipH + dp(5f)
+        val headerBottom = if (catRows.isEmpty()) intentY + chipH else catY + catRows.size * chipH + (catRows.size - 1) * chipGap
 
         // Build the unraveled star list:
         // - If typing a search query, rank prefix matches first, then substring matches.
@@ -4097,7 +4102,21 @@ class WatchView(
         // - If a 1-tap letter range chip (e.g. "A-D") is active, filter to that letter range.
         // - Otherwise ("ALL"), unravel EVERY app grouped by category compass neighborhood!
         val catFilter = constellationCategoryFilter
+        val intentFilter = constellationIntentFilter
+        val typedIntent = if (intentFilter == null) IntentLayer.matchExact(q) else null
+        val activeIntent = intentFilter ?: typedIntent
+        val intentStars: List<App>? = activeIntent?.let { intent ->
+            val byUseIndex = HashMap<String, Int>(byUse.size)
+            byUse.forEachIndexed { index, app -> byUseIndex[app.key] = index }
+            val frecencyOrdered = alphabetical.sortedWith(
+                compareBy<App> { byUseIndex[it.key] ?: Int.MAX_VALUE }.thenBy { it.label }
+            )
+            val candidates = frecencyOrdered.map { IntentLayer.IntentCandidate(it.key, it.defaultGroup) }
+            val appByKey = alphabetical.associateBy { it.key }
+            IntentLayer.resolve(intent, candidates).mapNotNull { appByKey[it.key] }
+        }
         val stars: List<App> = when {
+            intentStars != null -> intentStars
             q.isNotEmpty() -> {
                 val prefix = alphabetical.filter { it.label.startsWith(q, ignoreCase = true) }
                 val sub = alphabetical.filter { !it.label.startsWith(q, ignoreCase = true) && it.label.contains(q, ignoreCase = true) }
@@ -4235,7 +4254,7 @@ class WatchView(
             if (y > headerBottom + dia * 0.25f) hits += Hit(x, y, dia / 2, app)
 
             // Show name pill under the stars closest to the center (or top 9 when filtered)
-            if (starCenterDist[i] < 0.42f || (i < 9 && (q.isNotEmpty() || constellationFilter != "ALL" || catFilter != null))) {
+            if (starCenterDist[i] < 0.42f || (i < 9 && (q.isNotEmpty() || constellationFilter != "ALL" || catFilter != null || activeIntent != null))) {
                 text.textSize = sp(10.5f)
                 val lbl = TextUtils.ellipsize(app.label, text, dia * 1.38f, TextUtils.TruncateAt.END).toString()
                 val lw = text.measureText(lbl)
@@ -4267,6 +4286,7 @@ class WatchView(
 
         text.textSize = sp(13.5f)
         val displayStr = when {
+            activeIntent != null -> "${activeIntent.title} intent (${stars.size} apps) - tap a star to launch"
             q.isNotEmpty() -> "🔍 $searchQuery|  (${stars.size} stars)"
             searching -> "🔍 Type app name...  (${stars.size})"
             catFilter != null -> "✨ ${catFilter.title} (${stars.size} apps) • Tap to type"
@@ -4288,7 +4308,7 @@ class WatchView(
         text.textSize = sp(10.5f)
         for (i in chips.indices) {
             val chip = chips[i]
-            val active = q.isEmpty() && catFilter == null && constellationFilter == chip
+            val active = q.isEmpty() && catFilter == null && activeIntent == null && constellationFilter == chip
             val cl = padX + i * (eachW + chipGap)
             val cr = RectF(cl, chipY, cl + eachW, chipY + chipH)
             fill.color = if (active) withAlpha(accent, aInt) else Color.argb((aInt * 0.88f).toInt(), 40, 42, 48)
@@ -4296,6 +4316,21 @@ class WatchView(
             text.color = if (active) Color.argb(aInt, 0, 0, 0) else Color.argb(aInt, 225, 228, 235)
             c.drawText(chip, cr.centerX() - text.measureText(chip) / 2, cr.centerY() + text.textSize * 0.35f, text)
             constellationChipRects += cr to chip
+        }
+
+        // 4b. Intent Filter Chips: one equal-width row like the letter row.
+        constellationIntentChipRects.clear()
+        text.textSize = sp(10.5f)
+        for (i in IntentLayer.ALL.indices) {
+            val intent = IntentLayer.ALL[i]
+            val active = activeIntent == intent
+            val cl = padX + i * (eachW + chipGap)
+            val cr = RectF(cl, intentY, cl + eachW, intentY + chipH)
+            fill.color = if (active) withAlpha(accent, aInt) else Color.argb((aInt * 0.88f).toInt(), 40, 42, 48)
+            c.drawRoundRect(cr, chipH / 2, chipH / 2, fill)
+            text.color = if (active) Color.argb(aInt, 0, 0, 0) else Color.argb(aInt, 225, 228, 235)
+            c.drawText(intent.chipLabel, cr.centerX() - text.measureText(intent.chipLabel) / 2, cr.centerY() + text.textSize * 0.35f, text)
+            constellationIntentChipRects += cr to intent
         }
 
         // 5. Category Constellation Filter Chips (color-coded by category
@@ -5860,6 +5895,7 @@ class WatchView(
         constellationIn.target = 0f
         constellationFilter = "ALL"
         constellationCategoryFilter = null
+        constellationIntentFilter = null
         constellationZoom.target = 1f
         constellationPanX.target = 0f
         constellationPanY.target = 0f
@@ -6604,6 +6640,23 @@ class WatchView(
                     performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
                     constellationFilter = chip
                     constellationCategoryFilter = null
+                    constellationIntentFilter = null
+                    searchQuery = ""
+                    constellationPanX.target = 0f
+                    constellationPanY.target = 0f
+                    hideKeyboard()
+                    invalidate()
+                    return
+                }
+                constellationIntentChipRects.lastOrNull { it.first.contains(x, y) }?.let { (_, intent) ->
+                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    if (constellationIntentFilter == intent) {
+                        constellationIntentFilter = null
+                    } else {
+                        constellationIntentFilter = intent
+                    }
+                    constellationCategoryFilter = null
+                    constellationFilter = "ALL"
                     searchQuery = ""
                     constellationPanX.target = 0f
                     constellationPanY.target = 0f
@@ -6613,6 +6666,7 @@ class WatchView(
                 }
                 constellationCategoryChipRects.lastOrNull { it.first.contains(x, y) }?.let { (_, grp) ->
                     performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    constellationIntentFilter = null
                     if (constellationCategoryFilter == grp) {
                         constellationCategoryFilter = null
                     } else {
