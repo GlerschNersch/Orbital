@@ -1553,6 +1553,13 @@ class WatchView(
     private var themePickerMaxScroll = 0f
     private var themePickerReveal = false
     private var pickerScrollMoved = false
+    // 3.11.1: the main Settings sheet scrolls inside a region that
+    // ends above the dock (see drawClusterSheet); same idiom as the
+    // theme picker's scroll state above.
+    private var clusterSheetScroll = 0f
+    private var clusterSheetMaxScroll = 0f
+    private var sheetScrollMoved = false
+    private val clusterSheetClipRect = RectF()
     private var fontPickerOpen = false
     private val fontRowRects = ArrayList<Pair<RectF, String>>()
 
@@ -2847,6 +2854,7 @@ class WatchView(
         themePickerOpen = false
         fontPickerOpen = false
         customEditorOpen = false
+        clusterSheetScroll = 0f
         clusterSheet.target = 1f
         performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
         invalidate()
@@ -5735,34 +5743,34 @@ class WatchView(
         val headerH = dp(22f)
         val optionCount = rows.count { it.first != null }
         val headerCount = rows.size - optionCount
-        // Reserve the Clear Pins row's slot even when there are no pins, so
-        // the row height (and therefore every row's position) is identical
-        // whether or not that conditional row is present. It used to change
-        // the compression and shift every row by up to ~40px between opens.
-        var layoutCount = optionCount + if (sheetExpanded && pinnedItemKeys.isEmpty()) 1 else 0
-        var sheetH = dp(74f) + layoutCount * (rowH + gap) + headerCount * headerH + dp(52f)
-        // 2.6.0: the page must also clear the dock, which now stays visible.
-        val availH = (if (!dockSegs[0].isEmpty) dockSegs[0].top - dp(10f) else h - dp(36f)) - (top + dp(6f))
-        if (sheetH > availH && layoutCount > 0) {
-            // Short screen: compress rows so the sheet — including its Done
-            // button — always fits.
-            fun fitRowH(n: Int) = (availH - dp(74f) - headerCount * headerH - dp(52f)) / n - gap
-            rowH = fitRowH(layoutCount).coerceAtLeast(dp(34f))
-            // 3.7.5: an expanded sheet with several faces overflowed even
-            // at 34dp rows, tucking Done under the dock. Then give up the
-            // reserved Clear Pins slot (row stability matters less than
-            // fitting) and let rows go down to 30dp.
-            if (fitRowH(layoutCount) < dp(34f)) {
-                layoutCount = optionCount
-                rowH = fitRowH(layoutCount).coerceIn(dp(30f), dp(34f))
-            }
-            sheetH = dp(74f) + layoutCount * (rowH + gap) + headerCount * headerH + dp(52f)
-        }
+        // 3.11.1: the sheet scrolls inside a region that ends above
+        // the dock. The dock stays drawn over the page (2.6.0), and
+        // the 3.9-3.11 sheet outgrew the old fit-by-compression
+        // scheme: even at the 30dp row floor the expanded content
+        // was taller than the page, so the last BEHAVIOR rows slid
+        // under the dock — labels ghosting behind the dock bar and
+        // their toggles hidden and untappable. Now the region
+        // between the title block and the dock (less the Done row
+        // pinned below the region, less margins) is a hard clip:
+        // rows keep their natural height, content scrolls inside
+        // the region, and at maximum scroll the final row rests
+        // fully above the dock with clear space. (The Clear Pins
+        // slot reservation the compression scheme needed is gone
+        // with it: scroll positions no longer depend on whether
+        // that conditional row is present.)
+        val sheetTop = top + dp(6f)
+        val dockTop = if (!dockSegs[0].isEmpty) dockSegs[0].top else h - dp(36f)
+        val listTop = sheetTop + dp(68f)
+        val doneH = dp(50f)
+        val listBottomLimit = dockTop - dp(12f) - dp(8f) - doneH - dp(4f)
+        val contentH = optionCount * (rowH + gap) + headerCount * headerH - gap
+        val viewH = (listBottomLimit - listTop).coerceAtLeast(rowH)
+        clusterSheetMaxScroll = (contentH - viewH).coerceAtLeast(0f)
+        clusterSheetScroll = clusterSheetScroll.coerceIn(0f, clusterSheetMaxScroll)
 
         // No slide-in offset: the sheet fades in at its final position, so a
         // row is in the same place on the first frame as the last. (The old
         // (1-t) rise made rows drift upward while the sheet animated open.)
-        val sheetTop = top + dp(6f)
         sheetBoundsRect.set(0f, 0f, w, h)
 
         useDisplayFont() // 3.8.2: pack display face for the page title + section headers
@@ -5785,7 +5793,7 @@ class WatchView(
         val boxes = mutableListOf<SheetBox>()
         val headers = mutableListOf<Pair<RectF, String>>()
         var panelId = -1
-        var ry = sheetTop + dp(68f)
+        var ry = listTop - clusterSheetScroll
         for ((opt, label, third) in rows) {
             if (opt == null) {
                 headers += RectF(padX, ry, w - padX, ry + headerH) to label
@@ -5798,10 +5806,22 @@ class WatchView(
             if (solo) panelId++
             val r = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + rowH)
             boxes += SheetBox(opt, label, r, panelId, if (opt == ClusterOption.FACE_ROW) third else null)
-            if (opt == ClusterOption.FACE_ROW) faceRowRects += r to third
+            if (opt == ClusterOption.FACE_ROW) {
+                // Face rows are hit-tested ahead of the sheet rows,
+                // so their rects get the same clip to the region.
+                val fh = RectF(r.left, max(r.top, listTop), r.right, min(r.bottom, listBottomLimit))
+                if (fh.height() > 0f) faceRowRects += fh to third
+            }
             if (solo) panelId++
             ry += rowH + gap
         }
+
+        // 3.11.1: everything scrollable (panels, headers, rows) is
+        // clipped to the region above the dock; the title block
+        // above and the Done row below are drawn outside the clip.
+        clusterSheetClipRect.set(0f, listTop, w, listBottomLimit)
+        c.save()
+        c.clipRect(clusterSheetClipRect)
 
         // Panels first (one rounded surface per section), with a hairline
         // divider in the gap between rows of the same panel.
@@ -5912,8 +5932,16 @@ class WatchView(
                 c.drawText(if (activeFaceRow) "✓" else "›", r.right - dp(22f), r.centerY() + text.textSize * 0.35f, text)
             }
 
-            sheetRowRects += r to opt
-            sheetRowLabels += r to when {
+            // 3.11.1: hit rects are clipped to the scroll region, so
+            // a row sliced by the region edge keeps only its visible
+            // part and a row outside the region gets no hit rect at
+            // all. The TalkBack labels ride the same rects (they are
+            // built from sheetRowLabels), so off-region rows leave
+            // no lingering nodes either.
+            val hitR = RectF(r.left, max(r.top, listTop), r.right, min(r.bottom, listBottomLimit))
+            if (hitR.height() > 0f) {
+            sheetRowRects += hitR to opt
+            sheetRowLabels += hitR to when {
                 toggleOn != null -> "$label, ${if (toggleOn) "on" else "off"}"
                 opt == ClusterOption.CLUSTER_TOPOLOGY -> "$label, ${clusterTopology.fullTitle}"
                 opt == ClusterOption.THEME_PACK -> "$label, ${if (themeSchedule) "Scheduled, overrides Face themes" else themePack.name}"
@@ -5925,10 +5953,27 @@ class WatchView(
                 opt == ClusterOption.MORE_OPTIONS -> if (sheetExpanded) "Show fewer options" else "More options"
                 else -> label
             }
+            }
         }
 
-        // Done: a full-width panel row with centred accent text.
-        val doneRect = RectF(padX + dp(12f), ry + dp(4f), padX + cardW - dp(12f), ry + dp(4f) + dp(50f))
+        c.restore()
+
+        // Scroll thumb on the region's right edge while the sheet
+        // overflows (the theme picker's treatment).
+        if (clusterSheetMaxScroll > 0f) {
+            val trackH = listBottomLimit - listTop
+            val thumbH = (trackH * viewH / contentH).coerceAtLeast(dp(24f))
+            val thumbY = listTop + (trackH - thumbH) * (clusterSheetScroll / clusterSheetMaxScroll)
+            fill.color = withAlpha(accent, (a * 0.55f).toInt())
+            val tx = padX + cardW - dp(12f) - dp(5f)
+            c.drawRoundRect(RectF(tx, thumbY, tx + dp(3f), thumbY + thumbH), dp(1.5f), dp(1.5f), fill)
+        }
+
+        // Done: a full-width panel row with centred accent text,
+        // pinned below the scroll region (3.11.1) so it always
+        // clears the dock: its bottom edge sits 12dp above the
+        // dock's top edge.
+        val doneRect = RectF(padX + dp(12f), listBottomLimit + dp(8f), padX + cardW - dp(12f), listBottomLimit + dp(8f) + doneH)
         fill.color = panelFill
         c.drawRoundRect(doneRect, dp(16f), dp(16f), fill)
         text.textSize = sp(16f)
@@ -7598,6 +7643,7 @@ class WatchView(
                 if (morphActive || morphIslandFrom.isNotEmpty()) finishMorph()
                 downX = e.x; downY = e.y; lastX = e.x; lastY = e.y
                 pickerScrollMoved = false
+                sheetScrollMoved = false
                 // 3.8.1: a touch lands the Homecoming cascade at once.
                 if (homecomingStartMs > 0L) homecomingStartMs = 0L
                 // 3.10.0: and the switch wave, same contract.
@@ -7722,6 +7768,21 @@ class WatchView(
                     invalidate()
                     return true
                 }
+                if (clusterSheet.target == 1f && !themePickerOpen && !topologyPickerOpen && !fontPickerOpen && !customEditorOpen) {
+                    // 3.11.1: a drag scrolls the Settings sheet inside
+                    // its region above the dock; a moved gesture must
+                    // never land as a tap on a row.
+                    if (abs(e.y - downY) > slop) {
+                        sheetScrollMoved = true
+                        removeCallbacks(longPress)
+                    }
+                    if (sheetScrollMoved) {
+                        clusterSheetScroll = (clusterSheetScroll - (e.y - lastY)).coerceIn(0f, clusterSheetMaxScroll)
+                        invalidate()
+                    }
+                    lastX = e.x; lastY = e.y
+                    return true
+                }
                 if (themePickerOpen && clusterSheet.target == 1f) {
                     // 3.9.0: a drag scrolls the theme list; a moved
                     // gesture must never land as a tap on a row.
@@ -7821,9 +7882,11 @@ class WatchView(
                 if (!longPressed) {
                     if (dragging && clusterSheet.target == 0f) release(vx, vy, e.y - downY)
                     else if (themePickerOpen && pickerScrollMoved) { /* a picker scroll, not a tap */ }
+                    else if (sheetScrollMoved) { /* a sheet scroll, not a tap */ }
                     else tap(e.x, e.y)
                 }
                 pickerScrollMoved = false
+                sheetScrollMoved = false
                 dragging = false
                 invalidate()
             }
@@ -7832,6 +7895,7 @@ class WatchView(
                 pressedRect = null
                 pillPressed = false
                 pickerScrollMoved = false
+                sheetScrollMoved = false
                 dragging = false
                 pinching = false
                 edgeCrownDragging = false
@@ -8278,6 +8342,7 @@ class WatchView(
                     }
                     ClusterOption.MORE_OPTIONS -> {
                         sheetExpanded = !sheetExpanded
+                        clusterSheetScroll = 0f
                         invalidate()
                     }
                     ClusterOption.ADD_ISLAND, ClusterOption.BACKUP_LAYOUT, ClusterOption.RESTORE_LAYOUT, ClusterOption.NEW_FACE, ClusterOption.EXPORT_PACK, ClusterOption.IMPORT_PACK -> {
