@@ -203,23 +203,64 @@ class ThemePacksTest {
         assertEquals(DisplayFont.SYSTEM, ThemePacks.displayFontFor("bogus", ThemePacks.XMB_BLUE))
     }
 
-    /** Phase B/C foundations: every pack carries the new tokens,
-     *  behaviour-neutral in Phase A. */
-    @Test fun phaseFoundationsAreCarried() {
-        for (pack in ThemePacks.ALL) {
-            assertEquals(MotionDialect.STOCK, pack.motionDialect)
-            assertEquals(null, pack.suggestedTopology)
+    /** Phase B assignments (3.10.0): personalities carry a motion
+     *  dialect, a suggested topology and an island material. */
+    @Test fun phaseBAssignments() {
+        // Every XMB month pack, and Auto with them: PS3 patience
+        // (DRIFT), an Orbitals suggestion, glass islands, the wave.
+        for (pack in ThemePacks.XMB_MONTHS) {
+            assertEquals(BackgroundStyle.WAVE, pack.backgroundStyle)
+            assertEquals(MotionDialect.DRIFT, pack.motionDialect)
+            assertEquals("ORBITALS", pack.suggestedTopology)
+            assertEquals(MaterialStyle.GLASS, pack.materialStyle)
         }
-        for (pack in ThemePacks.XMB_MONTHS) assertEquals(BackgroundStyle.WAVE, pack.backgroundStyle)
         assertEquals(BackgroundStyle.WAVE, ThemePacks.XMB_AUTO.backgroundStyle)
-        assertEquals(BackgroundStyle.WAVE, ThemePacks.SILVER_MONO.backgroundStyle)
+        assertEquals(MotionDialect.DRIFT, ThemePacks.XMB_AUTO.motionDialect)
+        assertEquals("ORBITALS", ThemePacks.XMB_AUTO.suggestedTopology)
+        assertEquals(MaterialStyle.GLASS, ThemePacks.XMB_AUTO.materialStyle)
+        // Night City: crisp motion, Force Field, neon islands, grid.
         assertEquals(BackgroundStyle.GRID, ThemePacks.NIGHT_CITY.backgroundStyle)
+        assertEquals(MotionDialect.CRISP, ThemePacks.NIGHT_CITY.motionDialect)
+        assertEquals("FORCE_FIELD", ThemePacks.NIGHT_CITY.suggestedTopology)
+        assertEquals(MaterialStyle.NEON, ThemePacks.NIGHT_CITY.materialStyle)
+        // Silver Mono suggests the stock layout (a no-op for a
+        // Honeycomb field) and otherwise stays stock and matte.
+        assertEquals(BackgroundStyle.WAVE, ThemePacks.SILVER_MONO.backgroundStyle)
+        assertEquals(MotionDialect.STOCK, ThemePacks.SILVER_MONO.motionDialect)
+        assertEquals("HONEYCOMB", ThemePacks.SILVER_MONO.suggestedTopology)
+        assertEquals(MaterialStyle.MATTE, ThemePacks.SILVER_MONO.materialStyle)
+        // Orbital: no personality at all.
         assertEquals(BackgroundStyle.NONE, ThemePacks.ORBITAL.backgroundStyle)
+        assertEquals(MotionDialect.STOCK, ThemePacks.ORBITAL.motionDialect)
+        assertEquals(null, ThemePacks.ORBITAL.suggestedTopology)
+        assertEquals(MaterialStyle.MATTE, ThemePacks.ORBITAL.materialStyle)
         // Copies carry the new fields through.
         val copy = ThemePacks.NIGHT_CITY.copy(name = "Copy")
         assertEquals(BackgroundStyle.GRID, copy.backgroundStyle)
+        assertEquals(MaterialStyle.NEON, copy.materialStyle)
         assertEquals(ThemePacks.NIGHT_CITY.accentByTopology, copy.accentByTopology)
         assertEquals(ThemePacks.NIGHT_CITY, ThemePacks.byId(copy.id))
+    }
+
+    /** The one-shot topology suggestion decision (3.10.0): fires
+     *  only when the pack suggests a layout the field is not on. */
+    @Test fun suggestedTopologyDecisions() {
+        // No suggestion, no move — whatever the current layout.
+        assertEquals(null, ThemePacks.suggestedTopologyFor(ThemePacks.ORBITAL, "HONEYCOMB"))
+        assertEquals(null, ThemePacks.suggestedTopologyFor(ThemePacks.ORBITAL, "ORBITALS"))
+        // Already there: no move (this is also what keeps a manual
+        // topology change from ever being "corrected" later — the
+        // decision is only ever made at pick time).
+        assertEquals(null, ThemePacks.suggestedTopologyFor(ThemePacks.NIGHT_CITY, "FORCE_FIELD"))
+        assertEquals(null, ThemePacks.suggestedTopologyFor(ThemePacks.XMB_BLUE, "ORBITALS"))
+        assertEquals(null, ThemePacks.suggestedTopologyFor(ThemePacks.SILVER_MONO, "HONEYCOMB"))
+        // A genuine switch is suggested.
+        assertEquals("FORCE_FIELD", ThemePacks.suggestedTopologyFor(ThemePacks.NIGHT_CITY, "HONEYCOMB"))
+        assertEquals("ORBITALS", ThemePacks.suggestedTopologyFor(ThemePacks.XMB_TEAL, "HONEYCOMB"))
+        assertEquals("ORBITALS", ThemePacks.suggestedTopologyFor(ThemePacks.XMB_AUTO, "FORCE_FIELD"))
+        assertEquals("HONEYCOMB", ThemePacks.suggestedTopologyFor(ThemePacks.SILVER_MONO, "ORBITALS"))
+        // An unknown current layout still takes the suggestion.
+        assertEquals("FORCE_FIELD", ThemePacks.suggestedTopologyFor(ThemePacks.NIGHT_CITY, null))
     }
 
     @Test fun onlyNightCityUsesRajdhani() {

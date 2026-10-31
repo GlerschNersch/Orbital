@@ -53,20 +53,153 @@ object MotionTokens {
      * staggered start and after its pulse, a sine peak of 1 midway.
      * Rings beyond [LAUNCH_BLOOM_RANGE_RINGS] never pulse.
      */
-    fun launchPulse(elapsedMs: Float, ring: Float): Float {
-        if (ring > LAUNCH_BLOOM_RANGE_RINGS || elapsedMs < 0f) return 0f
-        val local = (elapsedMs - ring * LAUNCH_BLOOM_STAGGER_MS) / LAUNCH_BLOOM_PULSE_MS
-        if (local <= 0f || local >= 1f) return 0f
-        return sin(local * PI.toFloat())
-    }
+    fun launchPulse(elapsedMs: Float, ring: Float): Float =
+        launchPulse(elapsedMs, ring, params(MotionDialect.STOCK))
 
     /** Launch Bloom ripple radius, in bubble pitches, at [elapsedMs]:
      *  grows from the tap point to the pulse range over the envelope. */
     fun launchRippleRings(elapsedMs: Float): Float =
-        (elapsedMs / LAUNCH_BLOOM_TOTAL_MS).coerceIn(0f, 1f) * LAUNCH_BLOOM_RANGE_RINGS
+        launchRippleRings(elapsedMs, params(MotionDialect.STOCK))
 
     /** Launch Bloom ripple alpha envelope: full at the tap, gone by
      *  the end of the envelope. */
     fun launchRippleAlpha(elapsedMs: Float): Float =
-        1f - (elapsedMs / LAUNCH_BLOOM_TOTAL_MS).coerceIn(0f, 1f)
+        launchRippleAlpha(elapsedMs, params(MotionDialect.STOCK))
+
+    // ------------------------------------------------------------------
+    // 3.10.0 (theming phase B): motion dialects. A pack's dialect
+    // retimes the shared tokens above as one personality: CRISP runs
+    // every envelope at roughly three-quarter time with tighter
+    // staggers and a harder overshoot; DRIFT runs at roughly
+    // four-thirds time with longer staggers and a gentler settle —
+    // the PS3's patience. STOCK is the tuned 3.8.3 values verbatim
+    // (the constants above), so an un-dialected pack moves exactly
+    // as Orbital always has. An animation captures its params when
+    // it STARTS; a mid-animation pack switch never retimes it.
+    // ------------------------------------------------------------------
+
+    /** One dialect's retiming of the shared animation tokens. */
+    data class DialectParams(
+        val themeFadeMs: Float,
+        val intentBloomTotalMs: Float,
+        val intentBloomStaggerMs: Float,
+        val intentBloomStaggerCapMs: Float,
+        val intentBloomFlyMs: Float,
+        val intentBloomExitMs: Float,
+        val homecomingDelayPerUnitMs: Float,
+        val homecomingDurationMs: Float,
+        val launchBloomStaggerMs: Float,
+        val launchBloomPulseMs: Float,
+        val launchBloomTotalMs: Float,
+        /** Overshoot constant scale for the Intent Bloom's flight
+         *  ease: > 1 snaps past the slot harder, < 1 settles soft. */
+        val springScale: Float,
+    )
+
+    fun params(dialect: MotionDialect): DialectParams = when (dialect) {
+        MotionDialect.STOCK -> DialectParams(
+            themeFadeMs = THEME_FADE_MS,
+            intentBloomTotalMs = INTENT_BLOOM_TOTAL_MS,
+            intentBloomStaggerMs = INTENT_BLOOM_STAGGER_MS,
+            intentBloomStaggerCapMs = INTENT_BLOOM_STAGGER_CAP_MS,
+            intentBloomFlyMs = INTENT_BLOOM_FLY_MS,
+            intentBloomExitMs = INTENT_BLOOM_EXIT_MS,
+            homecomingDelayPerUnitMs = HOMECOMING_DELAY_PER_UNIT_MS,
+            homecomingDurationMs = HOMECOMING_DURATION_MS,
+            launchBloomStaggerMs = LAUNCH_BLOOM_STAGGER_MS,
+            launchBloomPulseMs = LAUNCH_BLOOM_PULSE_MS,
+            launchBloomTotalMs = LAUNCH_BLOOM_TOTAL_MS,
+            springScale = 1f,
+        )
+        MotionDialect.CRISP -> DialectParams(
+            themeFadeMs = 220f,
+            intentBloomTotalMs = 488f,
+            intentBloomStaggerMs = 20f,
+            intentBloomStaggerCapMs = 165f,
+            intentBloomFlyMs = 322f,
+            intentBloomExitMs = 150f,
+            homecomingDelayPerUnitMs = 112f,
+            homecomingDurationMs = 180f,
+            launchBloomStaggerMs = 13f,
+            launchBloomPulseMs = 128f,
+            launchBloomTotalMs = 167f,
+            springScale = 1.3f,
+        )
+        MotionDialect.DRIFT -> DialectParams(
+            themeFadeMs = 405f,
+            intentBloomTotalMs = 878f,
+            intentBloomStaggerMs = 38f,
+            intentBloomStaggerCapMs = 297f,
+            intentBloomFlyMs = 580f,
+            intentBloomExitMs = 270f,
+            homecomingDelayPerUnitMs = 203f,
+            homecomingDurationMs = 324f,
+            launchBloomStaggerMs = 24f,
+            launchBloomPulseMs = 230f,
+            launchBloomTotalMs = 302f,
+            springScale = 0.75f,
+        )
+    }
+
+    /** [launchPulse] under one dialect's timing. */
+    fun launchPulse(elapsedMs: Float, ring: Float, p: DialectParams): Float {
+        if (ring > LAUNCH_BLOOM_RANGE_RINGS || elapsedMs < 0f) return 0f
+        val local = (elapsedMs - ring * p.launchBloomStaggerMs) / p.launchBloomPulseMs
+        if (local <= 0f || local >= 1f) return 0f
+        return sin(local * PI.toFloat())
+    }
+
+    /** [launchRippleRings] under one dialect's timing. */
+    fun launchRippleRings(elapsedMs: Float, p: DialectParams): Float =
+        (elapsedMs / p.launchBloomTotalMs).coerceIn(0f, 1f) * LAUNCH_BLOOM_RANGE_RINGS
+
+    /** [launchRippleAlpha] under one dialect's timing. */
+    fun launchRippleAlpha(elapsedMs: Float, p: DialectParams): Float =
+        1f - (elapsedMs / p.launchBloomTotalMs).coerceIn(0f, 1f)
+
+    /**
+     * The Intent Bloom's flight ease under a dialect: easeOutBack
+     * with the overshoot constant scaled by the dialect's spring
+     * scale. At STOCK (scale 1) this is MorphMath.ease exactly —
+     * same constant, same curve, endpoints exact.
+     */
+    fun bloomEase(t: Float, p: DialectParams): Float {
+        val c = 1.15f * p.springScale
+        val u = t.coerceIn(0f, 1f) - 1f
+        return 1f + (c + 1f) * u * u * u + c * u * u
+    }
+
+    // ------------------------------------------------------------------
+    // 3.10.0 (theming phase B): the switch wave — on a manual pack
+    // pick, a pulse sweeps the field outward from its centre in the
+    // new pack's accent, riding on top of the colour crossfade.
+    // Distance is measured in bubble pitches from the field centre,
+    // the same unit the Launch Bloom counts rings in.
+    // ------------------------------------------------------------------
+
+    /** Delay per pitch of distance from the field centre. */
+    const val SWITCH_WAVE_STAGGER_MS = 14f
+
+    /** One item's pulse length once the wave reaches it. */
+    const val SWITCH_WAVE_PULSE_MS = 240f
+
+    /** Hard bound for the whole sweep: the view parks the wave
+     *  clock here whatever the field's radius. */
+    const val SWITCH_WAVE_TOTAL_MS = 700f
+
+    /** Pulses start no further out than this: the radius at which
+     *  a pulse still completes inside [SWITCH_WAVE_TOTAL_MS]. */
+    const val SWITCH_WAVE_MAX_DIST = (SWITCH_WAVE_TOTAL_MS - SWITCH_WAVE_PULSE_MS) / SWITCH_WAVE_STAGGER_MS
+
+    /**
+     * Switch wave envelope for an item [distUnits] pitches from the
+     * field centre at [elapsedMs] into the wave: 0 before its
+     * staggered start and after its pulse, a sine peak of 1 midway.
+     */
+    fun switchWavePulse(elapsedMs: Float, distUnits: Float): Float {
+        if (distUnits > SWITCH_WAVE_MAX_DIST || elapsedMs < 0f) return 0f
+        val local = (elapsedMs - distUnits * SWITCH_WAVE_STAGGER_MS) / SWITCH_WAVE_PULSE_MS
+        if (local <= 0f || local >= 1f) return 0f
+        return sin(local * PI.toFloat())
+    }
 }

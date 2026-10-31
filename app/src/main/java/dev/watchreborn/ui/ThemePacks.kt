@@ -28,14 +28,18 @@ import kotlin.math.roundToInt
  *
  * 3.9.0 (theming phase A) foundations for the later phases:
  * - [ThemePack.backgroundStyle]: the procedural backdrop a pack
- *   wants (Phase B draws it; Phase A only carries the token).
+ *   wants (drawn from 3.10.0, phase B).
  * - [ThemePack.motionDialect]: the MotionTokens variant a pack
- *   moves with (Phase B; everything is STOCK in Phase A).
+ *   moves with (variants land in 3.10.0, phase B).
  * - [ThemePack.suggestedTopology]: the layout a personality pack
- *   suggests (Phase B; null in Phase A).
+ *   suggests on a manual pick (applied once in 3.10.0, phase B;
+ *   never re-imposed afterwards).
  * - [ThemePack.accentByTopology]: per-topology accent overrides,
  *   keyed by ClusterTopology name, day values (see
  *   [ThemePacks.accentAt] for the night derivation).
+ * - [ThemePack.materialStyle]: how island tiles are surfaced
+ *   (3.10.0, phase B): MATTE is the stock tile, GLASS thins the
+ *   fill and catches a light on the top edge, NEON blooms the rim.
  */
 
 /** Display typeface for Orbital's chrome. */
@@ -44,8 +48,13 @@ enum class DisplayFont { SYSTEM, RAJDHANI }
 /** Procedural backdrop a pack asks for (drawn from Phase B on). */
 enum class BackgroundStyle { NONE, WAVE, GRID }
 
-/** Motion dialect a pack moves with (variants land in Phase B). */
-enum class MotionDialect { STOCK }
+/** Motion dialect a pack moves with: STOCK is the tuned 3.8.3
+ *  motion, CRISP retimes it shorter and snappier, DRIFT longer
+ *  and softer (see MotionTokens.params). */
+enum class MotionDialect { STOCK, CRISP, DRIFT }
+
+/** How a pack surfaces its island tiles (3.10.0). */
+enum class MaterialStyle { MATTE, GLASS, NEON }
 
 /** One named theme pack: a token map with an identity. */
 data class ThemePack(
@@ -64,6 +73,7 @@ data class ThemePack(
     val motionDialect: MotionDialect = MotionDialect.STOCK,
     val suggestedTopology: String? = null,
     val accentByTopology: Map<String, Int> = emptyMap(),
+    val materialStyle: MaterialStyle = MaterialStyle.MATTE,
 )
 
 object ThemePacks {
@@ -117,6 +127,9 @@ object ThemePacks {
         latticeStroke = 0xFF5A5B62.toInt(),
         displayFont = DisplayFont.SYSTEM,
         backgroundStyle = BackgroundStyle.WAVE,
+        motionDialect = MotionDialect.DRIFT,
+        suggestedTopology = "ORBITALS",
+        materialStyle = MaterialStyle.GLASS,
     )
 
     /** February (row 1): day centre CDA30E, corners D0C123 /
@@ -135,6 +148,9 @@ object ThemePacks {
         latticeStroke = 0xFF574D24.toInt(),
         displayFont = DisplayFont.SYSTEM,
         backgroundStyle = BackgroundStyle.WAVE,
+        motionDialect = MotionDialect.DRIFT,
+        suggestedTopology = "ORBITALS",
+        materialStyle = MaterialStyle.GLASS,
     )
 
     /** March (row 2): day centre 6CA919, corners 81BE29 / A6B924 /
@@ -153,6 +169,9 @@ object ThemePacks {
         latticeStroke = 0xFF47632C.toInt(),
         displayFont = DisplayFont.SYSTEM,
         backgroundStyle = BackgroundStyle.WAVE,
+        motionDialect = MotionDialect.DRIFT,
+        suggestedTopology = "ORBITALS",
+        materialStyle = MaterialStyle.GLASS,
     )
 
     /** April (row 3): day centre DF7E98, corners E07992 / DB9EAB /
@@ -171,6 +190,9 @@ object ThemePacks {
         latticeStroke = 0xFF6B4256.toInt(),
         displayFont = DisplayFont.SYSTEM,
         backgroundStyle = BackgroundStyle.WAVE,
+        motionDialect = MotionDialect.DRIFT,
+        suggestedTopology = "ORBITALS",
+        materialStyle = MaterialStyle.GLASS,
     )
 
     /** May (row 4): day centre 168516, corners 136C13 / 189A18 /
@@ -189,6 +211,9 @@ object ThemePacks {
         latticeStroke = 0xFF2E5C36.toInt(),
         displayFont = DisplayFont.SYSTEM,
         backgroundStyle = BackgroundStyle.WAVE,
+        motionDialect = MotionDialect.DRIFT,
+        suggestedTopology = "ORBITALS",
+        materialStyle = MaterialStyle.GLASS,
     )
 
     /**
@@ -210,6 +235,9 @@ object ThemePacks {
         latticeStroke = 0xFF4A3A63.toInt(),
         displayFont = DisplayFont.SYSTEM,
         backgroundStyle = BackgroundStyle.WAVE,
+        motionDialect = MotionDialect.DRIFT,
+        suggestedTopology = "ORBITALS",
+        materialStyle = MaterialStyle.GLASS,
         accentByTopology = mapOf("ORBITALS" to 0xFFC680DA.toInt()),
     )
 
@@ -229,6 +257,9 @@ object ThemePacks {
         latticeStroke = 0xFF256B66.toInt(),
         displayFont = DisplayFont.SYSTEM,
         backgroundStyle = BackgroundStyle.WAVE,
+        motionDialect = MotionDialect.DRIFT,
+        suggestedTopology = "ORBITALS",
+        materialStyle = MaterialStyle.GLASS,
     )
 
     /**
@@ -251,6 +282,9 @@ object ThemePacks {
         latticeStroke = 0xFF2E4A66.toInt(),
         displayFont = DisplayFont.SYSTEM,
         backgroundStyle = BackgroundStyle.WAVE,
+        motionDialect = MotionDialect.DRIFT,
+        suggestedTopology = "ORBITALS",
+        materialStyle = MaterialStyle.GLASS,
         accentByTopology = mapOf("DNA_HELIX" to 0xFF06B1DE.toInt()),
     )
 
@@ -270,6 +304,9 @@ object ThemePacks {
         latticeStroke = 0xFF5C3468.toInt(),
         displayFont = DisplayFont.SYSTEM,
         backgroundStyle = BackgroundStyle.WAVE,
+        motionDialect = MotionDialect.DRIFT,
+        suggestedTopology = "ORBITALS",
+        materialStyle = MaterialStyle.GLASS,
     )
 
     /** October (row 9): day centre E1A308, corners E2B10F /
@@ -288,6 +325,9 @@ object ThemePacks {
         latticeStroke = 0xFF6E4E1C.toInt(),
         displayFont = DisplayFont.SYSTEM,
         backgroundStyle = BackgroundStyle.WAVE,
+        motionDialect = MotionDialect.DRIFT,
+        suggestedTopology = "ORBITALS",
+        materialStyle = MaterialStyle.GLASS,
     )
 
     /** November (row 10): day centre 865C20, corners 774A18 /
@@ -305,6 +345,9 @@ object ThemePacks {
         latticeStroke = 0xFF59452A.toInt(),
         displayFont = DisplayFont.SYSTEM,
         backgroundStyle = BackgroundStyle.WAVE,
+        motionDialect = MotionDialect.DRIFT,
+        suggestedTopology = "ORBITALS",
+        materialStyle = MaterialStyle.GLASS,
     )
 
     /** December (row 11): day centre E3412C, corners D7412D /
@@ -323,6 +366,9 @@ object ThemePacks {
         latticeStroke = 0xFF6B3830.toInt(),
         displayFont = DisplayFont.SYSTEM,
         backgroundStyle = BackgroundStyle.WAVE,
+        motionDialect = MotionDialect.DRIFT,
+        suggestedTopology = "ORBITALS",
+        materialStyle = MaterialStyle.GLASS,
     )
 
     /** The twelve month packs in calendar order (index = month). */
@@ -350,6 +396,9 @@ object ThemePacks {
         latticeStroke = 0xFF6E4E1C.toInt(),
         displayFont = DisplayFont.SYSTEM,
         backgroundStyle = BackgroundStyle.WAVE,
+        motionDialect = MotionDialect.DRIFT,
+        suggestedTopology = "ORBITALS",
+        materialStyle = MaterialStyle.GLASS,
     )
 
     /**
@@ -379,6 +428,9 @@ object ThemePacks {
         displayFont = DisplayFont.RAJDHANI,
         backgroundStyle = BackgroundStyle.GRID,
         accentByTopology = mapOf("ORBITALS" to 0xFF5EF6FF.toInt()),
+        motionDialect = MotionDialect.CRISP,
+        suggestedTopology = "FORCE_FIELD",
+        materialStyle = MaterialStyle.NEON,
     )
 
     /**
@@ -400,11 +452,26 @@ object ThemePacks {
         latticeStroke = 0xFF55565C.toInt(),
         displayFont = DisplayFont.SYSTEM,
         backgroundStyle = BackgroundStyle.WAVE,
+        suggestedTopology = "HONEYCOMB",
     )
 
     /** All packs, in picker order: the stock look, the twelve XMB
      *  months in calendar order, XMB Auto, then the two specials. */
     val ALL: List<ThemePack> = listOf(ORBITAL) + XMB_MONTHS + listOf(XMB_AUTO, NIGHT_CITY, SILVER_MONO)
+
+    /**
+     * The topology a manual pick of [pack] suggests from
+     * [currentTopology] (a ClusterTopology name): the pack's
+     * suggestion when it has one and the field is not already
+     * there, else null. This is a one-shot decision made at pick
+     * time only — nothing calls it on a schedule resolution or a
+     * redraw, so a suggestion can never re-impose itself after
+     * the user changes topology by hand.
+     */
+    fun suggestedTopologyFor(pack: ThemePack, currentTopology: String?): String? {
+        val s = pack.suggestedTopology ?: return null
+        return if (s == currentTopology) null else s
+    }
 
     /** The pack for a persisted [id], or the default when unknown. */
     fun byId(id: String?): ThemePack = ALL.firstOrNull { it.id == id } ?: ORBITAL

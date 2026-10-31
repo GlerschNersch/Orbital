@@ -1128,6 +1128,26 @@ class WatchView(
     private var launchBloomX = 0f
     private var launchBloomY = 0f
     private var launchBuf = FloatArray(0)
+    // --- 3.10.0 theming phase B --------------------------------------
+    // Motion dialects: each animation captures the DialectParams of
+    // the pack effective when it STARTS, so a mid-animation pack
+    // switch never retimes a running one. All default to STOCK.
+    private var themeFadeDurationMs = MotionTokens.THEME_FADE_MS
+    private var intentBloomParams = MotionTokens.params(MotionDialect.STOCK)
+    private var homecomingParams = MotionTokens.params(MotionDialect.STOCK)
+    private var launchBloomParams = MotionTokens.params(MotionDialect.STOCK)
+    // Switch wave (item 5): armed only by a manual pack pick in
+    // selectThemePack; per-item pulse factors live in waveBuf
+    // (drawGrid scratch, same sizing discipline as launchBuf).
+    private var switchWaveStartMs = 0L
+    private var waveBuf = FloatArray(0)
+    // Generative background (item 3): a slow phase clock (seconds)
+    // and scratch for the wave ribbons — points are recomputed into
+    // these arrays each frame, never allocated.
+    private var bgPhaseSec = 0f
+    private val bgPath = Path()
+    private val bgWaveX = FloatArray(BG_WAVE_POINTS)
+    private val bgWaveY = FloatArray(BG_WAVE_POINTS)
     // Living Field (item 4): breathing phase, window visibility gate,
     // and the fling-ghost snapshot (capped, reused arrays).
     private var livingPhase = 0f
@@ -1522,6 +1542,8 @@ class WatchView(
             if (!reducedMotion) {
                 themeFadeFrom = intArrayOf(accent, themeGlow, themeSurface, themeSurfaceAlt, themeLattice)
                 themeFadeStartMs = SystemClock.uptimeMillis()
+                // 3.10.0: the fade runs on the incoming pack's dialect.
+                themeFadeDurationMs = MotionTokens.params(v.motionDialect).themeFadeMs
             }
             field = v
             invalidate()
@@ -1575,6 +1597,9 @@ class WatchView(
         if (lastEffectivePackId != null && lastEffectivePackId != eff.id && themeFadeFrom == null && !reducedMotion) {
             themeFadeFrom = intArrayOf(accent, themeGlow, themeSurface, themeSurfaceAlt, themeLattice)
             themeFadeStartMs = SystemClock.uptimeMillis()
+            // 3.10.0: a time-driven switch fades on the incoming
+            // pack's dialect, same as a manual pick.
+            themeFadeDurationMs = MotionTokens.params(eff.motionDialect).themeFadeMs
         }
         lastEffectivePackId = eff.id
         // Per-topology accents (3.9.0): the current layout may carry
@@ -1585,7 +1610,7 @@ class WatchView(
         val tGlow = ThemePacks.glowAt(eff, hour)
         val from = themeFadeFrom
         if (from != null) {
-            val raw = ((SystemClock.uptimeMillis() - themeFadeStartMs) / MotionTokens.THEME_FADE_MS).coerceIn(0f, 1f)
+            val raw = ((SystemClock.uptimeMillis() - themeFadeStartMs) / themeFadeDurationMs).coerceIn(0f, 1f)
             val e = 1f - (1f - raw) * (1f - raw) * (1f - raw)
             val na = ThemePacks.blend(from[0], tAccent, e)
             if (accent != na) accent = na
@@ -2710,6 +2735,9 @@ class WatchView(
      */
     fun onHomeReturn() {
         if (reducedMotion) return
+        // 3.10.0: the cascade runs on the dialect of the pack in
+        // effect as it starts; a later switch does not retime it.
+        homecomingParams = MotionTokens.params(effectivePack.motionDialect)
         homecomingStartMs = SystemClock.uptimeMillis()
         invalidate()
     }
@@ -3479,6 +3507,10 @@ class WatchView(
         for (s in springs) s.step(dt)
         // 3.8.1 Living Field: advance the breathing phase (5s period).
         if (livingField && !reducedMotion && livingVisible) livingPhase += dt * 1.2566f
+        // 3.10.0: the generative backdrop's phase clock. It only
+        // advances while frames are being drawn at all, and reduced
+        // motion freezes it (a still wave, a grid with no sweep).
+        if (!reducedMotion && livingVisible) bgPhaseSec += dt
         val physicsAnimating = stepPhysics(dt)
         updatePeek()
 
@@ -3519,6 +3551,13 @@ class WatchView(
             // 3.8.1 Living Field: the idle cluster breathes, so it needs
             // a gentle frame rate even at rest. ~30fps, and only while
             // the window is visible (livingVisible gates it).
+            postInvalidateDelayed(33L)
+        }
+        else if (!reducedMotion && livingVisible && a > 0f && clusterSheet.target == 0f && !gridSearching &&
+            effectivePack.backgroundStyle != BackgroundStyle.NONE
+        ) {
+            // 3.10.0: an animated backdrop (wave drift, grid sweep)
+            // idles at the same ~30fps discipline as the Living Field.
             postInvalidateDelayed(33L)
         }
         else {
@@ -3583,6 +3622,81 @@ class WatchView(
      * The full grid: pointy-topped rows with fisheye, Overview zoom, in-place Blooming Clusters (#2),
      * Constellation Search (#4), and Live Widget & Core Clock Bubbles (#1, #5).
      */
+    /**
+     * 3.10.0 (phase B item 3): the active pack's generative backdrop,
+     * drawn inside drawGrid behind the guides, islands and bubbles
+     * (never under the sheets, which draw later and opaque). WAVE is
+     * the XMB signature: layered sine ribbons drifting on a ~24s
+     * cycle. GRID is Night City's: a perspective floor running to a
+     * vanishing point in the upper third, plus one slow scanline
+     * sweep. All points are recomputed into scratch arrays and one
+     * reused Path — nothing allocates per frame, and the geometry
+     * needs only the current size, so first paint is never delayed.
+     * Reduced motion freezes [bgPhaseSec]: a still wave, and a grid
+     * with no sweep.
+     */
+    private fun drawThemeBackground(c: Canvas, w: Float, h: Float, top: Float, aInt: Int) {
+        when (effectivePack.backgroundStyle) {
+            BackgroundStyle.NONE -> return
+            BackgroundStyle.WAVE -> {
+                // Ribbon base lines down the lower two-thirds, each
+                // with its own amplitude, wavelength and drift rate.
+                val baseFrac = floatArrayOf(0.46f, 0.62f, 0.78f)
+                val amps = floatArrayOf(dp(14f), dp(20f), dp(11f))
+                val waves = floatArrayOf(1.15f, 0.9f, 1.4f) // sine period, in widths
+                val speeds = floatArrayOf(1f, -0.8f, 1.25f) // x the 24s cycle
+                val cols = intArrayOf(themeGlow, accent, themeGlow)
+                val alphas = floatArrayOf(0.10f, 0.07f, 0.045f)
+                val widths = floatArrayOf(dp(16f), dp(22f), dp(12f))
+                val cycle = (bgPhaseSec * (2.0 * PI / 24.0)).toFloat()
+                for (r in 0 until 3) {
+                    val baseY = h * baseFrac[r]
+                    val k = (2.0 * PI / (w * waves[r])).toFloat()
+                    val phase = cycle * speeds[r] + r * 2.1f
+                    for (p in 0 until BG_WAVE_POINTS) {
+                        val x = w * p / (BG_WAVE_POINTS - 1)
+                        bgWaveX[p] = x
+                        bgWaveY[p] = baseY + amps[r] * sin(x * k + phase)
+                    }
+                    bgPath.reset()
+                    bgPath.moveTo(bgWaveX[0], bgWaveY[0])
+                    for (p in 1 until BG_WAVE_POINTS) bgPath.lineTo(bgWaveX[p], bgWaveY[p])
+                    stroke.strokeWidth = widths[r]
+                    stroke.color = withAlpha(cols[r], (aInt * alphas[r]).toInt())
+                    c.drawPath(bgPath, stroke)
+                }
+            }
+            BackgroundStyle.GRID -> {
+                val vpX = w / 2f
+                val vpY = top + (h - top) * 0.30f
+                stroke.color = withAlpha(themeLattice, (aInt * 0.20f).toInt())
+                stroke.strokeWidth = dp(1.2f)
+                for (i in -6..6) {
+                    c.drawLine(vpX, vpY, vpX + i * w * 0.22f, h, stroke)
+                }
+                stroke.color = withAlpha(themeLattice, (aInt * 0.15f).toInt())
+                for (kLine in 1..9) {
+                    val t = kLine / 9f
+                    val y = vpY + (h - vpY) * t * t
+                    c.drawLine(0f, y, w, y, stroke)
+                }
+                // One scanline band sweeps down over ~7s, then the
+                // grid rests ~3s before the next pass.
+                if (!reducedMotion) {
+                    val cyc = bgPhaseSec % 10f
+                    if (cyc < 7f) {
+                        val sy = top + (cyc / 7f) * (h - top)
+                        fill.color = withAlpha(themeGlow, (aInt * 0.05f).toInt())
+                        c.drawRect(0f, sy - dp(23f), w, sy + dp(23f), fill)
+                        stroke.strokeWidth = dp(1.5f)
+                        stroke.color = withAlpha(themeGlow, (aInt * 0.10f).toInt())
+                        c.drawLine(0f, sy, w, sy, stroke)
+                    }
+                }
+            }
+        }
+    }
+
     private fun drawGrid(c: Canvas, w: Float, h: Float, top: Float, cal: Calendar, alpha: Float, zoom: Float) {
         val u = unit
         val cx = w / 2
@@ -3656,11 +3770,28 @@ class WatchView(
         cascadeBuf.fill(1f, 0, items.size)
         if (launchBuf.size < items.size) launchBuf = FloatArray(items.size + 32)
         launchBuf.fill(0f, 0, items.size)
+        if (waveBuf.size < items.size) waveBuf = FloatArray(items.size + 32)
+        waveBuf.fill(0f, 0, items.size)
+        // 3.10.0 Switch wave clock: elapsed since the manual pick
+        // that armed it; past the total envelope the wave parks.
+        val waveElapsed = if (switchWaveStartMs > 0L)
+            (SystemClock.uptimeMillis() - switchWaveStartMs).toFloat() else -1f
+        if (waveElapsed > MotionTokens.SWITCH_WAVE_TOTAL_MS) switchWaveStartMs = 0L
+        // The wave flashes in the NEW pack's accent at full strength
+        // (the `accent` field is still mid-crossfade), resolved for
+        // this frame's topology like updateThemeColors resolves it.
+        val waveAccent = ThemePacks.accentAt(
+            effectivePack,
+            cal.get(Calendar.HOUR_OF_DAY) + cal.get(Calendar.MINUTE) / 60f,
+            clusterTopology.name,
+        )
         // 3.8.1 Homecoming Bloom clock: elapsed since the resume that
         // started it; past the envelope the cascade parks itself.
         val homeElapsed = if (homecomingStartMs > 0L)
             (SystemClock.uptimeMillis() - homecomingStartMs).toFloat() else -1f
-        if (homeElapsed > 950f) homecomingStartMs = 0L
+        // 3.10.0: the park bound follows the captured dialect (the
+        // stock 950ms was delay x ~4 + duration + slack at STOCK).
+        if (homeElapsed > homecomingParams.homecomingDelayPerUnitMs * 4f + homecomingParams.homecomingDurationMs + 60f) homecomingStartMs = 0L
         val bubbleX = gridBufX
         val bubbleY = gridBufY
         val bubbleDia = gridBufDia
@@ -3818,22 +3949,33 @@ class WatchView(
                 bubbleY[i] += tiltY * dp(3.5f) * d
             }
             if (homeElapsed >= 0f && cVal <= 0.05f) {
-                val hp = ((homeElapsed - d * MotionTokens.HOMECOMING_DELAY_PER_UNIT_MS) / MotionTokens.HOMECOMING_DURATION_MS).coerceIn(0f, 1f)
+                val hp = ((homeElapsed - d * homecomingParams.homecomingDelayPerUnitMs) / homecomingParams.homecomingDurationMs).coerceIn(0f, 1f)
                 val he = 1f - (1f - hp) * (1f - hp) * (1f - hp)
                 cascadeBuf[i] = he
                 if (hp < 1f) motionAnimating = true
                 lfMul *= 0.45f + 0.55f * he
+            }
+            // 3.10.0 Switch wave: on a manual pack pick, every item
+            // pulses in distance order from the field centre (the
+            // same scale-multiplier ride as the Launch Bloom); the
+            // rim flash is drawn from waveBuf in the overlay pass.
+            if (waveElapsed >= 0f) {
+                val wDist = hypot(bubbleX[i] - cx, bubbleY[i] - cy) / basePitch
+                val wPulse = MotionTokens.switchWavePulse(waveElapsed, wDist)
+                waveBuf[i] = wPulse
+                if (wPulse > 0f) lfMul *= 1f + 0.06f * wPulse
+                motionAnimating = true
             }
             // 3.8.3 Launch Bloom: neighbours of a just-launched bubble
             // pulse in distance order (MotionTokens.launchPulse); the
             // factor rides the same scale multiplier as the cascade.
             if (launchBloomStartMs > 0L) {
                 val lbElapsed = (SystemClock.uptimeMillis() - launchBloomStartMs).toFloat()
-                if (lbElapsed > MotionTokens.LAUNCH_BLOOM_TOTAL_MS) {
+                if (lbElapsed > launchBloomParams.launchBloomTotalMs) {
                     launchBloomStartMs = 0L
                 } else {
                     val lbRing = hypot(bubbleX[i] - launchBloomX, bubbleY[i] - launchBloomY) / basePitch
-                    val lbPulse = MotionTokens.launchPulse(lbElapsed, lbRing)
+                    val lbPulse = MotionTokens.launchPulse(lbElapsed, lbRing, launchBloomParams)
                     launchBuf[i] = lbPulse
                     if (lbPulse > 0f) lfMul *= 1f + 0.10f * lbPulse
                     motionAnimating = true
@@ -3878,6 +4020,11 @@ class WatchView(
             c.save()
             c.clipRect(0f, top + dp(64f), w, h)
             val aInt = (itemAlpha * 255).toInt().coerceIn(0, 255)
+
+            // 3.10.0 (phase B item 3): the pack's generative backdrop
+            // sits behind everything the field draws — guides,
+            // islands, bubbles — inside the same header clip.
+            drawThemeBackground(c, w, h, top, aInt)
 
             // Topology-specific backdrop art: orbital rings, river tracks, helix strands, dock arcs, pool tank
             // 3.8.3 (batch 2 item 5): those guide strokes speak the
@@ -4075,9 +4222,27 @@ class WatchView(
                     slot.dragScale = basePitch * effZoom * kI
                     islandPxPerUnit = slot.dragScale
                     if (hw <= 2f || hh <= 2f) { slot.rect.setEmpty(); continue }
+                    // 3.10.0 Switch wave: islands pulse with the field
+                    // (same centre-distance order as the bubbles).
+                    var islandWavePulse = 0f
+                    if (waveElapsed >= 0f) {
+                        val iwDist = hypot(icx - cx, icy - cy) / basePitch
+                        islandWavePulse = MotionTokens.switchWavePulse(waveElapsed, iwDist)
+                        if (islandWavePulse > 0f) {
+                            val ws = 1f + 0.06f * islandWavePulse
+                            hw *= ws
+                            hh *= ws
+                        }
+                    }
                     slot.rect.set(icx - hw, icy - hh, icx + hw, icy + hh)
                     val rr = dp(18f) * effZoom.coerceIn(0.7f, 1.3f)
-                    fill.color = Color.argb((aInt * 0.92f * eEase).toInt(), 18, 22, 30)
+                    // 3.10.0 island materials (phase B item 4): MATTE
+                    // is the stock tile; GLASS thins the fill to 0.82
+                    // and catches a light on its top edge (below);
+                    // NEON blooms the rim (also below).
+                    val mat = effectivePack.materialStyle
+                    val islandFillAlpha = if (mat == MaterialStyle.GLASS) 0.92f * 0.82f else 0.92f
+                    fill.color = Color.argb((aInt * islandFillAlpha * eEase).toInt(), 18, 22, 30)
                     c.drawRoundRect(slot.rect, rr, rr, fill)
                     // 3.6.0: the visible member's content — a
                     // system member's snapshot, a native member's
@@ -4093,9 +4258,31 @@ class WatchView(
                             postInvalidateDelayed(1000L)
                         }
                     }
+                    // 3.10.0 NEON: a fat, faint twin of the rim under
+                    // the crisp one — a glow edge with no blur pass.
+                    if (mat == MaterialStyle.NEON) {
+                        islandInset.set(slot.rect.left - dp(2f), slot.rect.top - dp(2f), slot.rect.right + dp(2f), slot.rect.bottom + dp(2f))
+                        stroke.strokeWidth = dp(4.4f)
+                        stroke.color = withAlpha(accent, (aInt * 0.18f * eEase).toInt())
+                        c.drawRoundRect(islandInset, rr + dp(2f), rr + dp(2f), stroke)
+                    }
                     stroke.strokeWidth = dp(1.4f)
                     stroke.color = withAlpha(accent, (aInt * 0.55f * eEase).toInt())
                     c.drawRoundRect(slot.rect, rr, rr, stroke)
+                    // 3.10.0 GLASS: the caught light — a bright run
+                    // along the top edge, in the accent at alpha ~90.
+                    if (mat == MaterialStyle.GLASS) {
+                        stroke.strokeWidth = dp(1f)
+                        stroke.color = withAlpha(accent, (aInt * (90f / 255f) * eEase).toInt())
+                        c.drawLine(slot.rect.left + rr, slot.rect.top + dp(1f), slot.rect.right - rr, slot.rect.top + dp(1f), stroke)
+                    }
+                    // 3.10.0 Switch wave: the island's rim flashes in
+                    // the new accent as the wave passes it.
+                    if (islandWavePulse > 0.01f) {
+                        stroke.strokeWidth = dp(2f)
+                        stroke.color = withAlpha(waveAccent, (aInt * 0.55f * islandWavePulse).toInt())
+                        c.drawRoundRect(slot.rect, rr, rr, stroke)
+                    }
                     if (editMode) {
                         stroke.strokeWidth = dp(2.2f)
                         stroke.color = withAlpha(accent, (aInt * 0.9f).toInt())
@@ -4256,19 +4443,30 @@ class WatchView(
             // drawn above; the launch itself already fired in tap().
             if (launchBloomStartMs > 0L) {
                 val lbElapsed2 = (SystemClock.uptimeMillis() - launchBloomStartMs).toFloat()
-                if (lbElapsed2 <= MotionTokens.LAUNCH_BLOOM_TOTAL_MS) {
+                if (lbElapsed2 <= launchBloomParams.launchBloomTotalMs) {
                     for (i in items.indices) {
                         if (launchBuf[i] <= 0.01f || bubbleDia[i] <= 2f) continue
                         stroke.strokeWidth = dp(2f)
                         stroke.color = withAlpha(accent, (aInt * 0.55f * launchBuf[i]).toInt())
                         c.drawCircle(bubbleX[i], bubbleY[i], bubbleDia[i] * 0.56f, stroke)
                     }
-                    val ripR = MotionTokens.launchRippleRings(lbElapsed2) * basePitch
+                    val ripR = MotionTokens.launchRippleRings(lbElapsed2, launchBloomParams) * basePitch
                     if (ripR > 1f) {
                         stroke.strokeWidth = dp(2.2f)
-                        stroke.color = withAlpha(accent, (aInt * 0.5f * MotionTokens.launchRippleAlpha(lbElapsed2)).toInt())
+                        stroke.color = withAlpha(accent, (aInt * 0.5f * MotionTokens.launchRippleAlpha(lbElapsed2, launchBloomParams)).toInt())
                         c.drawCircle(launchBloomX, launchBloomY, ripR, stroke)
                     }
+                }
+            }
+            // 3.10.0 Switch wave overlay: rim flashes in the NEW
+            // pack's accent on the bubbles the wave is passing (the
+            // scale pulse itself rode the position loop via waveBuf).
+            if (switchWaveStartMs > 0L) {
+                for (i in items.indices) {
+                    if (waveBuf[i] <= 0.01f || bubbleDia[i] <= 2f) continue
+                    stroke.strokeWidth = dp(2f)
+                    stroke.color = withAlpha(waveAccent, (aInt * 0.55f * waveBuf[i]).toInt())
+                    c.drawCircle(bubbleX[i], bubbleY[i], bubbleDia[i] * 0.56f, stroke)
                 }
             }
             c.restore() // 3.8.1: end of the header-zone clip
@@ -4532,6 +4730,9 @@ class WatchView(
         } else if (bloomIntentId != activeIntent.id) {
             bloomIntentId = activeIntent.id
             bloomStartMs = bloomNow
+            // 3.10.0: the bloom (and its exit collapse) runs on the
+            // dialect in effect as the intent fires.
+            intentBloomParams = MotionTokens.params(effectivePack.motionDialect)
             exitStarCount = prevStarCount
             for (ei in 0 until prevStarCount) {
                 exitStarItems[ei] = prevStarItems[ei]
@@ -4542,7 +4743,7 @@ class WatchView(
             exitStartMs = bloomNow
         }
         val bloomElapsed = if (activeIntent != null && !reducedMotion) (bloomNow - bloomStartMs).toFloat() else 9999f
-        val bloomT = (bloomElapsed / MotionTokens.INTENT_BLOOM_TOTAL_MS).coerceIn(0f, 1f)
+        val bloomT = (bloomElapsed / intentBloomParams.intentBloomTotalMs).coerceIn(0f, 1f)
         if (activeIntent != null && bloomT < 1f) motionAnimating = true
         val bloomPulse = if (activeIntent != null && bloomT < 1f) sin(bloomT * 3.14159f) else 0f
         val intentStars: List<App>? = activeIntent?.let { intent ->
@@ -4628,9 +4829,11 @@ class WatchView(
             // order, MorphMath's springy overshoot), instead of riding
             // the shared unravel value. Settled, it is exactly cVal.
             val bloomE = if (activeIntent != null && bloomT < 1f) {
-                val local = ((bloomElapsed - min(i * MotionTokens.INTENT_BLOOM_STAGGER_MS, MotionTokens.INTENT_BLOOM_STAGGER_CAP_MS)) / MotionTokens.INTENT_BLOOM_FLY_MS).coerceIn(0f, 1f)
+                val local = ((bloomElapsed - min(i * intentBloomParams.intentBloomStaggerMs, intentBloomParams.intentBloomStaggerCapMs)) / intentBloomParams.intentBloomFlyMs).coerceIn(0f, 1f)
                 if (i == 0) bloomLocal0 = local
-                if (local >= 1f) 1f else MorphMath.ease(local)
+                // 3.10.0: the flight ease carries the dialect's
+                // overshoot (identical to MorphMath.ease at STOCK).
+                if (local >= 1f) 1f else MotionTokens.bloomEase(local, intentBloomParams)
             } else cVal
             val worldX = ox * (1f - bloomE) + targetX * bloomE
             val worldY = oy * (1f - bloomE) + targetY * bloomE
@@ -4662,10 +4865,10 @@ class WatchView(
         // and fades over ~200ms under the arriving stars.
         if (exitStartMs > 0L && activeIntent != null && !reducedMotion) {
             val eAge = (bloomNow - exitStartMs).toFloat()
-            if (eAge >= MotionTokens.INTENT_BLOOM_EXIT_MS) {
+            if (eAge >= intentBloomParams.intentBloomExitMs) {
                 exitStartMs = 0L
             } else {
-                val ep = eAge / MotionTokens.INTENT_BLOOM_EXIT_MS
+                val ep = eAge / intentBloomParams.intentBloomExitMs
                 for (ei in 0 until exitStarCount) {
                     val eApp = exitStarItems[ei] ?: continue
                     val eDia = exitStarD[ei] * (1f - ep * 0.55f)
@@ -5938,6 +6141,21 @@ class WatchView(
                 if (pack != themePack) {
                     themePack = pack
                     onThemePackSelected(pack.id)
+                    // 3.10.0 (phase B item 1): personality — a manual
+                    // pick applies the pack's suggested topology ONCE,
+                    // through the normal morph path (so it persists
+                    // and flies like a picker switch). It is never
+                    // re-imposed: this is the only call site, and the
+                    // schedule slots below and the draw-time schedule
+                    // resolution never reach it.
+                    val suggestion = ThemePacks.suggestedTopologyFor(pack, clusterTopology.name)
+                    if (suggestion != null) {
+                        runCatching { ClusterTopology.valueOf(suggestion) }
+                            .getOrNull()?.let { selectTopology(it) }
+                    }
+                    // 3.10.0 (phase B item 5): the switch wave sweeps
+                    // the field in the new accent over the crossfade.
+                    if (!reducedMotion) switchWaveStartMs = SystemClock.uptimeMillis()
                 }
             }
             ThemePickerMode.DAY -> {
@@ -6971,6 +7189,8 @@ class WatchView(
                 pickerScrollMoved = false
                 // 3.8.1: a touch lands the Homecoming cascade at once.
                 if (homecomingStartMs > 0L) homecomingStartMs = 0L
+                // 3.10.0: and the switch wave, same contract.
+                if (switchWaveStartMs > 0L) switchWaveStartMs = 0L
                 pillPressed = false
                 dragging = false; longPressed = false; pinching = false
                 orbitalVelocity = 0f
@@ -7415,6 +7635,8 @@ class WatchView(
         if (reducedMotion) return
         launchBloomX = x
         launchBloomY = y
+        // 3.10.0: the ripple runs on the dialect in effect at the tap.
+        launchBloomParams = MotionTokens.params(effectivePack.motionDialect)
         launchBloomStartMs = SystemClock.uptimeMillis()
         invalidate()
     }
@@ -8295,6 +8517,8 @@ class WatchView(
         const val CARD_REMOVE_FROM_FOLDER = 10
         /** Shortcut rows are CARD_SHORTCUT_BASE + shortcut index (0..3). */
         const val CARD_SHORTCUT_BASE = 100
+        /** 3.10.0: points sampled across one generative-wave ribbon. */
+        const val BG_WAVE_POINTS = 25
         const val DOCK_CLUSTER = 0
         const val DOCK_WIDGETS = 1
         const val DOCK_SETTINGS = 2
