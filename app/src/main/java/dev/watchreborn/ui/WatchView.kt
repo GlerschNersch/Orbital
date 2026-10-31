@@ -84,9 +84,17 @@ enum class ClusterOption {
     UNHIDE_FOLDERS,
     LIVING_FIELD,
     THEME_PACK,
+    THEME_FONT,
+    THEME_SCHEDULE,
+    THEME_DAY_PACK,
+    THEME_NIGHT_PACK,
     MORE_OPTIONS,
     CLOSE_SHEET,
 }
+
+/** Which slot the theme picker is writing (3.9.0): the picked pack
+ *  itself, or one of the schedule's two slots. */
+private enum class ThemePickerMode { PACK, DAY, NIGHT }
 
 /** Actions the widget pods ask the activity to perform (media keys, system screens). */
 enum class CardAction {
@@ -165,11 +173,34 @@ class WatchView(
         // sheet draw builds. The topology picker opens over the sheet: its
         // rows come from topologyRowRects, plus the Back pill (1.9.1).
         if (clusterSheet.target > 0f) {
+            if (fontPickerOpen) {
+                val out = ArrayList<WatchAccessibilityProvider.Node>()
+                val fontLabels = mapOf("pack" to "Follow Pack", "system" to "System", "rajdhani" to "Rajdhani")
+                for ((rect, value) in fontRowRects) {
+                    if (rect.isEmpty) continue
+                    val label = (fontLabels[value] ?: value) + if (value == themeFontPref) ", current font" else ""
+                    out += WatchAccessibilityProvider.Node(
+                        "font:" + value, label,
+                        Rect(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt()),
+                        rect.centerX(), rect.centerY(),
+                    )
+                }
+                if (!pickerBackRect.isEmpty) {
+                    out += WatchAccessibilityProvider.Node(
+                        "font:back", "Back",
+                        Rect(pickerBackRect.left.toInt(), pickerBackRect.top.toInt(), pickerBackRect.right.toInt(), pickerBackRect.bottom.toInt()),
+                        pickerBackRect.centerX(), pickerBackRect.centerY(),
+                    )
+                }
+                out += dockNodes(DOCK_SETTINGS)
+                return out
+            }
             if (themePickerOpen) {
                 val out = ArrayList<WatchAccessibilityProvider.Node>()
+                val pickerCurrent = themePickerCurrent()
                 for ((rect, pack) in themeRowRects) {
                     if (rect.isEmpty) continue
-                    val label = pack.name + if (pack == themePack) ", current theme" else ""
+                    val label = pack.name + if (pack == pickerCurrent) ", current theme" else ""
                     out += WatchAccessibilityProvider.Node(
                         "theme:" + pack.id, label,
                         Rect(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt()),
@@ -1438,6 +1469,16 @@ class WatchView(
     private var topologyPickerOpen = false
     private var themePickerOpen = false
     private val themeRowRects = ArrayList<Pair<RectF, ThemePack>>()
+    // 3.9.0: the theme picker writes one of three slots (the pack,
+    // or the schedule's day/night pack) and scrolls: the full pack
+    // registry no longer fits the page at full row height.
+    private var themePickerMode = ThemePickerMode.PACK
+    private var themePickerScroll = 0f
+    private var themePickerMaxScroll = 0f
+    private var themePickerReveal = false
+    private var pickerScrollMoved = false
+    private var fontPickerOpen = false
+    private val fontRowRects = ArrayList<Pair<RectF, String>>()
 
     // 3.8.2 theme packs: the effective (day/night blended, crossfaded)
     // theme colours. `accent` stays the effective accent; these carry
@@ -1452,6 +1493,25 @@ class WatchView(
 
     /** Reports a theme pick for persistence (the activity owns the pref). */
     var onThemePackSelected: (String) -> Unit = {}
+
+    /** Reports a Theme Font pick ("pack" / "system" / "rajdhani"). */
+    var onThemeFontSelected: (String) -> Unit = {}
+
+    /** Reports a schedule slot pick: ("day" | "night", pack id). */
+    var onThemeSchedulePackSelected: (String, String) -> Unit = { _, _ -> }
+
+    // 3.9.0 theming phase A state, seeded from prefs by the activity.
+    /** Font dimension pref: "pack" follows the pack, else a pinned face. */
+    var themeFontPref: String = "pack"
+    /** When on, the day/night schedule picks the pack, not the user. */
+    var themeSchedule: Boolean = false
+    var themeDayPackId: String = ThemePacks.DEFAULT_ID
+    var themeNightPackId: String = "night_city"
+
+    /** The pack actually rendering this frame (XMB Auto resolved to
+     *  the month, a live schedule resolved to its current slot). */
+    private var effectivePack: ThemePack = ThemePacks.ORBITAL
+    private var lastEffectivePackId: String? = null
 
     /** The active theme pack (3.8.2). Setting a different pack starts
      *  a ~300ms colour crossfade (see updateThemeColors); reduced
@@ -1479,12 +1539,13 @@ class WatchView(
     }
 
     /** Display typeface for chrome (search pill, sheet and picker
-     *  headers, constellation header and chips): Rajdhani under the
-     *  Night City pack, the system face otherwise. App labels keep
-     *  the system face; callers restore with [useSystemFont]. Loaded
-     *  once and cached, never per frame. */
+     *  headers, constellation header and chips): the Theme Font
+     *  dimension (3.9.0) — a pinned face wins; "Follow Pack" uses
+     *  the effective pack's own face. App labels keep the system
+     *  face; callers restore with [useSystemFont]. Loaded once and
+     *  cached, never per frame. */
     private fun useDisplayFont() {
-        text.typeface = if (themePack.displayFont == DisplayFont.RAJDHANI) rajdhani() else systemTypeface
+        text.typeface = if (ThemePacks.displayFontFor(themeFontPref, effectivePack) == DisplayFont.RAJDHANI) rajdhani() else systemTypeface
     }
 
     private fun useSystemFont() {
@@ -1496,8 +1557,32 @@ class WatchView(
      *  the previous pack's colours while a switch is in flight. */
     private fun updateThemeColors(cal: Calendar) {
         val hour = cal.get(Calendar.HOUR_OF_DAY) + cal.get(Calendar.MINUTE) / 60f
-        val tAccent = ThemePacks.accentAt(themePack, hour)
-        val tGlow = ThemePacks.glowAt(themePack, hour)
+        // 3.9.0: resolve the pack that actually renders — XMB Auto
+        // becomes the current month's pack, and a live schedule
+        // overrides the manual pick with its day/night slot.
+        val month = cal.get(Calendar.MONTH)
+        val eff = if (themeSchedule) {
+            ThemePacks.resolvePack(
+                ThemePacks.scheduledPackId(themeDayPackId, themeNightPackId, hour),
+                month,
+            )
+        } else {
+            ThemePacks.resolvePack(themePack.id, month)
+        }
+        effectivePack = eff
+        // Time-driven switches (a schedule flip, Auto's month roll)
+        // crossfade like a manual pick instead of snapping.
+        if (lastEffectivePackId != null && lastEffectivePackId != eff.id && themeFadeFrom == null && !reducedMotion) {
+            themeFadeFrom = intArrayOf(accent, themeGlow, themeSurface, themeSurfaceAlt, themeLattice)
+            themeFadeStartMs = SystemClock.uptimeMillis()
+        }
+        lastEffectivePackId = eff.id
+        // Per-topology accents (3.9.0): the current layout may carry
+        // its own accent inside the pack; every accent consumer
+        // (centre ring, island interiors, pill rim, dock) reads the
+        // single `accent` field this produces.
+        val tAccent = ThemePacks.accentAt(eff, hour, clusterTopology.name)
+        val tGlow = ThemePacks.glowAt(eff, hour)
         val from = themeFadeFrom
         if (from != null) {
             val raw = ((SystemClock.uptimeMillis() - themeFadeStartMs) / MotionTokens.THEME_FADE_MS).coerceIn(0f, 1f)
@@ -1505,16 +1590,16 @@ class WatchView(
             val na = ThemePacks.blend(from[0], tAccent, e)
             if (accent != na) accent = na
             themeGlow = ThemePacks.blend(from[1], tGlow, e)
-            themeSurface = ThemePacks.blend(from[2], themePack.surface, e)
-            themeSurfaceAlt = ThemePacks.blend(from[3], themePack.surfaceAlt, e)
-            themeLattice = ThemePacks.blend(from[4], themePack.latticeStroke, e)
+            themeSurface = ThemePacks.blend(from[2], eff.surface, e)
+            themeSurfaceAlt = ThemePacks.blend(from[3], eff.surfaceAlt, e)
+            themeLattice = ThemePacks.blend(from[4], eff.latticeStroke, e)
             if (raw >= 1f) themeFadeFrom = null else motionAnimating = true
         } else {
             if (accent != tAccent) accent = tAccent
             themeGlow = tGlow
-            themeSurface = themePack.surface
-            themeSurfaceAlt = themePack.surfaceAlt
-            themeLattice = themePack.latticeStroke
+            themeSurface = eff.surface
+            themeSurfaceAlt = eff.surfaceAlt
+            themeLattice = eff.latticeStroke
         }
     }
 
@@ -1695,7 +1780,7 @@ class WatchView(
         val state = NavState(
             cardMenuOpen = cardMenuOpen,
             searching = searching || gridSearching || searchQuery.isNotEmpty(),
-            topologyPickerOpen = (topologyPickerOpen || themePickerOpen) && clusterSheet.target > 0f,
+            topologyPickerOpen = (topologyPickerOpen || themePickerOpen || fontPickerOpen) && clusterSheet.target > 0f,
             sheetOpen = clusterSheet.target > 0f,
             editMode = editMode,
             widgetOpen = widgetIn.target == 1f,
@@ -1716,6 +1801,8 @@ class WatchView(
             NavLayer.TOPOLOGY_PICKER -> {
                 topologyPickerOpen = false
                 themePickerOpen = false
+                fontPickerOpen = false
+                themePickerMode = ThemePickerMode.PACK
                 invalidate()
                 true
             }
@@ -2608,6 +2695,7 @@ class WatchView(
     fun openClusterSheet() {
         topologyPickerOpen = false
         themePickerOpen = false
+        fontPickerOpen = false
         clusterSheet.target = 1f
         performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
         invalidate()
@@ -5221,6 +5309,10 @@ class WatchView(
         fill.color = withAlpha(themeSurfaceAlt, a) // 3.8.2: pack page background
         c.drawRect(0f, 0f, w, h, fill)
 
+        if (fontPickerOpen) {
+            drawFontPicker(c, w, h, top, t)
+            return
+        }
         if (themePickerOpen) {
             drawThemePicker(c, w, h, top, t)
             return
@@ -5258,6 +5350,12 @@ class WatchView(
             if (sheetExpanded) {
                 add(Triple(null, "APPEARANCE", ""))
                 add(Triple(ClusterOption.THEME_PACK, "Theme Pack", themePack.name))
+                add(Triple(ClusterOption.THEME_FONT, "Theme Font", themeFontPref))
+                add(Triple(ClusterOption.THEME_SCHEDULE, "Theme Schedule", ""))
+                if (themeSchedule) {
+                    add(Triple(ClusterOption.THEME_DAY_PACK, "Day Pack", themeDayPackId))
+                    add(Triple(ClusterOption.THEME_NIGHT_PACK, "Night Pack", themeNightPackId))
+                }
             }
             if (sheetExpanded) {
                 add(Triple(null, "BEHAVIOR", ""))
@@ -5389,6 +5487,7 @@ class WatchView(
                 ClusterOption.CATEGORY_CLUSTERING -> autoFolders
                 ClusterOption.BLOOM_MODE -> bloomFolders
                 ClusterOption.LIVING_FIELD -> livingField
+                ClusterOption.THEME_SCHEDULE -> themeSchedule
                 else -> null
             }
             drawSheetGlyph(c, opt, r.left + dp(24f), r.centerY(), dp(21f), glyphColor)
@@ -5404,7 +5503,10 @@ class WatchView(
             } else ""
             val valueText = if (toggleOn == null) when (opt) {
                 ClusterOption.CLUSTER_TOPOLOGY -> clusterTopology.fullTitle
-                ClusterOption.THEME_PACK -> themePack.name
+                ClusterOption.THEME_PACK -> if (themeSchedule) "Scheduled" else themePack.name
+                ClusterOption.THEME_FONT -> themeFontLabel(themeFontPref)
+                ClusterOption.THEME_DAY_PACK -> ThemePacks.byId(themeDayPackId).name
+                ClusterOption.THEME_NIGHT_PACK -> ThemePacks.byId(themeNightPackId).name
                 ClusterOption.CLEAR_PINS -> "Unpin all"
                 ClusterOption.BACKUP_LAYOUT -> "Export"
                 ClusterOption.RESTORE_LAYOUT -> "Import"
@@ -5459,7 +5561,10 @@ class WatchView(
             sheetRowLabels += r to when {
                 toggleOn != null -> "$label, ${if (toggleOn) "on" else "off"}"
                 opt == ClusterOption.CLUSTER_TOPOLOGY -> "$label, ${clusterTopology.fullTitle}"
-                opt == ClusterOption.THEME_PACK -> "$label, ${themePack.name}"
+                opt == ClusterOption.THEME_PACK -> "$label, ${if (themeSchedule) "Scheduled" else themePack.name}"
+                opt == ClusterOption.THEME_FONT -> "$label, ${themeFontLabel(themeFontPref)}"
+                opt == ClusterOption.THEME_DAY_PACK -> "$label, ${ThemePacks.byId(themeDayPackId).name}"
+                opt == ClusterOption.THEME_NIGHT_PACK -> "$label, ${ThemePacks.byId(themeNightPackId).name}"
                 opt == ClusterOption.FACE_ROW -> faceEntries.firstOrNull { it.id == box.faceId }
                     ?.let { f -> "${f.name}, ${f.topologyTitle}" + if (f.active) ", current face" else "" } ?: label
                 opt == ClusterOption.MORE_OPTIONS -> if (sheetExpanded) "Show fewer options" else "More options"
@@ -5594,86 +5699,226 @@ class WatchView(
     }
 
 
-    /** Theme pack list (3.8.2): one row per pack with a two-tone
-     *  swatch (accent disc, glow ring); tap one to apply it instantly,
-     *  the colours crossfade behind the sheet. */
+    /** The pack the theme picker currently treats as selected:
+     *  the manual pick, or the schedule slot being edited. */
+    private fun themePickerCurrent(): ThemePack = when (themePickerMode) {
+        ThemePickerMode.PACK -> themePack
+        ThemePickerMode.DAY -> ThemePacks.byId(themeDayPackId)
+        ThemePickerMode.NIGHT -> ThemePacks.byId(themeNightPackId)
+    }
+
+    /** Opens the theme picker writing [mode]'s slot; the list
+     *  scrolls so the current pack is on screen when it opens. */
+    private fun openThemePicker(mode: ThemePickerMode) {
+        themePickerMode = mode
+        themePickerOpen = true
+        themePickerReveal = true
+        invalidate()
+    }
+
+    /** The Theme Font row's value text for a pref value. */
+    private fun themeFontLabel(pref: String): String = when (pref) {
+        "system" -> "System"
+        "rajdhani" -> "Rajdhani"
+        else -> "Follow Pack"
+    }
+
+    /** Theme pack list (3.8.2; scrolling + schedule modes 3.9.0):
+     *  one row per pack with a two-tone swatch (accent disc, glow
+     *  ring); tap one to apply it instantly, the colours crossfade
+     *  behind the sheet. The full registry outgrew the page, so the
+     *  panel is a clipped scrolling list with the Back row pinned
+     *  below it; opening reveals the current pack. Dragging scrolls
+     *  (see onTouchEvent); a moved gesture never lands as a tap. */
     private fun drawThemePicker(c: Canvas, w: Float, h: Float, top: Float, t: Float) {
         val a = (t * 255).toInt().coerceIn(0, 255)
         themeRowRects.clear()
 
         val padX = dp(18f)
         val cardW = w - 2 * padX
-        var rowH = dp(50f)
+        val rowH = dp(50f)
         val gap = dp(4f)
         val all = ThemePacks.ALL
-        var sheetH = dp(74f) + all.size * (rowH + gap) + dp(52f)
-        val availH = (if (!dockSegs[0].isEmpty) dockSegs[0].top - dp(10f) else h - dp(36f)) - (top + dp(6f))
-        if (sheetH > availH) {
-            rowH = ((availH - dp(74f) - dp(52f)) / all.size - gap).coerceAtLeast(dp(34f))
-            sheetH = dp(74f) + all.size * (rowH + gap) + dp(52f)
-        }
         val sheetTop = top + dp(6f)
         sheetBoundsRect.set(0f, 0f, w, h)
 
         useDisplayFont()
         text.textSize = sp(18.5f)
         text.color = Color.argb(a, 255, 255, 255)
-        val title = "Theme Pack"
+        val title = when (themePickerMode) {
+            ThemePickerMode.PACK -> "Theme Pack"
+            ThemePickerMode.DAY -> "Day Pack"
+            ThemePickerMode.NIGHT -> "Night Pack"
+        }
         c.drawText(title, w / 2 - text.measureText(title) / 2, sheetTop + dp(32f), text)
 
         text.textSize = sp(12.5f)
         text.color = Color.argb((a * 0.7f).toInt(), 188, 190, 198)
-        val hint = "Tap a theme to apply it instantly"
+        val hint = when (themePickerMode) {
+            ThemePickerMode.PACK -> "Tap a theme to apply it instantly"
+            ThemePickerMode.DAY -> "The pack the schedule uses by day"
+            ThemePickerMode.NIGHT -> "The pack the schedule uses by night"
+        }
         c.drawText(hint, w / 2 - text.measureText(hint) / 2, sheetTop + dp(55f), text)
 
-        var ry = sheetTop + dp(68f)
-        val panelRect = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + all.size * (rowH + gap) - gap)
+        val current = themePickerCurrent()
+        val listTop = sheetTop + dp(68f)
+        val limitBottom = (if (!dockSegs[0].isEmpty) dockSegs[0].top - dp(10f) else h - dp(36f)) - dp(50f) - dp(12f)
+        val viewH = (limitBottom - listTop).coerceAtLeast(rowH)
+        val contentH = all.size * (rowH + gap) - gap
+        themePickerMaxScroll = (contentH - viewH).coerceAtLeast(0f)
+        if (themePickerReveal) {
+            themePickerReveal = false
+            val idx = all.indexOf(current).coerceAtLeast(0)
+            themePickerScroll = (idx * (rowH + gap) - viewH / 2f + rowH / 2f).coerceIn(0f, themePickerMaxScroll)
+        }
+        themePickerScroll = themePickerScroll.coerceIn(0f, themePickerMaxScroll)
+
+        val panelRect = RectF(padX + dp(12f), listTop, padX + cardW - dp(12f), listTop + min(contentH, viewH))
         fill.color = withAlpha(themeSurface, a)
         c.drawRoundRect(panelRect, dp(16f), dp(16f), fill)
+
+        val month = Calendar.getInstance().get(Calendar.MONTH)
+        c.save()
+        c.clipRect(panelRect)
+        var ry = listTop - themePickerScroll
         for (pack in all) {
             val r = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + rowH)
-            if (pack == themePack) {
-                stroke.strokeWidth = dp(1.5f)
-                stroke.color = withAlpha(accent, (a * 0.8f).toInt())
-                c.drawRoundRect(r, dp(14f), dp(14f), stroke)
+            if (r.bottom > panelRect.top && r.top < panelRect.bottom) {
+                if (pack == current) {
+                    stroke.strokeWidth = dp(1.5f)
+                    stroke.color = withAlpha(accent, (a * 0.8f).toInt())
+                    c.drawRoundRect(r, dp(14f), dp(14f), stroke)
+                }
+                // XMB Auto's swatch and subtitle are the live month's.
+                val shown = if (pack.id == ThemePacks.AUTO_ID) ThemePacks.forMonth(month) else pack
+                // Swatch: accent disc ringed by the pack's glow colour.
+                val swX = r.left + dp(26f)
+                val swY = r.centerY()
+                stroke.strokeWidth = dp(2.5f)
+                stroke.color = withAlpha(shown.glowDay, a)
+                c.drawCircle(swX, swY, dp(10f), stroke)
+                fill.color = withAlpha(shown.accentDay, a)
+                c.drawCircle(swX, swY, dp(7f), fill)
+
+                text.textSize = sp(15.5f)
+                text.color = Color.argb(a, 255, 255, 255)
+                val titleMaxW = (r.right - dp(60f) - (r.left + dp(48f))).coerceAtLeast(dp(40f))
+                c.drawText(TextUtils.ellipsize(pack.name, text, titleMaxW, TextUtils.TruncateAt.END).toString(), r.left + dp(48f), r.top + rowH * 0.40f, text)
+
+                text.textSize = sp(12.5f)
+                text.color = Color.argb((a * 0.75f).toInt(), 178, 180, 188)
+                val sub = if (pack.id == ThemePacks.AUTO_ID) ThemePacks.autoSubtitle(month) else pack.subtitle
+                c.drawText(TextUtils.ellipsize(sub, text, titleMaxW, TextUtils.TruncateAt.END).toString(), r.left + dp(48f), r.top + rowH * 0.86f, text)
+
+                if (pack == current) {
+                    text.textSize = sp(17f)
+                    text.color = withAlpha(accent, a)
+                    c.drawText("\u2713", r.right - dp(26f), r.centerY() + text.textSize * 0.35f, text)
+                }
+
+                // Hit rects are clipped to the panel, so a row sliced
+                // by the panel edge can't swallow the Back row's taps.
+                val hit = RectF(r.left, max(r.top, panelRect.top), r.right, min(r.bottom, panelRect.bottom))
+                if (hit.height() > 0f) themeRowRects += hit to pack
             }
-            // Swatch: accent disc ringed by the pack's glow colour.
-            val swX = r.left + dp(26f)
-            val swY = r.centerY()
-            stroke.strokeWidth = dp(2.5f)
-            stroke.color = withAlpha(pack.glowDay, a)
-            c.drawCircle(swX, swY, dp(10f), stroke)
-            fill.color = withAlpha(pack.accentDay, a)
-            c.drawCircle(swX, swY, dp(7f), fill)
-
-            text.textSize = sp(15.5f)
-            text.color = Color.argb(a, 255, 255, 255)
-            val titleMaxW = (r.right - dp(60f) - (r.left + dp(48f))).coerceAtLeast(dp(40f))
-            c.drawText(TextUtils.ellipsize(pack.name, text, titleMaxW, TextUtils.TruncateAt.END).toString(), r.left + dp(48f), r.top + rowH * 0.40f, text)
-
-            text.textSize = sp(12.5f)
-            text.color = Color.argb((a * 0.75f).toInt(), 178, 180, 188)
-            c.drawText(TextUtils.ellipsize(pack.subtitle, text, titleMaxW, TextUtils.TruncateAt.END).toString(), r.left + dp(48f), r.top + rowH * 0.86f, text)
-
-            if (pack == themePack) {
-                text.textSize = sp(17f)
-                text.color = withAlpha(accent, a)
-                c.drawText("\u2713", r.right - dp(26f), r.centerY() + text.textSize * 0.35f, text)
-            }
-
-            themeRowRects += r to pack
             ry += rowH + gap
         }
 
-        // Hairline dividers between the panel rows.
+        // Hairline dividers between the visible panel rows.
         stroke.strokeWidth = dp(1f)
         stroke.color = withAlpha(themeLattice, (a * 0.5f).toInt())
         for (i in 0 until themeRowRects.size - 1) {
             val dy = (themeRowRects[i].first.bottom + themeRowRects[i + 1].first.top) / 2f
             c.drawLine(panelRect.left + dp(14f), dy, panelRect.right - dp(14f), dy, stroke)
         }
+        c.restore()
 
-        // Back: a full-width panel row, same treatment as the sheet's Done.
+        // Scroll thumb on the panel's right edge while the list overflows.
+        if (themePickerMaxScroll > 0f) {
+            val trackH = panelRect.height()
+            val thumbH = (trackH * viewH / contentH).coerceAtLeast(dp(24f))
+            val thumbY = panelRect.top + (trackH - thumbH) * (themePickerScroll / themePickerMaxScroll)
+            fill.color = withAlpha(accent, (a * 0.55f).toInt())
+            val tx = panelRect.right - dp(5f)
+            c.drawRoundRect(RectF(tx, thumbY, tx + dp(3f), thumbY + thumbH), dp(1.5f), dp(1.5f), fill)
+        }
+
+        // Back: a full-width panel row pinned below the list, same
+        // treatment as the sheet's Done.
+        pickerBackRect.set(padX + dp(12f), panelRect.bottom + dp(8f), padX + cardW - dp(12f), panelRect.bottom + dp(8f) + dp(50f))
+        fill.color = withAlpha(themeSurface, a)
+        c.drawRoundRect(pickerBackRect, dp(16f), dp(16f), fill)
+        text.textSize = sp(16f)
+        text.color = Color.argb(a, 255, 255, 255)
+        val backStr = "\u2039 Back"
+        c.drawText(backStr, w / 2 - text.measureText(backStr) / 2, pickerBackRect.centerY() + text.textSize * 0.35f, text)
+        useSystemFont()
+    }
+
+    /** Theme Font list (3.9.0): the font dimension's three settings.
+     *  "Follow Pack" keeps the 3.8.2 behaviour; the other two pin a
+     *  face over whatever pack is active. */
+    private fun drawFontPicker(c: Canvas, w: Float, h: Float, top: Float, t: Float) {
+        val a = (t * 255).toInt().coerceIn(0, 255)
+        fontRowRects.clear()
+
+        val padX = dp(18f)
+        val cardW = w - 2 * padX
+        val rowH = dp(50f)
+        val gap = dp(4f)
+        val sheetTop = top + dp(6f)
+        sheetBoundsRect.set(0f, 0f, w, h)
+
+        useDisplayFont()
+        text.textSize = sp(18.5f)
+        text.color = Color.argb(a, 255, 255, 255)
+        val title = "Theme Font"
+        c.drawText(title, w / 2 - text.measureText(title) / 2, sheetTop + dp(32f), text)
+
+        text.textSize = sp(12.5f)
+        text.color = Color.argb((a * 0.7f).toInt(), 188, 190, 198)
+        val hint = "For headers, the search pill and chips"
+        c.drawText(hint, w / 2 - text.measureText(hint) / 2, sheetTop + dp(55f), text)
+
+        val options = listOf(
+            Triple("pack", "Follow Pack", "Each pack's own typeface"),
+            Triple("system", "System", "The system face everywhere"),
+            Triple("rajdhani", "Rajdhani", "Rajdhani everywhere"),
+        )
+        var ry = sheetTop + dp(68f)
+        val panelRect = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + options.size * (rowH + gap) - gap)
+        fill.color = withAlpha(themeSurface, a)
+        c.drawRoundRect(panelRect, dp(16f), dp(16f), fill)
+        for ((value, name, sub) in options) {
+            val r = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + rowH)
+            if (value == themeFontPref) {
+                stroke.strokeWidth = dp(1.5f)
+                stroke.color = withAlpha(accent, (a * 0.8f).toInt())
+                c.drawRoundRect(r, dp(14f), dp(14f), stroke)
+            }
+            text.textSize = sp(15.5f)
+            text.color = Color.argb(a, 255, 255, 255)
+            val titleMaxW = (r.right - dp(60f) - (r.left + dp(24f))).coerceAtLeast(dp(40f))
+            c.drawText(TextUtils.ellipsize(name, text, titleMaxW, TextUtils.TruncateAt.END).toString(), r.left + dp(24f), r.top + rowH * 0.40f, text)
+            text.textSize = sp(12.5f)
+            text.color = Color.argb((a * 0.75f).toInt(), 178, 180, 188)
+            c.drawText(TextUtils.ellipsize(sub, text, titleMaxW, TextUtils.TruncateAt.END).toString(), r.left + dp(24f), r.top + rowH * 0.86f, text)
+            if (value == themeFontPref) {
+                text.textSize = sp(17f)
+                text.color = withAlpha(accent, a)
+                c.drawText("\u2713", r.right - dp(26f), r.centerY() + text.textSize * 0.35f, text)
+            }
+            fontRowRects += r to value
+            ry += rowH + gap
+        }
+        stroke.strokeWidth = dp(1f)
+        stroke.color = withAlpha(themeLattice, (a * 0.5f).toInt())
+        for (i in 0 until fontRowRects.size - 1) {
+            val dy = (fontRowRects[i].first.bottom + fontRowRects[i + 1].first.top) / 2f
+            c.drawLine(panelRect.left + dp(14f), dy, panelRect.right - dp(14f), dy, stroke)
+        }
+
         pickerBackRect.set(padX + dp(12f), ry + dp(4f), padX + cardW - dp(12f), ry + dp(4f) + dp(50f))
         fill.color = withAlpha(themeSurface, a)
         c.drawRoundRect(pickerBackRect, dp(16f), dp(16f), fill)
@@ -5684,13 +5929,36 @@ class WatchView(
         useSystemFont()
     }
 
-    /** Applies a theme chosen in the theme picker and reports it for persistence. */
+    /** Applies a theme chosen in the theme picker to the slot the
+     *  picker was opened for, and reports it for persistence. */
     fun selectThemePack(pack: ThemePack) {
         themePickerOpen = false
-        if (pack != themePack) {
-            themePack = pack
-            onThemePackSelected(pack.id)
+        when (themePickerMode) {
+            ThemePickerMode.PACK -> {
+                if (pack != themePack) {
+                    themePack = pack
+                    onThemePackSelected(pack.id)
+                }
+            }
+            ThemePickerMode.DAY -> {
+                themeDayPackId = pack.id
+                onThemeSchedulePackSelected("day", pack.id)
+            }
+            ThemePickerMode.NIGHT -> {
+                themeNightPackId = pack.id
+                onThemeSchedulePackSelected("night", pack.id)
+            }
         }
+        themePickerMode = ThemePickerMode.PACK
+        performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+        invalidate()
+    }
+
+    /** Applies a Theme Font pick and reports it for persistence. */
+    fun selectThemeFont(value: String) {
+        fontPickerOpen = false
+        themeFontPref = value
+        onThemeFontSelected(value)
         performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
         invalidate()
     }
@@ -5936,6 +6204,37 @@ class WatchView(
                     c.drawPath(path, stroke)
                 }
             }
+            ClusterOption.THEME_FONT -> {
+                // A letterform: the font dimension.
+                path.moveTo(cx - s * 0.28f, cy + s * 0.36f)
+                path.lineTo(cx, cy - s * 0.38f)
+                path.lineTo(cx + s * 0.28f, cy + s * 0.36f)
+                c.drawPath(path, stroke)
+                c.drawLine(cx - s * 0.17f, cy + s * 0.10f, cx + s * 0.17f, cy + s * 0.10f, stroke)
+            }
+            ClusterOption.THEME_SCHEDULE -> {
+                // A clock: the day/night schedule.
+                c.drawCircle(cx, cy, s * 0.36f, stroke)
+                c.drawLine(cx, cy, cx, cy - s * 0.22f, stroke)
+                c.drawLine(cx, cy, cx + s * 0.16f, cy + s * 0.10f, stroke)
+            }
+            ClusterOption.THEME_DAY_PACK -> {
+                // A sun: the schedule's day slot.
+                c.drawCircle(cx, cy, s * 0.20f, stroke)
+                for (k in 0 until 8) {
+                    val ang = Math.toRadians(45.0 * k)
+                    c.drawLine(
+                        cx + (s * 0.28f * cos(ang)).toFloat(), cy + (s * 0.28f * sin(ang)).toFloat(),
+                        cx + (s * 0.40f * cos(ang)).toFloat(), cy + (s * 0.40f * sin(ang)).toFloat(), stroke,
+                    )
+                }
+            }
+            ClusterOption.THEME_NIGHT_PACK -> {
+                // A moon with a star: the schedule's night slot.
+                c.drawCircle(cx - s * 0.06f, cy, s * 0.30f, stroke)
+                fill.color = color
+                c.drawCircle(cx + s * 0.26f, cy - s * 0.26f, s * 0.07f, fill)
+            }
             ClusterOption.THEME_PACK -> {
                 // Three swatch dots: a pack's colours in miniature.
                 fill.color = color
@@ -6027,10 +6326,16 @@ class WatchView(
         val py = bottom - ph - dp(16f)
 
         pill.set(sideMargin, py, sideMargin + pw, py + ph)
-        // Light floating bar with a purple pill highlight on the active
-        // segment (style Matt picked from a reference sheet, 2026-10-26):
-        // white bar, violet accent, inactive segments go icon-only.
-        fill.color = Color.argb((alpha * 246).toInt(), 248, 248, 252)
+        // 3.9.0: the dock belongs to the pack — the bar is the pack's
+        // page surface (themeSurfaceAlt), the active segment a panel
+        // tinted toward the accent, its icon and label in the
+        // effective accent; all of them crossfade with the pack in
+        // updateThemeColors. (Before 3.9.0 the bar was a fixed light
+        // bar with a lavender segment under every pack — the style
+        // Matt picked from a reference sheet, 2026-10-26.) Inactive
+        // icons sit in a light neutral that stays readable on every
+        // pack's dark surface; inactive segments go icon-only.
+        fill.color = withAlpha(themeSurfaceAlt, (alpha * 246).toInt())
         c.drawRoundRect(pill, dp(24f), dp(24f), fill)
         val activeSeg = when { clusterSheet.target > 0f -> DOCK_SETTINGS; widgetsPageOpen -> DOCK_WIDGETS; else -> DOCK_CLUSTER }
         val labels = arrayOf("Cluster", "Widgets", "Settings")
@@ -6039,12 +6344,12 @@ class WatchView(
             dockSegs[i].set(seg)
             val active = i == activeSeg
             if (active) {
-                fill.color = Color.argb((alpha * 255).toInt(), 233, 224, 255)
+                fill.color = withAlpha(ThemePacks.blend(themeSurface, accent, 0.22f), (alpha * 255).toInt())
                 val hl = RectF(seg.left + dp(8f), seg.top + dp(8f), seg.right - dp(8f), seg.bottom - dp(8f))
                 c.drawRoundRect(hl, dp(20f), dp(20f), fill)
             }
-            val iconColor = if (active) Color.argb((alpha * 255).toInt(), 124, 58, 237)
-                else Color.argb((alpha * 255).toInt(), 130, 130, 142)
+            val iconColor = if (active) withAlpha(accent, (alpha * 255).toInt())
+                else Color.argb((alpha * 255).toInt(), 168, 170, 178)
             // Inactive segments centre their icon in the bar (no label);
             // the active one keeps the icon-over-label layout in its pill.
             val iconY = if (active) py + dp(26f) else seg.centerY()
@@ -6052,7 +6357,7 @@ class WatchView(
             if (active) {
                 text.textAlign = Paint.Align.CENTER
                 text.textSize = sp(11f)
-                text.color = Color.argb((alpha * 255).toInt(), 124, 58, 237)
+                text.color = withAlpha(accent, (alpha * 255).toInt())
                 c.drawText(labels[i], seg.centerX(), py + ph - dp(9f), text)
                 text.textAlign = Paint.Align.LEFT
             }
@@ -6663,6 +6968,7 @@ class WatchView(
                 // positions.
                 if (morphActive || morphIslandFrom.isNotEmpty()) finishMorph()
                 downX = e.x; downY = e.y; lastX = e.x; lastY = e.y
+                pickerScrollMoved = false
                 // 3.8.1: a touch lands the Homecoming cascade at once.
                 if (homecomingStartMs > 0L) homecomingStartMs = 0L
                 pillPressed = false
@@ -6785,6 +7091,20 @@ class WatchView(
                     invalidate()
                     return true
                 }
+                if (themePickerOpen && clusterSheet.target == 1f) {
+                    // 3.9.0: a drag scrolls the theme list; a moved
+                    // gesture must never land as a tap on a row.
+                    if (abs(e.y - downY) > slop) {
+                        pickerScrollMoved = true
+                        removeCallbacks(longPress)
+                    }
+                    if (pickerScrollMoved) {
+                        themePickerScroll = (themePickerScroll - (e.y - lastY)).coerceIn(0f, themePickerMaxScroll)
+                        invalidate()
+                    }
+                    lastX = e.x; lastY = e.y
+                    return true
+                }
                 velocity?.addMovement(e)
                 if (!dragging && hypot(e.x - downX, e.y - downY) > slop) {
                     dragging = true
@@ -6869,8 +7189,10 @@ class WatchView(
                 pillPressed = false
                 if (!longPressed) {
                     if (dragging && clusterSheet.target == 0f) release(vx, vy, e.y - downY)
+                    else if (themePickerOpen && pickerScrollMoved) { /* a picker scroll, not a tap */ }
                     else tap(e.x, e.y)
                 }
+                pickerScrollMoved = false
                 dragging = false
                 invalidate()
             }
@@ -6878,6 +7200,7 @@ class WatchView(
                 removeCallbacks(longPress)
                 pressedRect = null
                 pillPressed = false
+                pickerScrollMoved = false
                 dragging = false
                 pinching = false
                 edgeCrownDragging = false
@@ -7152,9 +7475,27 @@ class WatchView(
             if (dockHit != null) {
                 performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
                 when (dockHit) {
-                    DOCK_CLUSTER -> { topologyPickerOpen = false; themePickerOpen = false; clusterSheet.target = 0f; invalidate() }
-                    DOCK_WIDGETS -> { topologyPickerOpen = false; themePickerOpen = false; clusterSheet.target = 0f; onWidgetsPage() }
+                    DOCK_CLUSTER -> { topologyPickerOpen = false; themePickerOpen = false; fontPickerOpen = false; clusterSheet.target = 0f; invalidate() }
+                    DOCK_WIDGETS -> { topologyPickerOpen = false; themePickerOpen = false; fontPickerOpen = false; clusterSheet.target = 0f; onWidgetsPage() }
                     else -> { /* Settings segment: already here */ }
+                }
+                return
+            }
+            if (fontPickerOpen) {
+                fontRowRects.lastOrNull { it.first.contains(x, y) }?.let { (_, value) ->
+                    selectThemeFont(value)
+                    return
+                }
+                if (pickerBackRect.contains(x, y)) {
+                    fontPickerOpen = false
+                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    invalidate()
+                    return
+                }
+                if (!sheetBoundsRect.contains(x, y)) {
+                    fontPickerOpen = false
+                    clusterSheet.target = 0f
+                    invalidate()
                 }
                 return
             }
@@ -7165,12 +7506,14 @@ class WatchView(
                 }
                 if (pickerBackRect.contains(x, y)) {
                     themePickerOpen = false
+                    themePickerMode = ThemePickerMode.PACK
                     performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
                     invalidate()
                     return
                 }
                 if (!sheetBoundsRect.contains(x, y)) {
                     themePickerOpen = false
+                    themePickerMode = ThemePickerMode.PACK
                     clusterSheet.target = 0f
                     invalidate()
                 }
@@ -7218,8 +7561,17 @@ class WatchView(
                         invalidate()
                     }
                     ClusterOption.THEME_PACK -> {
-                        themePickerOpen = true
+                        openThemePicker(ThemePickerMode.PACK)
+                    }
+                    ClusterOption.THEME_FONT -> {
+                        fontPickerOpen = true
                         invalidate()
+                    }
+                    ClusterOption.THEME_DAY_PACK -> {
+                        openThemePicker(ThemePickerMode.DAY)
+                    }
+                    ClusterOption.THEME_NIGHT_PACK -> {
+                        openThemePicker(ThemePickerMode.NIGHT)
                     }
                     ClusterOption.MORE_OPTIONS -> {
                         sheetExpanded = !sheetExpanded

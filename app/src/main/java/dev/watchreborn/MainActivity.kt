@@ -255,6 +255,12 @@ class MainActivity : Activity(), SensorEventListener {
             prefs.edit().putString(KEY_THEME_PACK, id).apply()
             for (wid in islandViews.keys) scheduleIslandSnapshot(wid)
         }
+        view.onThemeFontSelected = { pref -> // 3.9.0: persist the font dimension
+            prefs.edit().putString(KEY_THEME_FONT, pref).apply()
+        }
+        view.onThemeSchedulePackSelected = { slot, id -> // 3.9.0: persist a schedule slot
+            prefs.edit().putString(if (slot == "day") KEY_THEME_DAY_PACK else KEY_THEME_NIGHT_PACK, id).apply()
+        }
         view.onFaceSelected = ::switchFace
         view.onFaceMenu = ::showFaceMenu
         pushFacesToView()
@@ -980,6 +986,11 @@ class MainActivity : Activity(), SensorEventListener {
         // current app ever wrote it, and the Orbital pack's accent is
         // that same green, so an un-themed install changes nothing.)
         view.themePack = ThemePacks.byId(prefs.getString(KEY_THEME_PACK, ThemePacks.DEFAULT_ID))
+        // 3.9.0 theming phase A: the font dimension and the pack schedule.
+        view.themeFontPref = prefs.getString(KEY_THEME_FONT, "pack") ?: "pack"
+        view.themeSchedule = prefs.getBoolean(KEY_THEME_SCHEDULE, false)
+        view.themeDayPackId = prefs.getString(KEY_THEME_DAY_PACK, ThemePacks.DEFAULT_ID) ?: ThemePacks.DEFAULT_ID
+        view.themeNightPackId = prefs.getString(KEY_THEME_NIGHT_PACK, "night_city") ?: "night_city"
     }
 
     /** 3.2.5: an island was resized on the cluster — persist the
@@ -1023,6 +1034,16 @@ class MainActivity : Activity(), SensorEventListener {
             ClusterOption.THEME_PACK -> {
                 // Handled inside WatchView: the sheet row opens the theme picker
                 // and selections persist via onThemePackSelected.
+            }
+            ClusterOption.THEME_FONT, ClusterOption.THEME_DAY_PACK, ClusterOption.THEME_NIGHT_PACK -> {
+                // Handled inside WatchView: the rows open the font and
+                // schedule-slot pickers; selections persist via
+                // onThemeFontSelected / onThemeSchedulePackSelected.
+            }
+            ClusterOption.THEME_SCHEDULE -> {
+                val next = !view.themeSchedule
+                prefs.edit().putBoolean(KEY_THEME_SCHEDULE, next).apply()
+                view.themeSchedule = next
             }
             ClusterOption.UNHIDE_FOLDERS -> {
                 repo.clearHiddenGroups()
@@ -3245,6 +3266,10 @@ class MainActivity : Activity(), SensorEventListener {
         const val KEY_USAGE_GROWTH = "usage_growth"
         const val KEY_LIVING_FIELD = "living_field"
         const val KEY_THEME_PACK = "theme_pack"
+        const val KEY_THEME_FONT = "theme_font"
+        const val KEY_THEME_SCHEDULE = "theme_schedule"
+        const val KEY_THEME_DAY_PACK = "theme_day_pack"
+        const val KEY_THEME_NIGHT_PACK = "theme_night_pack"
         const val KEY_THEMED_ICONS = "themed_icons"
         const val KEY_HINTS_SEEN = "hints_seen"
         const val KEY_APPWIDGET_IDS = "appwidget_ids"
