@@ -83,6 +83,7 @@ enum class ClusterOption {
     NEW_FACE,
     UNHIDE_FOLDERS,
     LIVING_FIELD,
+    THEME_PACK,
     MORE_OPTIONS,
     CLOSE_SHEET,
 }
@@ -164,6 +165,27 @@ class WatchView(
         // sheet draw builds. The topology picker opens over the sheet: its
         // rows come from topologyRowRects, plus the Back pill (1.9.1).
         if (clusterSheet.target > 0f) {
+            if (themePickerOpen) {
+                val out = ArrayList<WatchAccessibilityProvider.Node>()
+                for ((rect, pack) in themeRowRects) {
+                    if (rect.isEmpty) continue
+                    val label = pack.name + if (pack == themePack) ", current theme" else ""
+                    out += WatchAccessibilityProvider.Node(
+                        "theme:" + pack.id, label,
+                        Rect(rect.left.toInt(), rect.top.toInt(), rect.right.toInt(), rect.bottom.toInt()),
+                        rect.centerX(), rect.centerY(),
+                    )
+                }
+                if (!pickerBackRect.isEmpty) {
+                    out += WatchAccessibilityProvider.Node(
+                        "theme:back", "Back",
+                        Rect(pickerBackRect.left.toInt(), pickerBackRect.top.toInt(), pickerBackRect.right.toInt(), pickerBackRect.bottom.toInt()),
+                        pickerBackRect.centerX(), pickerBackRect.centerY(),
+                    )
+                }
+                out += dockNodes(DOCK_SETTINGS)
+                return out
+            }
             if (topologyPickerOpen) {
                 val out = ArrayList<WatchAccessibilityProvider.Node>()
                 for ((rect, topo) in topologyRowRects) {
@@ -1407,6 +1429,87 @@ class WatchView(
     private val previewTmp = FloatArray(2)
     private val pickerBackRect = RectF()
     private var topologyPickerOpen = false
+    private var themePickerOpen = false
+    private val themeRowRects = ArrayList<Pair<RectF, ThemePack>>()
+
+    // 3.8.2 theme packs: the effective (day/night blended, crossfaded)
+    // theme colours. `accent` stays the effective accent; these carry
+    // the active pack's glow and surfaces. updateThemeColors() below
+    // maintains all of them once per draw.
+    private var themeGlow: Int = ThemePacks.ORBITAL.glowDay
+    private var themeSurface: Int = ThemePacks.ORBITAL.surface
+    private var themeSurfaceAlt: Int = ThemePacks.ORBITAL.surfaceAlt
+    private var themeLattice: Int = ThemePacks.ORBITAL.latticeStroke
+    private var themeFadeFrom: IntArray? = null
+    private var themeFadeStartMs: Long = 0L
+
+    /** Reports a theme pick for persistence (the activity owns the pref). */
+    var onThemePackSelected: (String) -> Unit = {}
+
+    /** The active theme pack (3.8.2). Setting a different pack starts
+     *  a ~300ms colour crossfade (see updateThemeColors); reduced
+     *  motion switches instantly. */
+    var themePack: ThemePack = ThemePacks.ORBITAL
+        set(v) {
+            if (field == v) return
+            if (!reducedMotion) {
+                themeFadeFrom = intArrayOf(accent, themeGlow, themeSurface, themeSurfaceAlt, themeLattice)
+                themeFadeStartMs = SystemClock.uptimeMillis()
+            }
+            field = v
+            invalidate()
+        }
+
+    private val systemTypeface: Typeface = Typeface.create("sans-serif", Typeface.BOLD)
+    private var rajdhaniTypeface: Typeface? = null
+
+    private fun rajdhani(): Typeface {
+        rajdhaniTypeface?.let { return it }
+        val tf = runCatching { Typeface.createFromAsset(context.assets, "fonts/rajdhani_semibold.ttf") }
+            .getOrNull() ?: systemTypeface
+        rajdhaniTypeface = tf
+        return tf
+    }
+
+    /** Display typeface for chrome (search pill, sheet and picker
+     *  headers, constellation header and chips): Rajdhani under the
+     *  Night City pack, the system face otherwise. App labels keep
+     *  the system face; callers restore with [useSystemFont]. Loaded
+     *  once and cached, never per frame. */
+    private fun useDisplayFont() {
+        text.typeface = if (themePack.displayFont == DisplayFont.RAJDHANI) rajdhani() else systemTypeface
+    }
+
+    private fun useSystemFont() {
+        text.typeface = systemTypeface
+    }
+
+    /** Recomputes the effective theme colours for this frame: the
+     *  pack's day/night blend at the current hour, crossfaded from
+     *  the previous pack's colours while a switch is in flight. */
+    private fun updateThemeColors(cal: Calendar) {
+        val hour = cal.get(Calendar.HOUR_OF_DAY) + cal.get(Calendar.MINUTE) / 60f
+        val tAccent = ThemePacks.accentAt(themePack, hour)
+        val tGlow = ThemePacks.glowAt(themePack, hour)
+        val from = themeFadeFrom
+        if (from != null) {
+            val raw = ((SystemClock.uptimeMillis() - themeFadeStartMs) / 300f).coerceIn(0f, 1f)
+            val e = 1f - (1f - raw) * (1f - raw) * (1f - raw)
+            val na = ThemePacks.blend(from[0], tAccent, e)
+            if (accent != na) accent = na
+            themeGlow = ThemePacks.blend(from[1], tGlow, e)
+            themeSurface = ThemePacks.blend(from[2], themePack.surface, e)
+            themeSurfaceAlt = ThemePacks.blend(from[3], themePack.surfaceAlt, e)
+            themeLattice = ThemePacks.blend(from[4], themePack.latticeStroke, e)
+            if (raw >= 1f) themeFadeFrom = null else motionAnimating = true
+        } else {
+            if (accent != tAccent) accent = tAccent
+            themeGlow = tGlow
+            themeSurface = themePack.surface
+            themeSurfaceAlt = themePack.surfaceAlt
+            themeLattice = themePack.latticeStroke
+        }
+    }
 
     /** Cluster sheet starts compact (essentials only); "More Options"
      *  expands the set-and-forget rows. Session state, not a pref. */
@@ -1585,7 +1688,7 @@ class WatchView(
         val state = NavState(
             cardMenuOpen = cardMenuOpen,
             searching = searching || gridSearching || searchQuery.isNotEmpty(),
-            topologyPickerOpen = topologyPickerOpen && clusterSheet.target > 0f,
+            topologyPickerOpen = (topologyPickerOpen || themePickerOpen) && clusterSheet.target > 0f,
             sheetOpen = clusterSheet.target > 0f,
             editMode = editMode,
             widgetOpen = widgetIn.target == 1f,
@@ -1605,6 +1708,7 @@ class WatchView(
             }
             NavLayer.TOPOLOGY_PICKER -> {
                 topologyPickerOpen = false
+                themePickerOpen = false
                 invalidate()
                 true
             }
@@ -2496,6 +2600,7 @@ class WatchView(
 
     fun openClusterSheet() {
         topologyPickerOpen = false
+        themePickerOpen = false
         clusterSheet.target = 1f
         performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
         invalidate()
@@ -3287,6 +3392,7 @@ class WatchView(
         val top = topInset + 0.02f * w
         val bottom = h - bottomInset - 0.02f * w
         val cal = Calendar.getInstance()
+        updateThemeColors(cal) // 3.8.2: day/night blend + pack crossfade
 
         hits.clear()
         val a = apps.value
@@ -4196,6 +4302,7 @@ class WatchView(
      * and live keyboard filtering when the top search bar is tapped).
      */
     private fun drawConstellationSearch(c: Canvas, w: Float, h: Float, top: Float, alpha: Float, cVal: Float) {
+        useDisplayFont() // 3.8.2: chip widths are measured in the pack's display face
         val u = unit
         val cx = w / 2
         val cy = if (searching) top + dp(248f) else h / 2 + dp(28f)
@@ -4421,7 +4528,7 @@ class WatchView(
                     if (dist < u * 0.60f * cz) {
                         val lineTint = when {
                             activeIntent != null -> activeIntent.groups.first().tint
-                            q.isNotEmpty() -> accent
+                            q.isNotEmpty() -> themeGlow
                             else -> curApp.defaultGroup.tint
                         }
                         // Outer soft glow line
@@ -4437,6 +4544,7 @@ class WatchView(
             }
         }
 
+        useSystemFont() // star name pills are app labels: system face
         // 2. Draw each unraveled star bubble + category halo ring + labels on the central constellation stars
         for (i in starCoords.indices) {
             val (app, x, y) = starCoords[i]
@@ -4447,7 +4555,7 @@ class WatchView(
             fill.color = Color.argb((aInt * 0.90f).toInt(), 12, 14, 18)
             c.drawCircle(x, y, dia * 0.55f, fill)
 
-            val ringColor = if (q.isNotEmpty()) accent else app.defaultGroup.tint
+            val ringColor = if (q.isNotEmpty()) themeGlow else app.defaultGroup.tint
             stroke.strokeWidth = dp(2.2f)
             stroke.color = withAlpha(ringColor, (aInt * 0.90f).toInt())
             c.drawCircle(x, y, dia * 0.54f, stroke)
@@ -4497,6 +4605,7 @@ class WatchView(
 
         c.restore()
 
+        useDisplayFont() // header chrome back in the display face
         // Solid backdrop behind the whole header so nothing shows through the
         // gaps between chips.
         fill.color = Color.argb((aInt * 0.97f).toInt(), 10, 11, 14)
@@ -4504,7 +4613,7 @@ class WatchView(
 
         // 3. Top Constellation Search Bar (tap to open keyboard, or tap X to collapse)
         searchBarRect.set(padX, top + dp(6f), w - padX, top + dp(6f) + barH)
-        fill.color = Color.argb((aInt * 0.94f).toInt(), 32, 34, 40)
+        fill.color = withAlpha(themeSurface, (aInt * 0.94f).toInt())
         c.drawRoundRect(searchBarRect, barH / 2, barH / 2, fill)
         stroke.strokeWidth = dp(1.6f)
         stroke.color = withAlpha(catFilter?.tint ?: accent, aInt)
@@ -4586,6 +4695,7 @@ class WatchView(
                 cl += cw + chipGap
             }
         }
+        useSystemFont()
     }
 
     /** #2: Draws the in-place blooming cluster island at the center of the parted honeycomb. */
@@ -4946,6 +5056,7 @@ class WatchView(
             return
         }
         val aInt = (alpha * 255).toInt().coerceIn(0, 255)
+        useDisplayFont() // 3.8.2: the pill is chrome, set in the pack's display face
         val primary = "Search"
         text.textSize = sp(14f)
         val primaryW = text.measureText(primary)
@@ -4973,7 +5084,7 @@ class WatchView(
         fill.color = Color.argb((aInt * 0.35f).toInt(), 0, 0, 0)
         c.drawRoundRect(pr.left, pr.top + dp(3f), pr.right, pr.bottom + dp(3f), pillH / 2, pillH / 2, fill)
         fill.color = if (pillPressed) Color.argb((aInt * 0.98f).toInt(), 52, 55, 62)
-            else Color.argb((aInt * 0.96f).toInt(), 32, 34, 40)
+            else withAlpha(themeSurface, (aInt * 0.96f).toInt())
         c.drawRoundRect(pr, pillH / 2, pillH / 2, fill)
         stroke.strokeWidth = dp(1.4f)
         stroke.color = withAlpha(accent, (aInt * (if (pillPressed) 0.95f else 0.6f)).toInt())
@@ -5000,6 +5111,7 @@ class WatchView(
             text.color = Color.argb((aInt * 0.72f).toInt(), 188, 190, 198)
             c.drawText(secText, tx + dp(8f), pr.centerY() + text.textSize * 0.35f, text)
         }
+        useSystemFont()
 
         // Live Notification Snippet Peek when the centered bubble has
         // an active notification (unchanged, below the new pill).
@@ -5033,9 +5145,13 @@ class WatchView(
 
         // 2.4.0: Settings is a full PAGE, not a popup — an opaque
         // full-screen surface; the cluster no longer shows through.
-        fill.color = Color.argb(a, 24, 26, 30)
+        fill.color = withAlpha(themeSurfaceAlt, a) // 3.8.2: pack page background
         c.drawRect(0f, 0f, w, h, fill)
 
+        if (themePickerOpen) {
+            drawThemePicker(c, w, h, top, t)
+            return
+        }
         if (topologyPickerOpen) {
             drawTopologyPicker(c, w, h, top, t)
             return
@@ -5065,6 +5181,10 @@ class WatchView(
             add(Triple(ClusterOption.CLUSTER_TOPOLOGY, "Cluster Topology", "${clusterTopology.fullTitle} • Tap for all ${ClusterTopology.entries.size} designs"))
             if (sheetExpanded) {
                 add(Triple(ClusterOption.FIXED_NEIGHBORHOODS, "Grid Layout", if (fixedNeighborhoods) "Fixed Compass Neighborhoods" else "Dynamic Usage Spiral"))
+            }
+            if (sheetExpanded) {
+                add(Triple(null, "APPEARANCE", ""))
+                add(Triple(ClusterOption.THEME_PACK, "Theme Pack", themePack.name))
             }
             if (sheetExpanded) {
                 add(Triple(null, "BEHAVIOR", ""))
@@ -5124,6 +5244,7 @@ class WatchView(
         val sheetTop = top + dp(6f)
         sheetBoundsRect.set(0f, 0f, w, h)
 
+        useDisplayFont() // 3.8.2: pack display face for the page title + section headers
         text.textSize = sp(18.5f)
         text.color = Color.argb(a, 255, 255, 255)
         val title = "Settings"
@@ -5163,7 +5284,7 @@ class WatchView(
 
         // Panels first (one rounded surface per section), with a hairline
         // divider in the gap between rows of the same panel.
-        val panelFill = Color.argb(a, 35, 37, 43)
+        val panelFill = withAlpha(themeSurface, a)
         for ((_, group) in boxes.groupBy { it.panel }) {
             val pr = RectF(group.first().rect.left, group.first().rect.top, group.first().rect.right, group.last().rect.bottom)
             fill.color = panelFill
@@ -5171,7 +5292,7 @@ class WatchView(
             for (i in 0 until group.size - 1) {
                 val dy = (group[i].rect.bottom + group[i + 1].rect.top) / 2f
                 stroke.strokeWidth = dp(1f)
-                stroke.color = Color.argb((a * 0.5f).toInt(), 96, 98, 106)
+                stroke.color = withAlpha(themeLattice, (a * 0.5f).toInt())
                 c.drawLine(pr.left + dp(46f), dy, pr.right - dp(14f), dy, stroke)
             }
         }
@@ -5180,6 +5301,7 @@ class WatchView(
             text.color = Color.argb((a * 0.85f).toInt(), 168, 170, 178) // 0.85 alpha: 4.9:1+ (audit #7)
             c.drawText(hlabel, padX + dp(16f), hr.top + dp(15f), text)
         }
+        useSystemFont()
 
         val glyphColor = Color.argb((a * 0.9f).toInt(), 205, 207, 213)
         for (box in boxes) {
@@ -5209,6 +5331,7 @@ class WatchView(
             } else ""
             val valueText = if (toggleOn == null) when (opt) {
                 ClusterOption.CLUSTER_TOPOLOGY -> clusterTopology.fullTitle
+                ClusterOption.THEME_PACK -> themePack.name
                 ClusterOption.CLEAR_PINS -> "Unpin all"
                 ClusterOption.BACKUP_LAYOUT -> "Export"
                 ClusterOption.RESTORE_LAYOUT -> "Import"
@@ -5263,6 +5386,7 @@ class WatchView(
             sheetRowLabels += r to when {
                 toggleOn != null -> "$label, ${if (toggleOn) "on" else "off"}"
                 opt == ClusterOption.CLUSTER_TOPOLOGY -> "$label, ${clusterTopology.fullTitle}"
+                opt == ClusterOption.THEME_PACK -> "$label, ${themePack.name}"
                 opt == ClusterOption.FACE_ROW -> faceEntries.firstOrNull { it.id == box.faceId }
                     ?.let { f -> "${f.name}, ${f.topologyTitle}" + if (f.active) ", current face" else "" } ?: label
                 opt == ClusterOption.MORE_OPTIONS -> if (sheetExpanded) "Show fewer options" else "More options"
@@ -5303,6 +5427,7 @@ class WatchView(
         val sheetTop = top + dp(6f)
         sheetBoundsRect.set(0f, 0f, w, h)
 
+        useDisplayFont()
         text.textSize = sp(18.5f)
         text.color = Color.argb(a, 255, 255, 255)
         val title = "Cluster Layout"
@@ -5312,11 +5437,12 @@ class WatchView(
         text.color = Color.argb((a * 0.7f).toInt(), 188, 190, 198)
         val hint = "Tap a design to apply it instantly"
         c.drawText(hint, w / 2 - text.measureText(hint) / 2, sheetTop + dp(55f), text)
+        useSystemFont()
 
         var ry = sheetTop + dp(68f)
         // 2.6.0: one grouped panel behind all rows (Settings restyle).
         val panelRect = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + all.size * (rowH + gap) - gap)
-        fill.color = Color.argb(a, 35, 37, 43)
+        fill.color = withAlpha(themeSurface, a)
         c.drawRoundRect(panelRect, dp(16f), dp(16f), fill)
         for (topo in all) {
             val r = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + rowH)
@@ -5378,7 +5504,7 @@ class WatchView(
 
         // Hairline dividers between the panel rows.
         stroke.strokeWidth = dp(1f)
-        stroke.color = Color.argb((a * 0.5f).toInt(), 96, 98, 106)
+        stroke.color = withAlpha(themeLattice, (a * 0.5f).toInt())
         for (i in 0 until topologyRowRects.size - 1) {
             val dy = (topologyRowRects[i].first.bottom + topologyRowRects[i + 1].first.top) / 2f
             c.drawLine(panelRect.left + dp(14f), dy, panelRect.right - dp(14f), dy, stroke)
@@ -5386,12 +5512,114 @@ class WatchView(
 
         // Back: a full-width panel row, same treatment as the sheet's Done.
         pickerBackRect.set(padX + dp(12f), ry + dp(4f), padX + cardW - dp(12f), ry + dp(4f) + dp(50f))
-        fill.color = Color.argb(a, 35, 37, 43)
+        fill.color = withAlpha(themeSurface, a)
         c.drawRoundRect(pickerBackRect, dp(16f), dp(16f), fill)
         text.textSize = sp(16f)
         text.color = Color.argb(a, 255, 255, 255)
         val backStr = "‹ Back"
         c.drawText(backStr, w / 2 - text.measureText(backStr) / 2, pickerBackRect.centerY() + text.textSize * 0.35f, text)
+    }
+
+
+    /** Theme pack list (3.8.2): one row per pack with a two-tone
+     *  swatch (accent disc, glow ring); tap one to apply it instantly,
+     *  the colours crossfade behind the sheet. */
+    private fun drawThemePicker(c: Canvas, w: Float, h: Float, top: Float, t: Float) {
+        val a = (t * 255).toInt().coerceIn(0, 255)
+        themeRowRects.clear()
+
+        val padX = dp(18f)
+        val cardW = w - 2 * padX
+        var rowH = dp(50f)
+        val gap = dp(4f)
+        val all = ThemePacks.ALL
+        var sheetH = dp(74f) + all.size * (rowH + gap) + dp(52f)
+        val availH = (if (!dockSegs[0].isEmpty) dockSegs[0].top - dp(10f) else h - dp(36f)) - (top + dp(6f))
+        if (sheetH > availH) {
+            rowH = ((availH - dp(74f) - dp(52f)) / all.size - gap).coerceAtLeast(dp(34f))
+            sheetH = dp(74f) + all.size * (rowH + gap) + dp(52f)
+        }
+        val sheetTop = top + dp(6f)
+        sheetBoundsRect.set(0f, 0f, w, h)
+
+        useDisplayFont()
+        text.textSize = sp(18.5f)
+        text.color = Color.argb(a, 255, 255, 255)
+        val title = "Theme Pack"
+        c.drawText(title, w / 2 - text.measureText(title) / 2, sheetTop + dp(32f), text)
+
+        text.textSize = sp(12.5f)
+        text.color = Color.argb((a * 0.7f).toInt(), 188, 190, 198)
+        val hint = "Tap a theme to apply it instantly"
+        c.drawText(hint, w / 2 - text.measureText(hint) / 2, sheetTop + dp(55f), text)
+
+        var ry = sheetTop + dp(68f)
+        val panelRect = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + all.size * (rowH + gap) - gap)
+        fill.color = withAlpha(themeSurface, a)
+        c.drawRoundRect(panelRect, dp(16f), dp(16f), fill)
+        for (pack in all) {
+            val r = RectF(padX + dp(12f), ry, padX + cardW - dp(12f), ry + rowH)
+            if (pack == themePack) {
+                stroke.strokeWidth = dp(1.5f)
+                stroke.color = withAlpha(accent, (a * 0.8f).toInt())
+                c.drawRoundRect(r, dp(14f), dp(14f), stroke)
+            }
+            // Swatch: accent disc ringed by the pack's glow colour.
+            val swX = r.left + dp(26f)
+            val swY = r.centerY()
+            stroke.strokeWidth = dp(2.5f)
+            stroke.color = withAlpha(pack.glowDay, a)
+            c.drawCircle(swX, swY, dp(10f), stroke)
+            fill.color = withAlpha(pack.accentDay, a)
+            c.drawCircle(swX, swY, dp(7f), fill)
+
+            text.textSize = sp(15.5f)
+            text.color = Color.argb(a, 255, 255, 255)
+            val titleMaxW = (r.right - dp(60f) - (r.left + dp(48f))).coerceAtLeast(dp(40f))
+            c.drawText(TextUtils.ellipsize(pack.name, text, titleMaxW, TextUtils.TruncateAt.END).toString(), r.left + dp(48f), r.top + rowH * 0.40f, text)
+
+            text.textSize = sp(12.5f)
+            text.color = Color.argb((a * 0.75f).toInt(), 178, 180, 188)
+            c.drawText(TextUtils.ellipsize(pack.subtitle, text, titleMaxW, TextUtils.TruncateAt.END).toString(), r.left + dp(48f), r.top + rowH * 0.86f, text)
+
+            if (pack == themePack) {
+                text.textSize = sp(17f)
+                text.color = withAlpha(accent, a)
+                c.drawText("\u2713", r.right - dp(26f), r.centerY() + text.textSize * 0.35f, text)
+            }
+
+            themeRowRects += r to pack
+            ry += rowH + gap
+        }
+
+        // Hairline dividers between the panel rows.
+        stroke.strokeWidth = dp(1f)
+        stroke.color = withAlpha(themeLattice, (a * 0.5f).toInt())
+        for (i in 0 until themeRowRects.size - 1) {
+            val dy = (themeRowRects[i].first.bottom + themeRowRects[i + 1].first.top) / 2f
+            c.drawLine(panelRect.left + dp(14f), dy, panelRect.right - dp(14f), dy, stroke)
+        }
+
+        // Back: a full-width panel row, same treatment as the sheet's Done.
+        pickerBackRect.set(padX + dp(12f), ry + dp(4f), padX + cardW - dp(12f), ry + dp(4f) + dp(50f))
+        fill.color = withAlpha(themeSurface, a)
+        c.drawRoundRect(pickerBackRect, dp(16f), dp(16f), fill)
+        text.textSize = sp(16f)
+        text.color = Color.argb(a, 255, 255, 255)
+        val backStr = "\u2039 Back"
+        c.drawText(backStr, w / 2 - text.measureText(backStr) / 2, pickerBackRect.centerY() + text.textSize * 0.35f, text)
+        useSystemFont()
+    }
+
+    /** Applies a theme chosen in the theme picker and reports it for persistence. */
+    fun selectThemePack(pack: ThemePack) {
+        themePickerOpen = false
+        if (pack != themePack) {
+            themePack = pack
+            onThemePackSelected(pack.id)
+        }
+        performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+        invalidate()
     }
 
     /** Classic full-screen Folder View (used when [bloomFolders] is false). */
@@ -5634,6 +5862,13 @@ class WatchView(
                     path.lineTo(cx + s * 0.42f, yy)
                     c.drawPath(path, stroke)
                 }
+            }
+            ClusterOption.THEME_PACK -> {
+                // Three swatch dots: a pack's colours in miniature.
+                fill.color = color
+                c.drawCircle(cx - s * 0.26f, cy, s * 0.13f, fill)
+                c.drawCircle(cx, cy, s * 0.13f, fill)
+                c.drawCircle(cx + s * 0.26f, cy, s * 0.13f, fill)
             }
             ClusterOption.SET_DEFAULT_HOME -> {
                 path.moveTo(cx - s * 0.42f, cy + s * 0.02f)
@@ -6832,9 +7067,27 @@ class WatchView(
             if (dockHit != null) {
                 performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
                 when (dockHit) {
-                    DOCK_CLUSTER -> { topologyPickerOpen = false; clusterSheet.target = 0f; invalidate() }
-                    DOCK_WIDGETS -> { topologyPickerOpen = false; clusterSheet.target = 0f; onWidgetsPage() }
+                    DOCK_CLUSTER -> { topologyPickerOpen = false; themePickerOpen = false; clusterSheet.target = 0f; invalidate() }
+                    DOCK_WIDGETS -> { topologyPickerOpen = false; themePickerOpen = false; clusterSheet.target = 0f; onWidgetsPage() }
                     else -> { /* Settings segment: already here */ }
+                }
+                return
+            }
+            if (themePickerOpen) {
+                themeRowRects.lastOrNull { it.first.contains(x, y) }?.let { (_, pack) ->
+                    selectThemePack(pack)
+                    return
+                }
+                if (pickerBackRect.contains(x, y)) {
+                    themePickerOpen = false
+                    performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    invalidate()
+                    return
+                }
+                if (!sheetBoundsRect.contains(x, y)) {
+                    themePickerOpen = false
+                    clusterSheet.target = 0f
+                    invalidate()
                 }
                 return
             }
@@ -6877,6 +7130,10 @@ class WatchView(
                     }
                     ClusterOption.CLUSTER_TOPOLOGY -> {
                         topologyPickerOpen = true
+                        invalidate()
+                    }
+                    ClusterOption.THEME_PACK -> {
+                        themePickerOpen = true
                         invalidate()
                     }
                     ClusterOption.MORE_OPTIONS -> {

@@ -83,6 +83,7 @@ import dev.watchreborn.ui.LayoutBackup
 import dev.watchreborn.ui.FaceInfo
 import dev.watchreborn.ui.Metrics
 import dev.watchreborn.ui.StepsToday
+import dev.watchreborn.ui.ThemePacks
 import dev.watchreborn.ui.WatchView
 import java.time.LocalDate
 import java.util.concurrent.Executors
@@ -250,6 +251,7 @@ class MainActivity : Activity(), SensorEventListener {
             prefs.edit().putStringSet(KEY_HINTS_SEEN, cur).apply()
             view.hintsSeen = cur
         }
+        view.onThemePackSelected = { id -> prefs.edit().putString(KEY_THEME_PACK, id).apply() } // 3.8.2
         view.onFaceSelected = ::switchFace
         view.onFaceMenu = ::showFaceMenu
         pushFacesToView()
@@ -969,7 +971,12 @@ class MainActivity : Activity(), SensorEventListener {
      *  Tint, added in 3.2.5, was removed in 3.4.0 at Matt's call:
      *  the accent no longer leans toward the wallpaper.) */
     private fun refreshAccent() {
-        view.accent = prefs.getInt(KEY_ACCENT, ACCENTS[0].second)
+        // 3.8.2: the accent comes from the active theme pack; the
+        // view blends the pack's day/night values at draw time. (The
+        // old single-colour KEY_ACCENT pref is retired: no UI in the
+        // current app ever wrote it, and the Orbital pack's accent is
+        // that same green, so an un-themed install changes nothing.)
+        view.themePack = ThemePacks.byId(prefs.getString(KEY_THEME_PACK, ThemePacks.DEFAULT_ID))
     }
 
     /** 3.2.5: an island was resized on the cluster — persist the
@@ -1009,6 +1016,10 @@ class MainActivity : Activity(), SensorEventListener {
             ClusterOption.CLUSTER_TOPOLOGY -> {
                 // Handled inside WatchView: the sheet row opens the topology picker
                 // and selections persist via handleTopologySelected.
+            }
+            ClusterOption.THEME_PACK -> {
+                // Handled inside WatchView: the sheet row opens the theme picker
+                // and selections persist via onThemePackSelected.
             }
             ClusterOption.UNHIDE_FOLDERS -> {
                 repo.clearHiddenGroups()
@@ -3230,6 +3241,7 @@ class MainActivity : Activity(), SensorEventListener {
         const val KEY_PER_LAYOUT_PINS = "per_layout_pins"
         const val KEY_USAGE_GROWTH = "usage_growth"
         const val KEY_LIVING_FIELD = "living_field"
+        const val KEY_THEME_PACK = "theme_pack"
         const val KEY_THEMED_ICONS = "themed_icons"
         const val KEY_HINTS_SEEN = "hints_seen"
         const val KEY_APPWIDGET_IDS = "appwidget_ids"
