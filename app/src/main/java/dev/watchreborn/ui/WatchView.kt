@@ -82,6 +82,7 @@ enum class ClusterOption {
     FACE_ROW,
     NEW_FACE,
     UNHIDE_FOLDERS,
+    LIVING_FIELD,
     MORE_OPTIONS,
     CLOSE_SHEET,
 }
@@ -251,7 +252,22 @@ class WatchView(
                 slot.rect.centerX(), slot.rect.centerY(),
             )
         } else emptyList()
-        return bubbles + islandNodes + folderHeaderNodes() + dockNodes(if (widgetsPageOpen) DOCK_WIDGETS else DOCK_CLUSTER)
+        return bubbles + islandNodes + folderHeaderNodes() + searchPillNodes() + dockNodes(if (widgetsPageOpen) DOCK_WIDGETS else DOCK_CLUSTER)
+    }
+
+    /** Search pill node (3.8.1, item 5): the redesigned header pill is
+     *  the way into Constellation Search and the intent layer, so it
+     *  gets a real TalkBack node like the dock segments have. */
+    private fun searchPillNodes(): List<WatchAccessibilityProvider.Node> {
+        if (centerSearchPillRect.isEmpty || activeFolder != null || widgetIn.target > 0f || gridSearching) return emptyList()
+        val r = centerSearchPillRect
+        return listOf(
+            WatchAccessibilityProvider.Node(
+                "search:pill", "Search apps and intents",
+                Rect(r.left.toInt(), r.top.toInt(), r.right.toInt(), r.bottom.toInt()),
+                r.centerX(), r.centerY(),
+            )
+        )
     }
 
     /** Dock segment nodes (2.7.0, audit #2): the dock is primary
@@ -285,6 +301,11 @@ class WatchView(
     }
 
     private fun a11yActivate(node: WatchAccessibilityProvider.Node) {
+        // 3.8.1: the search pill opens Constellation Search directly.
+        if (node.key == "search:pill") {
+            startConstellationSearch()
+            return
+        }
         // 3.2.4: island nodes fire their callbacks directly — outside
         // edit mode a synthetic tap would reach onIslandTap anyway,
         // but in edit mode taps ride the touch drag path, so route
@@ -815,6 +836,12 @@ class WatchView(
     /** Usage growth: bubbles scale with how much their app is used. */
     var usageGrowth: Boolean = true
 
+    /** 3.8.1 (item 4): Living Field. When on (and motion is allowed),
+     *  the idle cluster breathes slowly, picks up a little extra tilt
+     *  parallax by depth, and leaves fading ghosts after a fast fling.
+     *  Persisted by the activity as the living_field pref. */
+    var livingField: Boolean = true
+
     /** 3.7.5: monochrome icons in the system palette (the bitmaps come
      *  from AppRepo; this only drives the sheet row). */
     var themedIcons: Boolean = false
@@ -1019,6 +1046,43 @@ class WatchView(
     private var constellationFilter = "ALL"
     private var constellationCategoryFilter: dev.watchreborn.apps.AppGroup? = null
     private var constellationIntentFilter: IntentLayer.IntentDef? = null
+
+    // --- 3.8.1 batch state ---------------------------------------------
+    // Intent Bloom (item 2): the active intent's id and the bloom clock.
+    // prev* holds last frame's drawn stars so the set that an intent
+    // activation replaces can collapse out through exit*.
+    private var bloomIntentId: String? = null
+    private var bloomStartMs: Long = 0L
+    private val prevStarItems = arrayOfNulls<App>(48)
+    private val prevStarX = FloatArray(48)
+    private val prevStarY = FloatArray(48)
+    private val prevStarD = FloatArray(48)
+    private var prevStarCount = 0
+    private val exitStarItems = arrayOfNulls<App>(48)
+    private val exitStarX = FloatArray(48)
+    private val exitStarY = FloatArray(48)
+    private val exitStarD = FloatArray(48)
+    private var exitStarCount = 0
+    private var exitStartMs = 0L
+    // Homecoming Bloom (item 3): cascade clock; 0 = not running. The
+    // per-item cascade factors live in cascadeBuf (drawGrid scratch).
+    private var homecomingStartMs = 0L
+    private var cascadeBuf = FloatArray(0)
+    // Living Field (item 4): breathing phase, window visibility gate,
+    // and the fling-ghost snapshot (capped, reused arrays).
+    private var livingPhase = 0f
+    private var livingVisible = true
+    private val ghostItems = arrayOfNulls<GridItem>(16)
+    private val ghostX = FloatArray(16)
+    private val ghostY = FloatArray(16)
+    private val ghostD = FloatArray(16)
+    private var ghostCount = 0
+    private var ghostStartMs = 0L
+    private var ghostPending = false
+    private var ghostVx = 0f
+    private var ghostVy = 0f
+    // Search pill (item 5): true while a finger holds the pill.
+    private var pillPressed = false
     private val searchBarRect = RectF()
     private val searchClearRect = RectF()
     private val centerSearchPillRect = RectF()
@@ -2437,6 +2501,19 @@ class WatchView(
         invalidate()
     }
 
+    /**
+     * 3.8.1 Homecoming Bloom (item 3): called by the activity on every
+     * resume. Purely decorative: the cascade only scales and fades the
+     * first frames the normal draw already produces, so the 3.7.2
+     * StartupCache first paint is never delayed or gated by it. Any
+     * touch lands the cascade instantly (see ACTION_DOWN).
+     */
+    fun onHomeReturn() {
+        if (reducedMotion) return
+        homecomingStartMs = SystemClock.uptimeMillis()
+        invalidate()
+    }
+
     fun startConstellationSearch() {
         clusterSheet.target = 0f
         if (apps.target < 0.5f) apps.target = 1f
@@ -3200,6 +3277,8 @@ class WatchView(
         val springs = arrayOf(apps, grid, overview, userZoom, constellationZoom, folderIn, widgetIn, clusterSheet, constellationIn, panX, panY, folderPanX, folderPanY, constellationPanX, constellationPanY, cardMenu, peekIn)
         if (reducedMotion) for (s in springs) s.snap(s.target) // 2.7.0 (audit #1)
         for (s in springs) s.step(dt)
+        // 3.8.1 Living Field: advance the breathing phase (5s period).
+        if (livingField && !reducedMotion && livingVisible) livingPhase += dt * 1.2566f
         val physicsAnimating = stepPhysics(dt)
         updatePeek()
 
@@ -3235,6 +3314,12 @@ class WatchView(
 
         val animating = springs.any { !it.settled } || dragging || physicsAnimating || motionAnimating || (peekItemKey != null && !peekIn.settled)
         if (animating) postInvalidateOnAnimation()
+        else if (livingField && !reducedMotion && livingVisible && a > 0f && clusterSheet.target == 0f && !gridSearching) {
+            // 3.8.1 Living Field: the idle cluster breathes, so it needs
+            // a gentle frame rate even at rest. ~30fps, and only while
+            // the window is visible (livingVisible gates it).
+            postInvalidateDelayed(33L)
+        }
         else {
             lastFrame = 0L
             // The fast pulse loop only earns its battery while a badged
@@ -3359,6 +3444,13 @@ class WatchView(
             gridBufDist = FloatArray(cap)
             gridBufDepth = FloatArray(cap)
         }
+        if (cascadeBuf.size < items.size) cascadeBuf = FloatArray(items.size + 32)
+        cascadeBuf.fill(1f, 0, items.size)
+        // 3.8.1 Homecoming Bloom clock: elapsed since the resume that
+        // started it; past the envelope the cascade parks itself.
+        val homeElapsed = if (homecomingStartMs > 0L)
+            (SystemClock.uptimeMillis() - homecomingStartMs).toFloat() else -1f
+        if (homeElapsed > 950f) homecomingStartMs = 0L
         val bubbleX = gridBufX
         val bubbleY = gridBufY
         val bubbleDia = gridBufDia
@@ -3506,6 +3598,22 @@ class WatchView(
                 bubbleDia[i] = 0f
                 continue
             }
+            // 3.8.1: Living Field breathing (a slow radial wave by
+            // fisheye distance, plus a little extra tilt parallax by
+            // depth) and the Homecoming cascade factor for this item.
+            var lfMul = 1f
+            if (livingField && !reducedMotion) {
+                lfMul *= 1f + 0.018f * sin(livingPhase - d * 2.2f)
+                bubbleX[i] += tiltX * dp(3.5f) * d
+                bubbleY[i] += tiltY * dp(3.5f) * d
+            }
+            if (homeElapsed >= 0f && cVal <= 0.05f) {
+                val hp = ((homeElapsed - d * 150f) / 240f).coerceIn(0f, 1f)
+                val he = 1f - (1f - hp) * (1f - hp) * (1f - hp)
+                cascadeBuf[i] = he
+                if (hp < 1f) motionAnimating = true
+                lfMul *= 0.45f + 0.55f * he
+            }
             val scaleMod = 1f - 0.55f * cVal
             // In the pool, Usage Growth is damped (1.4.0): at full size the
             // most-used bubbles render ~2x their collision radius and bury
@@ -3516,13 +3624,34 @@ class WatchView(
             // centre still reads biggest via the fisheye's centre size.
             val growth = if (isPool) 1f + (rawGrowth - 1f) * 0.35f
                 else if (rawGrowth > 1f) 1f + (rawGrowth - 1f) * 0.55f else rawGrowth
-            bubbleDia[i] = Metrics.GRID_CENTER_D * u * size * effZoom * scaleMod * growth * gulpFactor(item.key)
+            bubbleDia[i] = Metrics.GRID_CENTER_D * u * size * effZoom * scaleMod * growth * gulpFactor(item.key) * lfMul
         }
 
         if (morphActive && morphElapsedMs >= MorphMath.TOTAL_MS) morphActive = false
 
+        // 3.8.1 Living Field: a fast fling release asked for ghosts;
+        // snapshot the field's current positions for the fade pass.
+        if (ghostPending) {
+            ghostPending = false
+            ghostCount = 0
+            for (gi in items.indices) {
+                if (ghostCount >= ghostItems.size) break
+                if (bubbleDia[gi] <= 2f) continue
+                ghostItems[ghostCount] = items[gi]
+                ghostX[ghostCount] = bubbleX[gi]
+                ghostY[ghostCount] = bubbleY[gi]
+                ghostD[ghostCount] = bubbleDia[gi]
+                ghostCount++
+            }
+            if (ghostCount > 0) ghostStartMs = SystemClock.uptimeMillis()
+        }
+
         val itemAlpha = alpha * (1f - 0.68f * bVal) * (1f - cVal)
         if (itemAlpha > 0.01f) {
+            // 3.8.1 (item 5): the field clips below the header zone, so
+            // no bubble ever renders under the search pill.
+            c.save()
+            c.clipRect(0f, top + dp(64f), w, h)
             val aInt = (itemAlpha * 255).toInt().coerceIn(0, 255)
 
             // Topology-specific backdrop art: orbital rings, river tracks, helix strands, dock arcs, pool tank
@@ -3801,6 +3930,24 @@ class WatchView(
                 }
             }
 
+            // 3.8.1 Living Field fling ghosts: fading copies of the
+            // snapshot, drifting a little against the fling direction.
+            if (ghostStartMs > 0L) {
+                val gAge = SystemClock.uptimeMillis() - ghostStartMs
+                if (gAge >= 300L) {
+                    ghostStartMs = 0L
+                    ghostCount = 0
+                } else {
+                    val gFade = 1f - gAge / 300f
+                    val gOff = gAge / 1000f * 0.05f
+                    for (gi in 0 until ghostCount) {
+                        val gItem = ghostItems[gi] ?: continue
+                        drawGridItem(c, gItem, ghostX[gi] - ghostVx * gOff, ghostY[gi] - ghostVy * gOff, ghostD[gi] * 0.97f, itemAlpha * 0.16f * gFade, cal)
+                    }
+                    motionAnimating = true
+                }
+            }
+
             val drawOrder = when {
                 isHelix -> items.indices.sortedBy { dnaHelixDepth(it) }
                 else -> items.indices
@@ -3814,7 +3961,7 @@ class WatchView(
                 if (dropAnim?.item?.key == item.key) continue
                 val x = bubbleX[i]
                 val y = bubbleY[i]
-                val bAlpha = itemAlpha * bubbleDepthAlpha[i]
+                val bAlpha = itemAlpha * bubbleDepthAlpha[i] * cascadeBuf[i] // 3.8.1: Homecoming fade rides the cascade factor
 
                 if (clusterTopology == ClusterTopology.GRAVITY && gravityWeightFor(i, item) >= 1.20f) {
                     stroke.strokeWidth = dp(1.8f)
@@ -3828,7 +3975,7 @@ class WatchView(
                 }
 
                 drawGridItem(c, item, x, y, dia, bAlpha, cal)
-                if (bVal < 0.5f && cVal < 0.3f) hits += Hit(x, y, dia / 2, item, i)
+                if (bVal < 0.5f && cVal < 0.3f && y > top + dp(64f) + dia * 0.25f) hits += Hit(x, y, dia / 2, item, i) // 3.8.1: no hits inside the clipped header zone
 
                 // Overview Cluster Labels on Folder bubbles when zoomed out (ov > 0.35f)
                 if (ov > 0.35f && item is Folder) {
@@ -3857,6 +4004,7 @@ class WatchView(
                     c.drawText(lbl, x + shiftX - lw / 2, lRect.centerY() + text.textSize * 0.35f, text)
                 }
             }
+            c.restore() // 3.8.1: end of the header-zone clip
         }
 
         // #4: Unraveled Star Constellation — unravels all folders into connected star constellations on screen by default!
@@ -4105,6 +4253,30 @@ class WatchView(
         val intentFilter = constellationIntentFilter
         val typedIntent = if (intentFilter == null) IntentLayer.matchExact(q) else null
         val activeIntent = intentFilter ?: typedIntent
+        // 3.8.1 Intent Bloom (item 2): the bloom clock. The frame an
+        // intent becomes active, the previous frame's stars are copied
+        // into the exit snapshot so the old set can collapse out while
+        // the intent set flies in (see the star loop below).
+        val bloomNow = SystemClock.uptimeMillis()
+        if (activeIntent == null) {
+            bloomIntentId = null
+            exitStartMs = 0L
+        } else if (bloomIntentId != activeIntent.id) {
+            bloomIntentId = activeIntent.id
+            bloomStartMs = bloomNow
+            exitStarCount = prevStarCount
+            for (ei in 0 until prevStarCount) {
+                exitStarItems[ei] = prevStarItems[ei]
+                exitStarX[ei] = prevStarX[ei]
+                exitStarY[ei] = prevStarY[ei]
+                exitStarD[ei] = prevStarD[ei]
+            }
+            exitStartMs = bloomNow
+        }
+        val bloomElapsed = if (activeIntent != null && !reducedMotion) (bloomNow - bloomStartMs).toFloat() else 9999f
+        val bloomT = (bloomElapsed / 650f).coerceIn(0f, 1f)
+        if (activeIntent != null && bloomT < 1f) motionAnimating = true
+        val bloomPulse = if (activeIntent != null && bloomT < 1f) sin(bloomT * 3.14159f) else 0f
         val intentStars: List<App>? = activeIntent?.let { intent ->
             val byUseIndex = HashMap<String, Int>(byUse.size)
             byUse.forEachIndexed { index, app -> byUseIndex[app.key] = index }
@@ -4173,6 +4345,7 @@ class WatchView(
         val starCoords = ArrayList<Triple<App, Float, Float>>(stars.size)
         val starDiameters = FloatArray(stars.size)
         val starCenterDist = FloatArray(stars.size)
+        var bloomLocal0 = 1f // the centre star's bloom flight progress
 
         for (i in stars.indices) {
             val app = stars[i]
@@ -4182,8 +4355,17 @@ class WatchView(
             val orig = groupOrigin[app.defaultGroup]
             val ox = orig?.first ?: 0f
             val oy = orig?.second ?: 0f
-            val worldX = ox * (1f - cVal) + targetX * cVal
-            val worldY = oy * (1f - cVal) + targetY * cVal
+            // 3.8.1 Intent Bloom: while a bloom runs, each star flies
+            // from its group origin on its own staggered ease (rank
+            // order, MorphMath's springy overshoot), instead of riding
+            // the shared unravel value. Settled, it is exactly cVal.
+            val bloomE = if (activeIntent != null && bloomT < 1f) {
+                val local = ((bloomElapsed - min(i * 28f, 220f)) / 430f).coerceIn(0f, 1f)
+                if (i == 0) bloomLocal0 = local
+                if (local >= 1f) 1f else MorphMath.ease(local)
+            } else cVal
+            val worldX = ox * (1f - bloomE) + targetX * bloomE
+            val worldY = oy * (1f - bloomE) + targetY * bloomE
 
             val dx = (worldX + cpx) / u
             val dy = (worldY + cpy) / u
@@ -4198,7 +4380,7 @@ class WatchView(
             val k = if (d > 1e-4f) Fisheye.pulled(d) / d else 1f
             val x = cx + dx * k * u
             val y = cy + dy * k * u
-            val dia = Metrics.GRID_CENTER_D * u * size * 0.72f * cz.coerceIn(0.8f, 1.25f)
+            val dia = Metrics.GRID_CENTER_D * u * size * 0.72f * cz.coerceIn(0.8f, 1.25f) * (if (activeIntent != null && bloomT < 1f) (0.55f + 0.45f * bloomE) else 1f)
             starCoords += Triple(app, x, y)
             starDiameters[i] = dia
         }
@@ -4208,6 +4390,24 @@ class WatchView(
         c.save()
         c.clipRect(0f, headerBottom + dp(4f), w, h)
 
+        // 3.8.1 Intent Bloom exit: the set the intent replaced shrinks
+        // and fades over ~200ms under the arriving stars.
+        if (exitStartMs > 0L && activeIntent != null && !reducedMotion) {
+            val eAge = (bloomNow - exitStartMs).toFloat()
+            if (eAge >= 200f) {
+                exitStartMs = 0L
+            } else {
+                val ep = eAge / 200f
+                for (ei in 0 until exitStarCount) {
+                    val eApp = exitStarItems[ei] ?: continue
+                    val eDia = exitStarD[ei] * (1f - ep * 0.55f)
+                    if (eDia <= 2f) continue
+                    drawIcon(c, eApp.icon, exitStarX[ei], exitStarY[ei], eDia, alpha * (1f - ep), false, false)
+                }
+                motionAnimating = true
+            }
+        }
+
         // 1. Draw glowing category Constellation Lines linking stars in the same group (or adjacent matches)
         for (i in starCoords.indices) {
             val (curApp, x1, y1) = starCoords[i]
@@ -4216,17 +4416,21 @@ class WatchView(
                 val (otherApp, x2, y2) = starCoords[j]
                 if (x2 < -1000f) continue
                 val sameCategory = curApp.defaultGroup == otherApp.defaultGroup
-                if (sameCategory || (q.isNotEmpty() && j == i + 1)) {
+                if (sameCategory || ((q.isNotEmpty() || activeIntent != null) && j == i + 1)) {
                     val dist = hypot(x2 - x1, y2 - y1)
                     if (dist < u * 0.60f * cz) {
-                        val lineTint = if (q.isNotEmpty()) accent else curApp.defaultGroup.tint
+                        val lineTint = when {
+                            activeIntent != null -> activeIntent.groups.first().tint
+                            q.isNotEmpty() -> accent
+                            else -> curApp.defaultGroup.tint
+                        }
                         // Outer soft glow line
                         stroke.strokeWidth = dp(4.5f)
                         stroke.color = withAlpha(lineTint, (aInt * 0.22f * cVal).toInt())
                         c.drawLine(x1, y1, x2, y2, stroke)
                         // Bright inner constellation filament
                         stroke.strokeWidth = dp(1.8f)
-                        stroke.color = withAlpha(lineTint, (aInt * 0.72f * cVal).toInt())
+                        stroke.color = withAlpha(lineTint, (aInt * 0.72f * cVal * (1f + 0.55f * bloomPulse)).toInt().coerceIn(0, 255)) // 3.8.1: one pulse in the intent tint while the bloom runs
                         c.drawLine(x1, y1, x2, y2, stroke)
                     }
                 }
@@ -4249,6 +4453,14 @@ class WatchView(
             c.drawCircle(x, y, dia * 0.54f, stroke)
 
             drawIcon(c, app.icon, x, y, dia, alpha, hasNotification(app), app.key in pinnedItemKeys)
+            // 3.8.1 Intent Bloom: the centre star lands with a soft
+            // shockwave ring in the intent's tint.
+            if (i == 0 && activeIntent != null && bloomT < 1f && bloomLocal0 > 0.55f) {
+                val sp = (bloomLocal0 - 0.55f) / 0.45f
+                stroke.strokeWidth = dp(2.4f * (1f - sp * 0.6f))
+                stroke.color = withAlpha(activeIntent.groups.first().tint, (aInt * 0.5f * (1f - sp)).toInt())
+                c.drawCircle(x, y, dia * (0.55f + sp * 0.85f), stroke)
+            }
             // Stars clipped by the header take no hits, so taps on the header
             // can only land on the bar or the chips.
             if (y > headerBottom + dia * 0.25f) hits += Hit(x, y, dia / 2, app)
@@ -4267,6 +4479,20 @@ class WatchView(
                 text.color = Color.argb(aInt, 255, 255, 255)
                 c.drawText(lbl, x - lw / 2, lRect.centerY() + text.textSize * 0.35f, text)
             }
+        }
+
+        // 3.8.1: remember this frame's stars; if an intent activates
+        // next frame, they become the bloom's exit snapshot.
+        prevStarCount = 0
+        for (pi in starCoords.indices) {
+            if (prevStarCount >= prevStarItems.size) break
+            val (pApp, px2, py2) = starCoords[pi]
+            if (px2 < -1000f) continue
+            prevStarItems[prevStarCount] = pApp
+            prevStarX[prevStarCount] = px2
+            prevStarY[prevStarCount] = py2
+            prevStarD[prevStarCount] = starDiameters[pi]
+            prevStarCount++
         }
 
         c.restore()
@@ -4703,42 +4929,86 @@ class WatchView(
     }
 
     private fun drawGridHeader(c: Canvas, w: Float, top: Float, centred: GridItem?, ov: Float, alpha: Float) {
-        val pillH = dp(34f)
+        // 3.8.1 (item 5): the header pill is a real Search control.
+        // Before, it wore the centred item's name (it read "Facebook"
+        // in Matt's screenshot), sat 34dp tall over the bubbles it
+        // overlapped, and nothing about it said Search, even though
+        // the intent layer lives behind it. Now: a 48dp filled pill in
+        // the same design family as the dock and the Constellation
+        // Search bar (filled surface, accent rim), a drawn magnifier,
+        // "Search" as the primary label, the centred item demoted to
+        // a quiet secondary, a pressed state, and a fixed header zone
+        // the field clips beneath (see drawGrid's clip).
+        val pillH = dp(48f)
         val y = top + dp(8f)
-        val sideW = dp(86f)
-
-        // Top-left is intentionally empty: Overview is reached by pinching out (and a
-        // double-tap on empty space resets zoom), so no permanent Overview pill competes
-        // with the bubbles. Overview itself is now signalled by the crown-track thumb.
-
-        // Top-right stays empty since 2.1.0: the Cluster Options button
-        // moved into the dock as the Settings segment.
-
-        // Center: Active centered app/folder/widget pill + tap target for #4 Constellation Search
-        if (centred != null && ov < 0.5f) {
-            val pinPrefix = if (centred.key in pinnedItemKeys) "📌 " else "🔍 "
-            val label = if (centred is Folder) "$pinPrefix${centred.label} (${centred.apps.size})" else "$pinPrefix${centred.label}"
-            text.textSize = sp(13f)
-            val tw = text.measureText(label)
-            val maxPw = (w - sideW * 2 - dp(44f)).coerceAtLeast(dp(80f))
-            val pw = (tw + dp(24f)).coerceAtMost(maxPw)
-            centerSearchPillRect.set(w / 2 - pw / 2, y, w / 2 + pw / 2, y + pillH)
-            fill.color = Color.argb((alpha * 215).toInt(), 32, 32, 36)
-            c.drawRoundRect(centerSearchPillRect, pillH / 2, pillH / 2, fill)
-            text.color = when (centred) {
-                is Folder -> withAlpha(centred.tint, (alpha * 255).toInt())
-                is WidgetBubble -> withAlpha(centred.kind.tint, (alpha * 255).toInt())
-                else -> Color.argb((alpha * 255).toInt(), 255, 255, 255)
+        if (ov >= 0.5f) {
+            centerSearchPillRect.setEmpty()
+            return
+        }
+        val aInt = (alpha * 255).toInt().coerceIn(0, 255)
+        val primary = "Search"
+        text.textSize = sp(14f)
+        val primaryW = text.measureText(primary)
+        val secondary = centred?.let { item ->
+            if (item is Folder) "${item.label} (${item.apps.size})" else item.label
+        }
+        text.textSize = sp(12f)
+        val secondaryW = if (secondary != null) text.measureText("· $secondary") + dp(8f) else 0f
+        val maxPw = (w - dp(64f)).coerceAtLeast(dp(120f))
+        var pw = dp(18f) + dp(15f) + dp(8f) + primaryW + secondaryW + dp(18f)
+        var secText = secondary?.let { "· $it" }
+        if (pw > maxPw && secondary != null) {
+            val availSec = maxPw - (pw - secondaryW)
+            if (availSec > dp(36f)) {
+                secText = TextUtils.ellipsize("· $secondary", text, availSec, TextUtils.TruncateAt.END).toString()
+                pw = maxPw
+            } else {
+                secText = null
+                pw = dp(18f) + dp(15f) + dp(8f) + primaryW + dp(18f)
             }
-            val ellipsized = TextUtils.ellipsize(label, text, pw - dp(14f), TextUtils.TruncateAt.END).toString()
-            c.drawText(ellipsized, w / 2 - text.measureText(ellipsized) / 2, centerSearchPillRect.centerY() + text.textSize * 0.35f, text)
+        }
+        centerSearchPillRect.set(w / 2 - pw / 2, y, w / 2 + pw / 2, y + pillH)
+        val pr = centerSearchPillRect
+        // Soft shadow, then the filled surface, then the accent rim.
+        fill.color = Color.argb((aInt * 0.35f).toInt(), 0, 0, 0)
+        c.drawRoundRect(pr.left, pr.top + dp(3f), pr.right, pr.bottom + dp(3f), pillH / 2, pillH / 2, fill)
+        fill.color = if (pillPressed) Color.argb((aInt * 0.98f).toInt(), 52, 55, 62)
+            else Color.argb((aInt * 0.96f).toInt(), 32, 34, 40)
+        c.drawRoundRect(pr, pillH / 2, pillH / 2, fill)
+        stroke.strokeWidth = dp(1.4f)
+        stroke.color = withAlpha(accent, (aInt * (if (pillPressed) 0.95f else 0.6f)).toInt())
+        c.drawRoundRect(pr, pillH / 2, pillH / 2, stroke)
+        if (pillPressed) {
+            fill.color = Color.argb((aInt * 0.10f).toInt(), 255, 255, 255)
+            c.drawRoundRect(pr, pillH / 2, pillH / 2, fill)
+        }
+        // Magnifier, drawn (the old label borrowed the emoji glyph).
+        val magCx = pr.left + dp(18f) + dp(6f)
+        val magCy = pr.centerY()
+        val magR = dp(5.5f)
+        stroke.strokeWidth = dp(1.9f)
+        stroke.color = Color.argb(aInt, 225, 228, 235)
+        c.drawCircle(magCx, magCy, magR, stroke)
+        c.drawLine(magCx + magR * 0.72f, magCy + magR * 0.72f, magCx + magR * 0.72f + dp(3.6f), magCy + magR * 0.72f + dp(3.6f), stroke)
+        var tx = magCx + magR + dp(3.6f) + dp(9f)
+        text.textSize = sp(14f)
+        text.color = Color.argb(aInt, 255, 255, 255)
+        c.drawText(primary, tx, pr.centerY() + text.textSize * 0.35f, text)
+        tx += primaryW
+        if (secText != null) {
+            text.textSize = sp(12f)
+            text.color = Color.argb((aInt * 0.72f).toInt(), 188, 190, 198)
+            c.drawText(secText, tx + dp(8f), pr.centerY() + text.textSize * 0.35f, text)
+        }
 
-            // Live Notification Snippet Peek when centered bubble has an active notification!
+        // Live Notification Snippet Peek when the centered bubble has
+        // an active notification (unchanged, below the new pill).
+        if (centred != null) {
             notificationSnippetFor(centred)?.let { snippet ->
                 val peekY = centerSearchPillRect.bottom + dp(5f)
                 val peekH = dp(24f)
                 text.textSize = sp(10.5f)
-                val rawPeek = "💬 $snippet"
+                val rawPeek = "\uD83D\uDCAC $snippet"
                 val maxPeekW = w - dp(48f)
                 val ellPeek = TextUtils.ellipsize(rawPeek, text, maxPeekW - dp(20f), TextUtils.TruncateAt.END).toString()
                 val ptw = text.measureText(ellPeek)
@@ -4751,8 +5021,6 @@ class WatchView(
                 text.color = Color.argb((alpha * 245).toInt(), 230, 235, 242)
                 c.drawText(ellPeek, w / 2 - ptw / 2, peekRect.centerY() + text.textSize * 0.35f, text)
             }
-        } else {
-            centerSearchPillRect.setEmpty()
         }
     }
 
@@ -4804,6 +5072,7 @@ class WatchView(
                 add(Triple(ClusterOption.PER_LAYOUT_PINS, "Per-Layout Pins", if (perLayoutPins) "Separate pins per layout" else "One pin set everywhere"))
                 add(Triple(ClusterOption.USAGE_GROWTH, "Usage Growth", if (usageGrowth) "Bubbles grow with use" else "Uniform bubble sizes"))
                 add(Triple(ClusterOption.THEMED_ICONS, "Themed Icons", if (themedIcons) "Monochrome, in your system colours" else "Each app's own colours"))
+                add(Triple(ClusterOption.LIVING_FIELD, "Living Field", if (livingField) "Field breathes and drifts" else "Field sits still"))
                 add(Triple(ClusterOption.CATEGORY_CLUSTERING, "Category Clustering", if (autoFolders) "Apps grouped into category folders" else "All apps loose"))
             }
             if (sheetExpanded) {
@@ -4924,6 +5193,7 @@ class WatchView(
                 ClusterOption.THEMED_ICONS -> themedIcons
                 ClusterOption.CATEGORY_CLUSTERING -> autoFolders
                 ClusterOption.BLOOM_MODE -> bloomFolders
+                ClusterOption.LIVING_FIELD -> livingField
                 else -> null
             }
             drawSheetGlyph(c, opt, r.left + dp(24f), r.centerY(), dp(21f), glyphColor)
@@ -5351,6 +5621,19 @@ class WatchView(
                 c.drawCircle(cx, cy, s * 0.36f, stroke)
                 fill.color = color
                 c.drawArc(cx - s * 0.36f, cy - s * 0.36f, cx + s * 0.36f, cy + s * 0.36f, 90f, 180f, true, fill)
+            }
+            ClusterOption.LIVING_FIELD -> {
+                // Two gentle waves: the field, breathing.
+                for (rowOff in listOf(-0.18f, 0.16f)) {
+                    val yy = cy + s * rowOff
+                    path.reset()
+                    path.moveTo(cx - s * 0.42f, yy)
+                    path.lineTo(cx - s * 0.21f, yy - s * 0.13f)
+                    path.lineTo(cx, yy)
+                    path.lineTo(cx + s * 0.21f, yy + s * 0.13f)
+                    path.lineTo(cx + s * 0.42f, yy)
+                    c.drawPath(path, stroke)
+                }
             }
             ClusterOption.SET_DEFAULT_HOME -> {
                 path.moveTo(cx - s * 0.42f, cy + s * 0.02f)
@@ -5807,6 +6090,24 @@ class WatchView(
         refreshMotionScale()
     }
 
+    // 3.8.1 Living Field battery gate: breathing and its idle frame
+    // loop only run while the window is actually visible.
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        livingVisible = visibility == VISIBLE
+        if (livingVisible) invalidate()
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        livingVisible = visibility == VISIBLE
+    }
+
+    override fun onDetachedFromWindow() {
+        livingVisible = false
+        super.onDetachedFromWindow()
+    }
+
     /**
      * Re-reads the system animation scale (2.7.0, audit #1). A scale of
      * 0 means the user has turned animations off (or on some devices,
@@ -6054,6 +6355,9 @@ class WatchView(
                 // positions.
                 if (morphActive || morphIslandFrom.isNotEmpty()) finishMorph()
                 downX = e.x; downY = e.y; lastX = e.x; lastY = e.y
+                // 3.8.1: a touch lands the Homecoming cascade at once.
+                if (homecomingStartMs > 0L) homecomingStartMs = 0L
+                pillPressed = false
                 dragging = false; longPressed = false; pinching = false
                 orbitalVelocity = 0f
                 grabbedPoolIndex = if (clusterTopology == ClusterTopology.LIQUID_POOL && apps.target > 0.5f) {
@@ -6069,6 +6373,7 @@ class WatchView(
                 // 2.7.0 (audit #8): pressed-state flash — remember the
                 // row or dock segment under the finger for the draw pass.
                 pressedRect = null
+                pillPressed = false
                 if (clusterSheet.target > 0f) {
                     val hitR = sheetRowRects.lastOrNull { it.first.contains(e.x, e.y) }?.first
                         ?: faceRowRects.lastOrNull { it.first.contains(e.x, e.y) }?.first
@@ -6077,6 +6382,9 @@ class WatchView(
                         ?: dockSegs.firstOrNull { !it.isEmpty && it.contains(e.x, e.y) }
                     if (hitR != null) { pressedRect = RectF(hitR); pressedRadius = dp(16f) }
                 } else {
+                    // 3.8.1 (item 5): the search pill gets a pressed
+                    // state like the sheet rows and dock segments.
+                    if (!centerSearchPillRect.isEmpty && centerSearchPillRect.contains(e.x, e.y)) pillPressed = true
                     val seg = dockSegs.firstOrNull { !it.isEmpty && it.contains(e.x, e.y) }
                     if (seg != null) { pressedRect = RectF(seg); pressedRadius = dp(24f) }
                 }
@@ -6189,6 +6497,7 @@ class WatchView(
             MotionEvent.ACTION_UP -> {
                 removeCallbacks(longPress)
                 pressedRect = null
+                pillPressed = false
                 if (placeItem != null) {
                     finishPlace()
                     dragging = false
@@ -6243,6 +6552,13 @@ class WatchView(
                 velocity?.computeCurrentVelocity(1000)
                 val vx = velocity?.xVelocity ?: 0f
                 val vy = velocity?.yVelocity ?: 0f
+                // 3.8.1 Living Field: a fast fling leaves ghosts.
+                if (livingField && !reducedMotion && clusterSheet.target == 0f && !gridSearching && hypot(vx, vy) > 1500f) {
+                    ghostPending = true
+                    ghostVx = vx
+                    ghostVy = vy
+                }
+                pillPressed = false
                 if (!longPressed) {
                     if (dragging && clusterSheet.target == 0f) release(vx, vy, e.y - downY)
                     else tap(e.x, e.y)
@@ -6253,6 +6569,7 @@ class WatchView(
             MotionEvent.ACTION_CANCEL -> {
                 removeCallbacks(longPress)
                 pressedRect = null
+                pillPressed = false
                 dragging = false
                 pinching = false
                 edgeCrownDragging = false

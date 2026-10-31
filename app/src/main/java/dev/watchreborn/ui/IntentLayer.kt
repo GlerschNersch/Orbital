@@ -15,6 +15,12 @@ import dev.watchreborn.apps.AppGroup
  * - [resolve] only reorders and filters apps that already exist. It groups
  *   them by the intent's category priority, keeping frecency order inside
  *   each group, so the most used relevant apps surface first.
+ * - 3.8.1: [resolve] also sub-caps each secondary group (see
+ *   [SECONDARY_GROUP_CAP]) and caps the total at [TOTAL_CAP]. Matt's
+ *   real-phone Gym test filled the old cap of 14 with broad Music-group
+ *   backfill (audio recorders, tuners, generators) once the handful of
+ *   real Fitness apps ran out; the primary group stays uncapped, the
+ *   helpers only get a few seats each.
  *
  * Future versions may learn context (time, place, recent activity), but
  * that is deliberately out of scope for this prototype.
@@ -100,13 +106,24 @@ object IntentLayer {
         }
     }
 
+    /** Total result cap for [resolve] (3.8.1: was 14 in the prototype). */
+    const val TOTAL_CAP = 10
+
+    /**
+     * Max apps any one secondary group (every group after the intent's
+     * primary group) may contribute to a [resolve] result.
+     */
+    const val SECONDARY_GROUP_CAP = 3
+
     /**
      * Resolves [intent] against [candidatesInFrecencyOrder].
      *
      * Keeps only candidates whose group is in the intent's groups, orders
      * them by group priority index first and then by their original order
      * in [candidatesInFrecencyOrder] (frecency), dedupes by key (first
-     * occurrence wins), and caps the result at [cap].
+     * occurrence wins), then applies the caps: the primary group (index
+     * 0) is uncapped, each secondary group contributes at most
+     * [SECONDARY_GROUP_CAP] apps, and the total is capped at [cap].
      *
      * Returns the ordered [IntentCandidate]s, not just keys, so callers
      * keep the group information alongside each key.
@@ -114,12 +131,13 @@ object IntentLayer {
     fun resolve(
         intent: IntentDef,
         candidatesInFrecencyOrder: List<IntentCandidate>,
-        cap: Int = 14,
+        cap: Int = TOTAL_CAP,
     ): List<IntentCandidate> {
         if (cap <= 0) return emptyList()
         val priority = HashMap<AppGroup, Int>(intent.groups.size)
         intent.groups.forEachIndexed { index, group -> priority[group] = index }
         val seen = HashSet<String>()
+        val groupCounts = HashMap<AppGroup, Int>(intent.groups.size)
         return candidatesInFrecencyOrder
             .withIndex()
             .filter { (_, candidate) -> candidate.group in priority }
@@ -129,6 +147,19 @@ object IntentLayer {
             )
             .map { it.value }
             .filter { seen.add(it.key) }
+            .filter { candidate ->
+                if (priority.getValue(candidate.group) == 0) {
+                    true
+                } else {
+                    val used = groupCounts[candidate.group] ?: 0
+                    if (used >= SECONDARY_GROUP_CAP) {
+                        false
+                    } else {
+                        groupCounts[candidate.group] = used + 1
+                        true
+                    }
+                }
+            }
             .take(cap)
     }
 }

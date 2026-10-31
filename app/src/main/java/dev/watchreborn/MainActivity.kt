@@ -226,6 +226,7 @@ class MainActivity : Activity(), SensorEventListener {
         view.fixedNeighborhoods = prefs.getBoolean(KEY_FIXED_NEIGHBORHOODS, true)
         view.perLayoutPins = prefs.getBoolean(KEY_PER_LAYOUT_PINS, false)
         view.usageGrowth = prefs.getBoolean(KEY_USAGE_GROWTH, true)
+        view.livingField = prefs.getBoolean(KEY_LIVING_FIELD, true) // 3.8.1
         view.themedIcons = repo.themedIcons
         val savedTopo = prefs.getString(KEY_CLUSTER_TOPOLOGY, ClusterTopology.HONEYCOMB.name)
         view.clusterTopology = runCatching { ClusterTopology.valueOf(savedTopo ?: ClusterTopology.HONEYCOMB.name) }
@@ -334,6 +335,7 @@ class MainActivity : Activity(), SensorEventListener {
     override fun onResume() {
         super.onResume()
         view.refreshMotionScale() // 2.7.0 (audit #1)
+        view.onHomeReturn() // 3.8.1 Homecoming Bloom: decorative only, never gates the first paint
         refreshInfo()
         // Midnight may have passed with no step event to reset the count.
         view.stepCount = StepsToday.stepsOn(stepsState, LocalDate.now().toEpochDay()).toInt()
@@ -1023,6 +1025,11 @@ class MainActivity : Activity(), SensorEventListener {
                 val next = !view.usageGrowth
                 prefs.edit().putBoolean(KEY_USAGE_GROWTH, next).apply()
                 view.usageGrowth = next
+            }
+            ClusterOption.LIVING_FIELD -> {
+                val next = !view.livingField
+                prefs.edit().putBoolean(KEY_LIVING_FIELD, next).apply()
+                view.livingField = next
             }
             ClusterOption.THEMED_ICONS -> {
                 val next = !view.themedIcons
@@ -3222,6 +3229,7 @@ class MainActivity : Activity(), SensorEventListener {
         const val KEY_CLUSTER_TOPOLOGY = "cluster_topology"
         const val KEY_PER_LAYOUT_PINS = "per_layout_pins"
         const val KEY_USAGE_GROWTH = "usage_growth"
+        const val KEY_LIVING_FIELD = "living_field"
         const val KEY_THEMED_ICONS = "themed_icons"
         const val KEY_HINTS_SEEN = "hints_seen"
         const val KEY_APPWIDGET_IDS = "appwidget_ids"
